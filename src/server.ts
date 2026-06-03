@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
 import crypto from 'node:crypto';
 import { env } from './config/env';
 
@@ -35,6 +36,28 @@ export async function buildServer() {
     },
   });
 
+  // Body size limit — 64KB max
+  server.addContentTypeParser('application/json', { parseAs: 'string', bodyLimit: 65536 }, (req, body, done) => {
+    try {
+      done(null, JSON.parse(body as string));
+    } catch (err) {
+      done(err as Error, undefined);
+    }
+  });
+
+  // Rate limiting
+  await server.register(rateLimit, {
+    global: true,
+    max: 60,
+    timeWindow: '1 minute',
+    keyGenerator: (req) => (req.headers['x-api-key'] as string) ?? req.ip,
+    errorResponseBuilder: () => ({
+      error: 'Too Many Requests',
+      message: 'Rate limit exceeded, retry after 1 minute',
+      statusCode: 429,
+    }),
+  });
+
   // Security headers
   await server.register(helmet, { global: true });
 
@@ -53,7 +76,6 @@ export async function buildServer() {
             type: 'object',
             properties: {
               status: { type: 'string' },
-              version: { type: 'string' },
               timestamp: { type: 'string' },
             },
           },
@@ -62,7 +84,6 @@ export async function buildServer() {
     },
     async () => ({
       status: 'ok',
-      version: '1.0.0',
       timestamp: new Date().toISOString(),
     }),
   );

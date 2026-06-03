@@ -25,7 +25,7 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
             direction: { type: 'string', enum: ['deposit', 'withdraw'] },
             amount: { type: 'number', minimum: 0.01 },
             currency: { type: 'string', minLength: 3, maxLength: 3 },
-            phone: { type: 'string', minLength: 9, maxLength: 16 },
+            phone: { type: 'string', pattern: '^\\+?[1-9]\\d{7,14}$' },
             metadata: { type: 'object', additionalProperties: true },
           },
         },

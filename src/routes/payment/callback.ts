@@ -1,10 +1,37 @@
+import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
+import { env } from '../../config/env';
 
 interface CallbackBody {
   provider_ref: string;
   status: 'success' | 'failed';
   channel?: string;
   raw_payload?: Record<string, unknown>;
+}
+
+// SSRF guard: only HTTPS to non-private/loopback hosts
+function isSafeWebhookUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'https:') return false;
+    const host = u.hostname;
+    // Block loopback, link-local, private ranges, metadata endpoints
+    const blocked = [
+      /^localhost$/i,
+      /^127\./,
+      /^0\./,
+      /^10\./,
+      /^172\.(1[6-9]|2\d|3[01])\./,
+      /^192\.168\./,
+      /^169\.254\./,
+      /^::1$/,
+      /^fc00:/i,
+      /^fe80:/i,
+    ];
+    return !blocked.some((re) => re.test(host));
+  } catch {
+    return false;
+  }
 }
 
 const callbackRoute: FastifyPluginAsync = async (fastify) => {
@@ -34,6 +61,23 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
+      // HMAC-SHA256 signature verification
+      if (env.OPERATOR_WEBHOOK_SECRET) {
+        const signature = request.headers['x-webhook-signature'];
+        if (!signature || typeof signature !== 'string') {
+          return reply.status(401).send({ error: 'Missing webhook signature', statusCode: 401 });
+        }
+        const expected = crypto
+          .createHmac('sha256', env.OPERATOR_WEBHOOK_SECRET)
+          .update(JSON.stringify(request.body))
+          .digest('hex');
+        const trusted = `sha256=${expected}`;
+        if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(trusted))) {
+          fastify.log.warn({ provider_ref: request.body?.provider_ref }, 'Invalid webhook signature');
+          return reply.status(401).send({ error: 'Invalid webhook signature', statusCode: 401 });
+        }
+      }
+
       const { provider_ref, status, raw_payload } = request.body;
 
       const { data: tx, error } = await fastify.supabase
@@ -66,7 +110,7 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
 
       // Notify operator webhook — fire and forget
       const webhookUrl = (tx.operators as { webhook_url?: string } | null)?.webhook_url;
-      if (webhookUrl) {
+      if (webhookUrl && isSafeWebhookUrl(webhookUrl)) {
         fetch(webhookUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
