@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { getProviderService } from '../../services/index';
 import type { Channel, Direction } from '../../types/payment';
@@ -45,7 +45,7 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const { channel, direction, amount, currency, phone, metadata } = request.body;
       const operatorId = request.operatorId;
-      const transactionId = randomUUID();
+      const transactionId = crypto.randomUUID();
 
       // 1. Persist transaction as pending
       const { data: tx, error: insertError } = await fastify.supabase

@@ -1,6 +1,6 @@
 import Fastify from 'fastify';
 import helmet from '@fastify/helmet';
-import { randomUUID } from 'crypto';
+import crypto from 'node:crypto';
 import { env } from './config/env';
 
 import corsPlugin from './plugins/cors';
@@ -25,7 +25,7 @@ export async function buildServer() {
         },
       }),
     },
-    genReqId: () => randomUUID(),
+    genReqId: () => crypto.randomUUID(),
     ajv: {
       customOptions: {
         coerceTypes: 'array',
