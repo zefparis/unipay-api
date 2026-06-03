@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: unipay-api
+    env: node
+    region: frankfurt
+    plan: starter
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: HMAC_SECRET
+        generateValue: true
+      - key: OPERATOR_WEBHOOK_SECRET
+        generateValue: true
