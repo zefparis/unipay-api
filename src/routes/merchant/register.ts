@@ -2,11 +2,14 @@ import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import type { FastifyPluginAsync } from 'fastify';
 
+const OPERATORS = ['orange', 'airtel', 'afrimoney', 'vodacash'] as const;
+
 interface RegisterBody {
   name: string;
   email: string;
   password: string;
-  webhook_url?: string;
+  phone?: string;
+  country?: string;
 }
 
 const registerRoute: FastifyPluginAsync = async (fastify) => {
@@ -18,10 +21,11 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
           type: 'object',
           required: ['name', 'email', 'password'],
           properties: {
-            name: { type: 'string', minLength: 2, maxLength: 128 },
-            email: { type: 'string', format: 'email' },
+            name:     { type: 'string', minLength: 2, maxLength: 128 },
+            email:    { type: 'string', format: 'email' },
             password: { type: 'string', minLength: 8, maxLength: 128 },
-            webhook_url: { type: 'string', format: 'uri' },
+            phone:    { type: 'string', maxLength: 32 },
+            country:  { type: 'string', maxLength: 8 },
           },
         },
         response: {
@@ -29,20 +33,20 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
             type: 'object',
             properties: {
               merchant_id: { type: 'string' },
-              name: { type: 'string' },
-              email: { type: 'string' },
-              status: { type: 'string' },
+              name:        { type: 'string' },
+              email:       { type: 'string' },
+              api_key:     { type: 'string' },
             },
           },
         },
       },
     },
     async (request, reply) => {
-      const { name, email, password, webhook_url } = request.body;
+      const { name, email, password, phone, country } = request.body;
 
-      // Check if email already exists
+      // 1. Check email uniqueness in merchants table
       const { data: existing } = await fastify.supabase
-        .from('operators')
+        .from('merchants')
         .select('id')
         .eq('email', email)
         .maybeSingle();
@@ -51,23 +55,64 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(409).send({ error: 'Email already registered', statusCode: 409 });
       }
 
-      const merchantId = crypto.randomUUID();
+      // 2. Hash password
       const passwordHash = await bcrypt.hash(password, 12);
 
-      const { error } = await fastify.supabase.from('operators').insert({
-        id: merchantId,
-        name,
-        email,
-        password_hash: passwordHash,
-        webhook_url: webhook_url ?? null,
-        status: 'active',
-        balance_cdf: 0,
-        is_admin: false,
-      });
+      // 3. Insert merchant
+      const { data: merchant, error: merchantError } = await fastify.supabase
+        .from('merchants')
+        .insert({
+          name,
+          email,
+          password_hash: passwordHash,
+          phone:   phone   ?? null,
+          country: country ?? 'CD',
+          status:  'active',
+        })
+        .select('id')
+        .single();
 
-      if (error) {
-        fastify.log.error({ err: error, email }, 'Merchant registration failed');
+      if (merchantError || !merchant) {
+        fastify.log.error({ err: merchantError, email }, 'Merchant insert failed');
         return reply.status(500).send({ error: 'Registration failed', statusCode: 500 });
+      }
+
+      const merchantId: string = merchant.id as string;
+
+      // 4. Create one operators row per operator
+      const operatorRows = OPERATORS.map((op) => ({
+        merchant_id:  merchantId,
+        operator:     op,
+        balance_cdf:  0,
+        status:       'active',
+      }));
+
+      const { error: opError } = await fastify.supabase
+        .from('operators')
+        .insert(operatorRows);
+
+      if (opError) {
+        fastify.log.error({ err: opError, merchantId }, 'Operator rows creation failed');
+      }
+
+      // 5. Generate API key: plaintext = "up_<32 random hex>", store bcrypt hash
+      const rawKey    = `up_${crypto.randomBytes(16).toString('hex')}`;
+      const keyHash   = await bcrypt.hash(rawKey, 10);
+      const keyPrefix = rawKey.slice(0, 8);
+
+      const { error: keyError } = await fastify.supabase
+        .from('api_keys')
+        .insert({
+          merchant_id:  merchantId,
+          key_hash:     keyHash,
+          key_prefix:   keyPrefix,
+          label:        'default',
+          is_active:    true,
+        });
+
+      if (keyError) {
+        fastify.log.error({ err: keyError, merchantId }, 'API key insert failed');
+        return reply.status(500).send({ error: 'API key generation failed', statusCode: 500 });
       }
 
       fastify.log.info({ merchantId, email }, 'Merchant registered');
@@ -76,7 +121,7 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
         merchant_id: merchantId,
         name,
         email,
-        status: 'active',
+        api_key: rawKey,
       });
     },
   );
