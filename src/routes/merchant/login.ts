@@ -45,7 +45,7 @@ const loginRoute: FastifyPluginAsync = async (fastify) => {
       const { email, password } = request.body;
 
       const { data: merchant, error } = await fastify.supabase
-        .from('operators')
+        .from('merchants')
         .select('id, name, email, password_hash, status')
         .eq('email', email)
         .maybeSingle();
