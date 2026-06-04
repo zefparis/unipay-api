@@ -1,13 +1,6 @@
-import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
-import { env } from '../../config/env';
-
-interface CallbackBody {
-  provider_ref: string;
-  status: 'success' | 'failed';
-  channel?: string;
-  raw_payload?: Record<string, unknown>;
-}
+import { verifyCallbackSignature, normalizeCallback } from '../../services/avada';
+import type { AvadaCallbackPayload } from '../../services/avada';
 
 // SSRF guard: only HTTPS to non-private/loopback hosts
 function isSafeWebhookUrl(raw: string): boolean {
@@ -15,7 +8,6 @@ function isSafeWebhookUrl(raw: string): boolean {
     const u = new URL(raw);
     if (u.protocol !== 'https:') return false;
     const host = u.hostname;
-    // Block loopback, link-local, private ranges, metadata endpoints
     const blocked = [
       /^localhost$/i,
       /^127\./,
@@ -35,18 +27,22 @@ function isSafeWebhookUrl(raw: string): boolean {
 }
 
 const callbackRoute: FastifyPluginAsync = async (fastify) => {
-  fastify.post<{ Body: CallbackBody }>(
+  fastify.post<{ Body: AvadaCallbackPayload }>(
     '/payment/callback',
     {
       schema: {
         body: {
           type: 'object',
-          required: ['provider_ref', 'status'],
+          required: ['transaction_id', 'reference', 'status', 'operator', 'amount', 'msisdn'],
           properties: {
-            provider_ref: { type: 'string' },
-            status: { type: 'string', enum: ['success', 'failed'] },
-            channel: { type: 'string' },
-            raw_payload: { type: 'object', additionalProperties: true },
+            transaction_id: { type: 'string' },
+            reference: { type: 'string' },
+            status: { type: 'string', enum: ['pending', 'processing', 'success', 'failed', 'cancelled'] },
+            operator: { type: 'string' },
+            amount: { type: 'number' },
+            msisdn: { type: 'string' },
+            timestamp: { type: 'string' },
+            metadata: { type: 'object', additionalProperties: true },
           },
         },
         response: {
@@ -61,38 +57,39 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      // HMAC-SHA256 signature verification
-      if (env.OPERATOR_WEBHOOK_SECRET) {
-        const signature = request.headers['x-webhook-signature'];
-        if (!signature || typeof signature !== 'string') {
-          return reply.status(401).send({ error: 'Missing webhook signature', statusCode: 401 });
-        }
-        const expected = crypto
-          .createHmac('sha256', env.OPERATOR_WEBHOOK_SECRET)
-          .update(JSON.stringify(request.body))
-          .digest('hex');
-        const trusted = `sha256=${expected}`;
-        if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(trusted))) {
-          fastify.log.warn({ provider_ref: request.body?.provider_ref }, 'Invalid webhook signature');
+      // Avada signature verification
+      const signature = request.headers['x-avada-signature'];
+      if (signature) {
+        const rawBody = JSON.stringify(request.body);
+        if (typeof signature !== 'string' || !verifyCallbackSignature(rawBody, signature)) {
+          fastify.log.warn({ transaction_id: request.body?.transaction_id }, 'Invalid Avada signature');
           return reply.status(401).send({ error: 'Invalid webhook signature', statusCode: 401 });
         }
       }
 
-      const { provider_ref, status, raw_payload } = request.body;
+      const normalized = normalizeCallback(request.body);
+      const { avada_transaction_id, status, reference } = normalized;
+
+      // Only process terminal states
+      if (status !== 'success' && status !== 'failed' && status !== 'cancelled') {
+        return reply.send({ ok: true, idempotent: true });
+      }
+
+      const dbStatus = status === 'cancelled' ? 'failed' : status;
 
       const { data: tx, error } = await fastify.supabase
         .from('transactions')
-        .select('id, operator_id, status, operators(webhook_url)')
-        .eq('provider_ref', provider_ref)
+        .select('id, merchant_id, status, operators(webhook_url)')
+        .eq('avada_transaction_id', avada_transaction_id)
         .maybeSingle();
 
       if (error) {
-        fastify.log.error({ err: error, provider_ref }, 'Callback DB lookup error');
+        fastify.log.error({ err: error, avada_transaction_id }, 'Callback DB lookup error');
         return reply.status(500).send({ error: 'Internal Server Error', statusCode: 500 });
       }
 
       if (!tx) {
-        fastify.log.warn({ provider_ref }, 'Callback for unknown provider_ref');
+        fastify.log.warn({ avada_transaction_id, reference }, 'Callback for unknown avada_transaction_id');
         return reply.status(404).send({ error: 'Transaction not found', statusCode: 404 });
       }
 
@@ -103,12 +100,12 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
 
       await fastify.supabase
         .from('transactions')
-        .update({ status, callback_payload: raw_payload ?? null })
+        .update({ status: dbStatus, metadata: normalized.raw })
         .eq('id', tx.id);
 
-      fastify.log.info({ transactionId: tx.id, provider_ref, status }, 'Transaction updated via callback');
+      fastify.log.info({ transactionId: tx.id, avada_transaction_id, status: dbStatus }, 'Transaction updated via Avada callback');
 
-      // Notify operator webhook — fire and forget
+      // Notify merchant webhook — fire and forget
       const webhookUrl = (tx.operators as { webhook_url?: string } | null)?.webhook_url;
       if (webhookUrl && isSafeWebhookUrl(webhookUrl)) {
         fetch(webhookUrl, {
@@ -117,11 +114,12 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
           body: JSON.stringify({
             event: 'payment.status_update',
             transaction_id: tx.id,
-            provider_ref,
-            status,
+            avada_transaction_id,
+            reference,
+            status: dbStatus,
           }),
         }).catch((err: unknown) => {
-          fastify.log.warn({ err, webhookUrl }, 'Operator webhook delivery failed');
+          fastify.log.warn({ err, webhookUrl }, 'Merchant webhook delivery failed');
         });
       }
 

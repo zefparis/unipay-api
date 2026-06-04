@@ -10,21 +10,25 @@ const envSchema = z.object({
   HMAC_SECRET: z.string().min(16),
   OPERATOR_WEBHOOK_SECRET: z.string().optional(),
 
+  // Unipesa aggregator (Orange, Airtel, Afrimoney)
+  UNIPESA_API_URL: z.string().url().optional(),
+  UNIPESA_PUBLIC_ID: z.string().optional(),
+  UNIPESA_MERCHANT_ID: z.string().optional(),
+  UNIPESA_SECRET_KEY: z.string().optional(),
+  UNIPESA_CALLBACK_URL: z.string().url().optional(),
+
+  // Fixie proxy — whitelisted IP for Unipesa API calls
+  FIXIE_URL: z.string().url().optional(),
+
+  // Vodacash — direct integration (coming soon)
   VODACASH_API_URL: z.string().url().optional(),
   VODACASH_API_KEY: z.string().optional(),
 
-  ORANGE_API_URL: z.string().url().optional(),
-  ORANGE_CLIENT_ID: z.string().optional(),
-  ORANGE_CLIENT_SECRET: z.string().optional(),
-
-  AIRTEL_API_URL: z.string().url().optional(),
-  AIRTEL_CLIENT_ID: z.string().optional(),
-  AIRTEL_CLIENT_SECRET: z.string().optional(),
-
-  AFRIMONEY_API_URL: z.string().url().optional(),
-  AFRIMONEY_API_KEY: z.string().optional(),
-
+  // USDT on-chain
   USDT_WALLET_ADDRESS: z.string().optional(),
+
+  // Merchant JWT
+  JWT_SECRET: z.string().min(32).optional(),
 });
 
 const result = envSchema.safeParse(process.env);

@@ -1,28 +1,26 @@
-import { env } from '../config/env';
+import * as avada from './avada';
 import type { PaymentPayload, ProviderResponse, ProviderStatus } from '../types/payment';
 
-/**
- * Orange Money DRC service stub.
- * TODO: Replace with real Orange Money API calls (OAuth2 flow).
- * Credentials: env.ORANGE_API_URL, env.ORANGE_CLIENT_ID, env.ORANGE_CLIENT_SECRET
- */
+const OPERATOR = 'Orange' as const;
 
 export async function initiatePayment(payload: PaymentPayload): Promise<ProviderResponse> {
-  void env.ORANGE_API_URL;
-
-  const providerRef = `OMD-${Date.now()}-${payload.transaction_id.slice(0, 8)}`;
+  const { avada_transaction_id } =
+    payload.direction === 'collect'
+      ? await avada.initiateCollection(OPERATOR, payload.phone, payload.amount, payload.reference, payload.currency)
+      : await avada.initiatePayout(OPERATOR, payload.phone, payload.amount, payload.reference, payload.currency);
 
   return {
-    provider_ref: providerRef,
+    provider_ref: avada_transaction_id,
     status: 'processing',
-    raw: { stub: true, channel: 'orange', payload },
+    raw: { operator: OPERATOR, avada_transaction_id },
   };
 }
 
 export async function checkStatus(providerRef: string): Promise<ProviderStatus> {
-  return {
-    provider_ref: providerRef,
-    status: 'processing',
-    message: 'Stub: Orange Money status check not yet implemented',
-  };
+  const avadaStatus = await avada.getTransactionStatus(providerRef);
+  const status =
+    avadaStatus === 'success' ? 'success'
+    : avadaStatus === 'failed' || avadaStatus === 'cancelled' ? 'failed'
+    : 'processing';
+  return { provider_ref: providerRef, status };
 }

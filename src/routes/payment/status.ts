@@ -22,13 +22,15 @@ const statusRoute: FastifyPluginAsync = async (fastify) => {
             properties: {
               transaction_id: { type: 'string' },
               status: { type: 'string' },
-              channel: { type: 'string' },
+              operator: { type: 'string' },
               direction: { type: 'string' },
-              amount_usd: { type: 'number' },
-              amount_local: { type: 'number' },
+              amount: { type: 'number' },
+              fee: { type: 'number' },
+              net_amount: { type: 'number' },
               currency: { type: 'string' },
               phone: { type: 'string' },
-              provider_ref: { type: ['string', 'null'] },
+              reference: { type: ['string', 'null'] },
+              avada_transaction_id: { type: ['string', 'null'] },
               created_at: { type: 'string' },
               updated_at: { type: 'string' },
             },
@@ -41,9 +43,9 @@ const statusRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data, error } = await fastify.supabase
         .from('transactions')
-        .select('*')
+        .select('id, merchant_id, operator, direction, amount, fee, net_amount, currency, phone, reference, avada_transaction_id, status, created_at, updated_at')
         .eq('id', id)
-        .eq('operator_id', request.operatorId)
+        .eq('merchant_id', request.operatorId)
         .maybeSingle();
 
       if (error) {
@@ -58,13 +60,15 @@ const statusRoute: FastifyPluginAsync = async (fastify) => {
       return {
         transaction_id: data.id,
         status: data.status,
-        channel: data.channel,
+        operator: data.operator,
         direction: data.direction,
-        amount_usd: data.amount_usd,
-        amount_local: data.amount_local,
+        amount: data.amount,
+        fee: data.fee,
+        net_amount: data.net_amount,
         currency: data.currency,
         phone: data.phone,
-        provider_ref: data.provider_ref ?? null,
+        reference: data.reference ?? null,
+        avada_transaction_id: data.avada_transaction_id ?? null,
         created_at: data.created_at,
         updated_at: data.updated_at,
       };

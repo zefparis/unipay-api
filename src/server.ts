@@ -14,6 +14,11 @@ import paymentStatusRoute from './routes/payment/status';
 import operatorAuthRoute from './routes/operator/auth';
 import operatorBalanceRoute from './routes/operator/balance';
 import adminTransactionsRoute from './routes/admin/transactions';
+import merchantRegisterRoute from './routes/merchant/register';
+import merchantLoginRoute from './routes/merchant/login';
+import merchantTransactionsRoute from './routes/merchant/transactions';
+import merchantBalanceRoute from './routes/merchant/balance';
+import merchantApikeyRoute from './routes/merchant/apikey';
 
 export async function buildServer() {
   const server = Fastify({
@@ -97,6 +102,11 @@ export async function buildServer() {
       v1.register(operatorAuthRoute);
       v1.register(operatorBalanceRoute);
       v1.register(adminTransactionsRoute);
+      v1.register(merchantRegisterRoute);
+      v1.register(merchantLoginRoute);
+      v1.register(merchantTransactionsRoute);
+      v1.register(merchantBalanceRoute);
+      v1.register(merchantApikeyRoute);
     },
     { prefix: '/v1' },
   );

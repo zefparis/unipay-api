@@ -9,6 +9,7 @@ import type { PaymentPayload, ProviderResponse, ProviderStatus } from '../types/
 
 export async function initiatePayment(payload: PaymentPayload): Promise<ProviderResponse> {
   void env.USDT_WALLET_ADDRESS;
+  void payload.reference; // acknowledged — USDT does not use reference for on-chain routing
 
   const providerRef = `USDT-${Date.now()}-${payload.transaction_id.slice(0, 8)}`;
 

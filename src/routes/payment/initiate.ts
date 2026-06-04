@@ -3,12 +3,15 @@ import type { FastifyPluginAsync } from 'fastify';
 import { getProviderService } from '../../services/index';
 import type { Channel, Direction } from '../../types/payment';
 
+const FEE_RATE = 0.03; // 3% per signed contract with Avada Group RDC
+
 interface InitiateBody {
-  channel: Channel;
+  operator: Channel;
   direction: Direction;
   amount: number;
   currency: string;
   phone: string;
+  reference?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -19,13 +22,14 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
       schema: {
         body: {
           type: 'object',
-          required: ['channel', 'direction', 'amount', 'currency', 'phone'],
+          required: ['operator', 'direction', 'amount', 'currency', 'phone'],
           properties: {
-            channel: { type: 'string', enum: ['vodacash', 'orange', 'airtel', 'afrimoney', 'usdt'] },
-            direction: { type: 'string', enum: ['deposit', 'withdraw'] },
-            amount: { type: 'number', minimum: 0.01 },
+            operator: { type: 'string', enum: ['vodacash', 'orange', 'airtel', 'afrimoney', 'usdt'] },
+            direction: { type: 'string', enum: ['collect', 'payout'] },
+            amount: { type: 'number', minimum: 1 },
             currency: { type: 'string', minLength: 3, maxLength: 3 },
             phone: { type: 'string', pattern: '^\\+?[1-9]\\d{7,14}$' },
+            reference: { type: 'string', maxLength: 128 },
             metadata: { type: 'object', additionalProperties: true },
           },
         },
@@ -35,43 +39,58 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
             properties: {
               transaction_id: { type: 'string' },
               status: { type: 'string' },
-              provider_ref: { type: 'string' },
-              created_at: { type: 'string' },
+              amount: { type: 'number' },
+              fee: { type: 'number' },
+              net_amount: { type: 'number' },
+              currency: { type: 'string' },
             },
           },
         },
       },
     },
     async (request, reply) => {
-      const { channel, direction, amount, currency, phone, metadata } = request.body;
-      const operatorId = request.operatorId;
+      const { operator, direction, amount, currency, phone, reference, metadata } = request.body;
+      const merchantId = request.operatorId;
+
+      // Vodacash — direct integration pending due diligence with Vodacom DRC
+      if (operator === 'vodacash') {
+        return reply.status(503).send({
+          error: 'Service Unavailable',
+          message: 'Vodacash integration is not yet available. CGL is currently in due diligence with Vodacom DRC.',
+          statusCode: 503,
+        });
+      }
+
+      const fee = Math.round(amount * FEE_RATE * 100) / 100;
+      const net_amount = Math.round((amount - fee) * 100) / 100;
       const transactionId = crypto.randomUUID();
+      const resolvedReference = reference ?? `TXN-${transactionId.slice(0, 8).toUpperCase()}`;
 
       // 1. Persist transaction as pending
-      const { data: tx, error: insertError } = await fastify.supabase
+      const { error: insertError } = await fastify.supabase
         .from('transactions')
         .insert({
           id: transactionId,
-          operator_id: operatorId,
-          channel,
+          merchant_id: merchantId,
+          operator,
           direction,
-          amount_usd: amount,
-          amount_local: amount,
+          amount,
+          fee,
+          net_amount,
           currency,
           phone,
+          reference: resolvedReference,
           status: 'pending',
-          callback_payload: metadata ?? null,
-        })
-        .select('created_at')
-        .single();
+          metadata: metadata ?? {},
+        });
 
       if (insertError) {
         fastify.log.error({ err: insertError, transactionId }, 'DB insert failed');
         return reply.status(500).send({ error: 'Failed to create transaction', statusCode: 500 });
       }
 
-      // 2. Call provider service stub
-      const service = getProviderService(channel);
+      // 2. Call provider service
+      const service = getProviderService(operator);
       try {
         const providerRes = await service.initiatePayment({
           transaction_id: transactionId,
@@ -79,24 +98,27 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
           currency,
           phone,
           direction,
+          reference: resolvedReference,
         });
 
         await fastify.supabase
           .from('transactions')
-          .update({ status: 'processing', provider_ref: providerRes.provider_ref })
+          .update({ status: 'processing', avada_transaction_id: providerRes.provider_ref })
           .eq('id', transactionId);
 
         return reply.status(201).send({
           transaction_id: transactionId,
           status: 'processing',
-          provider_ref: providerRes.provider_ref,
-          created_at: tx.created_at,
+          amount,
+          fee,
+          net_amount,
+          currency,
         });
       } catch (err) {
-        fastify.log.error({ err, transactionId, channel }, 'Provider error');
+        fastify.log.error({ err, transactionId, operator }, 'Provider error');
         await fastify.supabase
           .from('transactions')
-          .update({ status: 'failed', error_message: String(err) })
+          .update({ status: 'failed' })
           .eq('id', transactionId);
         return reply.status(502).send({ error: 'Provider service unavailable', statusCode: 502 });
       }

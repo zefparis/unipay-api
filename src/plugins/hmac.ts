@@ -17,6 +17,8 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
   fastify.addHook('preHandler', async (request, reply) => {
     const urlPath = request.url.split('?')[0];
     if (PUBLIC_PATHS.has(urlPath)) return;
+    // Merchant routes use JWT auth — handled inside each route
+    if (urlPath.startsWith('/v1/merchant/')) return;
 
     const apiKey = request.headers['x-api-key'];
     if (!apiKey || typeof apiKey !== 'string') {

@@ -1,55 +1,54 @@
 export type Channel = 'vodacash' | 'orange' | 'airtel' | 'afrimoney' | 'usdt';
-export type Direction = 'deposit' | 'withdraw';
-export type PaymentStatus = 'pending' | 'processing' | 'success' | 'failed';
+export type Direction = 'collect' | 'payout';
+export type PaymentStatus = 'pending' | 'processing' | 'success' | 'failed' | 'cancelled';
 
 export interface PaymentRequest {
-  channel: Channel;
+  operator: Channel;
   direction: Direction;
   amount: number;
   currency: string;
   phone: string;
+  reference?: string;
   metadata?: Record<string, unknown>;
 }
 
 export interface PaymentResponse {
   transaction_id: string;
   status: PaymentStatus;
-  provider_ref: string;
-  created_at: string;
+  amount: number;
+  fee: number;
+  net_amount: number;
+  currency: string;
 }
 
 export interface PaymentStatusResponse {
   transaction_id: string;
   status: PaymentStatus;
-  channel: Channel;
+  operator: Channel;
   direction: Direction;
-  amount_usd: number;
-  amount_local: number;
+  amount: number;
+  fee: number;
+  net_amount: number;
   currency: string;
   phone: string;
-  provider_ref: string | null;
+  reference: string | null;
+  avada_transaction_id: string | null;
   created_at: string;
   updated_at: string;
 }
 
-export interface CallbackPayload {
-  provider_ref: string;
-  status: 'success' | 'failed';
-  channel?: string;
-  raw_payload?: Record<string, unknown>;
-}
-
-// Provider service contract
+// Provider service contract (internal)
 export interface PaymentPayload {
   transaction_id: string;
   amount: number;
   currency: string;
   phone: string;
   direction: Direction;
+  reference: string;
 }
 
 export interface ProviderResponse {
-  provider_ref: string;
+  provider_ref: string;      // = avada_transaction_id for Avada channels
   status: PaymentStatus;
   raw?: unknown;
 }

@@ -1,29 +1,26 @@
-import { env } from '../config/env';
+import * as avada from './avada';
 import type { PaymentPayload, ProviderResponse, ProviderStatus } from '../types/payment';
 
-/**
- * Afrimoney (Africell RDC) service stub.
- * USSD: *555#
- * TODO: Replace with real Afrimoney API calls.
- * Credentials: env.AFRIMONEY_API_URL, env.AFRIMONEY_API_KEY
- */
+const OPERATOR = 'Afrimoney' as const;
 
 export async function initiatePayment(payload: PaymentPayload): Promise<ProviderResponse> {
-  void env.AFRIMONEY_API_URL;
-
-  const providerRef = `AFM-${Date.now()}-${payload.transaction_id.slice(0, 8)}`;
+  const { avada_transaction_id } =
+    payload.direction === 'collect'
+      ? await avada.initiateCollection(OPERATOR, payload.phone, payload.amount, payload.reference, payload.currency)
+      : await avada.initiatePayout(OPERATOR, payload.phone, payload.amount, payload.reference, payload.currency);
 
   return {
-    provider_ref: providerRef,
+    provider_ref: avada_transaction_id,
     status: 'processing',
-    raw: { stub: true, channel: 'afrimoney', payload },
+    raw: { operator: OPERATOR, avada_transaction_id },
   };
 }
 
 export async function checkStatus(providerRef: string): Promise<ProviderStatus> {
-  return {
-    provider_ref: providerRef,
-    status: 'processing',
-    message: 'Stub: Afrimoney status check not yet implemented',
-  };
+  const avadaStatus = await avada.getTransactionStatus(providerRef);
+  const status =
+    avadaStatus === 'success' ? 'success'
+    : avadaStatus === 'failed' || avadaStatus === 'cancelled' ? 'failed'
+    : 'processing';
+  return { provider_ref: providerRef, status };
 }
