@@ -20,6 +20,8 @@ import merchantTransactionsRoute from './routes/merchant/transactions';
 import merchantBalanceRoute from './routes/merchant/balance';
 import merchantApikeyRoute from './routes/merchant/apikey';
 import merchantWebhookRoute from './routes/merchant/webhook';
+import merchantKycRoute from './routes/merchant/kyc';
+import adminKycRoute from './routes/admin/kyc';
 
 export async function buildServer() {
   const server = Fastify({
@@ -109,6 +111,8 @@ export async function buildServer() {
       v1.register(merchantBalanceRoute);
       v1.register(merchantApikeyRoute);
       v1.register(merchantWebhookRoute);
+      v1.register(merchantKycRoute);
+      v1.register(adminKycRoute);
     },
     { prefix: '/v1' },
   );

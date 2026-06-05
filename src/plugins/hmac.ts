@@ -2,6 +2,7 @@ import fp from 'fastify-plugin';
 import bcrypt from 'bcryptjs';
 import type { FastifyPluginAsync } from 'fastify';
 import type { ApiKeyWithOperator } from '../types/operator';
+import { env } from '../config/env';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -19,6 +20,14 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
     if (PUBLIC_PATHS.has(urlPath)) return;
     // Merchant routes use JWT auth — handled inside each route
     if (urlPath.startsWith('/v1/merchant/')) return;
+
+    // Admin secret bypass — avoids API key requirement for admin tooling
+    const adminSecretHeader = request.headers['x-admin-secret'];
+    if (env.ADMIN_SECRET && adminSecretHeader === env.ADMIN_SECRET) {
+      request.isAdmin = true;
+      request.operatorId = 'admin';
+      return;
+    }
 
     const apiKey = request.headers['x-api-key'];
     if (!apiKey || typeof apiKey !== 'string') {

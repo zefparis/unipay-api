@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import type { FastifyPluginAsync } from 'fastify';
-import { sendWelcomeEmail } from '../../services/email.js';
+import { sendWelcomeEmail, sendAdminNewMerchantEmail } from '../../services/email.js';
 
 const OPERATORS = ['orange', 'airtel', 'afrimoney', 'vodacash'] as const;
 
@@ -11,6 +11,9 @@ interface RegisterBody {
   password: string;
   phone?: string;
   country?: string;
+  company_name?: string;
+  company_rccm?: string;
+  company_idnat?: string;
 }
 
 const registerRoute: FastifyPluginAsync = async (fastify) => {
@@ -25,8 +28,11 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
             name:     { type: 'string', minLength: 2, maxLength: 128 },
             email:    { type: 'string', format: 'email' },
             password: { type: 'string', minLength: 8, maxLength: 128 },
-            phone:    { type: 'string', maxLength: 32 },
-            country:  { type: 'string', maxLength: 8 },
+            phone:         { type: 'string', maxLength: 32 },
+            country:       { type: 'string', maxLength: 8 },
+            company_name:  { type: 'string', maxLength: 256 },
+            company_rccm:  { type: 'string', maxLength: 128 },
+            company_idnat: { type: 'string', maxLength: 128 },
           },
         },
         response: {
@@ -43,7 +49,7 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      const { name, email, password, phone, country } = request.body;
+      const { name, email, password, phone, country, company_name, company_rccm, company_idnat } = request.body;
 
       // 1. Check email uniqueness in merchants table
       const { data: existing } = await fastify.supabase
@@ -65,10 +71,14 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
         .insert({
           name,
           email,
-          password_hash: passwordHash,
-          phone:   phone   ?? null,
-          country: country ?? 'CD',
-          status:  'active',
+          password_hash:  passwordHash,
+          phone:          phone         ?? null,
+          country:        country       ?? 'CD',
+          status:         'active',
+          kyc_status:     'pending',
+          company_name:   company_name  ?? null,
+          company_rccm:   company_rccm  ?? null,
+          company_idnat:  company_idnat ?? null,
         })
         .select('id')
         .single();
@@ -118,9 +128,14 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
 
       fastify.log.info({ merchantId, email }, 'Merchant registered');
 
-      // Fire welcome email — non-blocking, errors are logged but don't fail the request
+      // Fire welcome email — non-blocking
       sendWelcomeEmail(email, name, rawKey).catch((err: unknown) => {
         fastify.log.error({ err, email }, 'Welcome email failed');
+      });
+
+      // Notify admin of new registration — non-blocking
+      sendAdminNewMerchantEmail(name, email, company_name ?? '').catch((err: unknown) => {
+        fastify.log.error({ err, email }, 'Admin notification email failed');
       });
 
       return reply.status(201).send({

@@ -30,6 +30,9 @@ const envSchema = z.object({
   // Merchant JWT
   JWT_SECRET: z.string().min(32).optional(),
 
+  // Admin secret (plain header — internal tooling only)
+  ADMIN_SECRET: z.string().min(16).optional(),
+
   // Brevo transactional email
   BREVO_API_KEY:      z.string().min(1).optional(),
   BREVO_SENDER_EMAIL: z.string().email().default('contact@unipaycongo.com'),
