@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import type { FastifyPluginAsync } from 'fastify';
+import { sendWelcomeEmail } from '../../services/email.js';
 
 const OPERATORS = ['orange', 'airtel', 'afrimoney', 'vodacash'] as const;
 
@@ -116,6 +117,11 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       fastify.log.info({ merchantId, email }, 'Merchant registered');
+
+      // Fire welcome email — non-blocking, errors are logged but don't fail the request
+      sendWelcomeEmail(email, name, rawKey).catch((err: unknown) => {
+        fastify.log.error({ err, email }, 'Welcome email failed');
+      });
 
       return reply.status(201).send({
         merchant_id: merchantId,
