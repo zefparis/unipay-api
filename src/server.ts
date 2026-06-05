@@ -19,6 +19,7 @@ import merchantLoginRoute from './routes/merchant/login';
 import merchantTransactionsRoute from './routes/merchant/transactions';
 import merchantBalanceRoute from './routes/merchant/balance';
 import merchantApikeyRoute from './routes/merchant/apikey';
+import merchantWebhookRoute from './routes/merchant/webhook';
 
 export async function buildServer() {
   const server = Fastify({
@@ -107,6 +108,7 @@ export async function buildServer() {
       v1.register(merchantTransactionsRoute);
       v1.register(merchantBalanceRoute);
       v1.register(merchantApikeyRoute);
+      v1.register(merchantWebhookRoute);
     },
     { prefix: '/v1' },
   );

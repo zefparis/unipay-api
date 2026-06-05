@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { verifyCallbackSignature, normalizeCallback } from '../../services/avada';
 import type { AvadaCallbackPayload } from '../../services/avada';
@@ -79,7 +80,7 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data: tx, error } = await fastify.supabase
         .from('transactions')
-        .select('id, merchant_id, status, operators(webhook_url)')
+        .select('id, merchant_id, status')
         .eq('avada_transaction_id', avada_transaction_id)
         .maybeSingle();
 
@@ -105,20 +106,32 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
 
       fastify.log.info({ transactionId: tx.id, avada_transaction_id, status: dbStatus }, 'Transaction updated via Avada callback');
 
-      // Notify merchant webhook — fire and forget
-      const webhookUrl = (tx.operators as { webhook_url?: string } | null)?.webhook_url;
+      // Notify merchant webhook — fire and forget, HMAC-signed
+      const { data: merchantWebhook } = await fastify.supabase
+        .from('merchants')
+        .select('webhook_url, webhook_secret')
+        .eq('id', tx.merchant_id)
+        .maybeSingle();
+
+      const webhookUrl = (merchantWebhook as { webhook_url?: string } | null)?.webhook_url;
       if (webhookUrl && isSafeWebhookUrl(webhookUrl)) {
-        fetch(webhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            event: 'payment.status_update',
+        const webhookSecret = (merchantWebhook as { webhook_secret?: string } | null)?.webhook_secret;
+        const payload = JSON.stringify({
+          event: 'payment.status_update',
+          timestamp: new Date().toISOString(),
+          data: {
             transaction_id: tx.id,
             avada_transaction_id,
             reference,
             status: dbStatus,
-          }),
-        }).catch((err: unknown) => {
+          },
+        });
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (webhookSecret) {
+          const sig = crypto.createHmac('sha256', webhookSecret).update(payload).digest('hex');
+          headers['X-UniPay-Signature'] = `sha256=${sig}`;
+        }
+        fetch(webhookUrl, { method: 'POST', headers, body: payload }).catch((err: unknown) => {
           fastify.log.warn({ err, webhookUrl }, 'Merchant webhook delivery failed');
         });
       }
