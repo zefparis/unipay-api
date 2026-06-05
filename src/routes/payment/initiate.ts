@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { getProviderService } from '../../services/index';
+import { sandboxCollection, sandboxPayout } from '../../services/avada';
 import type { Channel, Direction } from '../../types/payment';
 
 const FEE_RATE = 0.03; // 3% per signed contract with Avada Group RDC
@@ -52,8 +53,19 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
       const { operator, direction, amount, currency, phone, reference, metadata } = request.body;
       const merchantId = request.operatorId;
 
+      // ── Sandbox detection ──────────────────────────────────────
+      let isSandbox = request.headers['x-unipay-mode'] === 'sandbox';
+      if (!isSandbox) {
+        const { data: mData } = await fastify.supabase
+          .from('merchants')
+          .select('mode')
+          .eq('id', merchantId)
+          .maybeSingle();
+        isSandbox = mData?.mode === 'sandbox';
+      }
+
       // Vodacash — direct integration pending due diligence with Vodacom DRC
-      if (operator === 'vodacash') {
+      if (operator === 'vodacash' && !isSandbox) {
         return reply.status(503).send({
           error: 'Service Unavailable',
           message: 'Vodacash integration is not yet available. CGL is currently in due diligence with Vodacom DRC.',
@@ -66,6 +78,41 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
       const transactionId = crypto.randomUUID();
       const resolvedReference = reference ?? `TXN-${transactionId.slice(0, 8).toUpperCase()}`;
 
+      // ── Sandbox path: mock, persist as success, return immediately ──
+      if (isSandbox) {
+        const mockRef = direction === 'collect'
+          ? sandboxCollection(amount).avada_transaction_id
+          : sandboxPayout(amount).avada_transaction_id;
+
+        await fastify.supabase.from('transactions').insert({
+          id: transactionId,
+          merchant_id: merchantId,
+          operator,
+          direction,
+          amount,
+          fee,
+          net_amount,
+          currency,
+          phone,
+          reference: resolvedReference,
+          avada_transaction_id: mockRef,
+          status: 'success',
+          metadata: { ...(metadata ?? {}), sandbox: true },
+        });
+
+        fastify.log.info({ transactionId, merchantId, isSandbox: true }, 'Sandbox transaction');
+        return reply.status(201).send({
+          transaction_id: transactionId,
+          status: 'success',
+          amount,
+          fee,
+          net_amount,
+          currency,
+          sandbox: true,
+        });
+      }
+
+      // ── Live path ──────────────────────────────────────────────
       // 1. Persist transaction as pending
       const { error: insertError } = await fastify.supabase
         .from('transactions')

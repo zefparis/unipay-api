@@ -187,3 +187,13 @@ export function normalizeCallback(payload: AvadaCallbackPayload): NormalizedCall
     raw: payload,
   };
 }
+
+// ── Sandbox (test mode) ───────────────────────────────────────────────────────
+
+export function sandboxCollection(_amount: number): { avada_transaction_id: string } {
+  return { avada_transaction_id: `sandbox_${crypto.randomUUID()}` };
+}
+
+export function sandboxPayout(_amount: number): { avada_transaction_id: string } {
+  return { avada_transaction_id: `sandbox_${crypto.randomUUID()}` };
+}
