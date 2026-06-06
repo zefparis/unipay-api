@@ -412,8 +412,8 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
 
     const { data, error } = await fastify.supabase
       .from('merchants')
-      .select('id, name, email, mode, kyc_status, status')
-      .order('email', { ascending: true });
+      .select('id, name, email, mode, kyc_status, status, company_name, company_rccm, company_idnat, kyc_submitted_at, kyc_notes')
+      .order('kyc_submitted_at', { ascending: false, nullsFirst: false });
 
     if (error) return reply.status(500).send({ error: error.message });
     return reply.send({ data: data ?? [] });
@@ -452,6 +452,66 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
       if (!data) return reply.status(404).send({ error: 'Merchant not found' });
 
       fastify.log.info({ merchantId: id, mode }, '[admin] merchant mode updated');
+      return reply.send({ ok: true, merchant: data });
+    },
+  );
+
+  /* ── POST /v1/admin/merchants/:id/kyc/approve ───────────── */
+  fastify.post<{ Params: { id: string } }>('/admin/merchants/:id/kyc/approve',
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required' });
+      }
+      const { id } = request.params;
+      const { data, error } = await fastify.supabase
+        .from('merchants')
+        .update({
+          kyc_status:    'approved',
+          kyc_reviewed_at: new Date().toISOString(),
+          kyc_notes:     null,
+          mode:          'live',
+        })
+        .eq('id', id)
+        .select('id, email, kyc_status, mode')
+        .maybeSingle();
+
+      if (error) return reply.status(500).send({ error: error.message });
+      if (!data) return reply.status(404).send({ error: 'Merchant not found' });
+      fastify.log.info({ merchantId: id }, '[admin] KYC approved, mode set to live');
+      return reply.send({ ok: true, merchant: data });
+    },
+  );
+
+  /* ── POST /v1/admin/merchants/:id/kyc/reject ────────────── */
+  fastify.post<{ Params: { id: string }; Body: { notes?: string } }>('/admin/merchants/:id/kyc/reject',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          properties: { notes: { type: 'string' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required' });
+      }
+      const { id } = request.params;
+      const notes = request.body?.notes ?? null;
+      const { data, error } = await fastify.supabase
+        .from('merchants')
+        .update({
+          kyc_status:    'rejected',
+          kyc_reviewed_at: new Date().toISOString(),
+          kyc_notes:     notes,
+        })
+        .eq('id', id)
+        .select('id, email, kyc_status')
+        .maybeSingle();
+
+      if (error) return reply.status(500).send({ error: error.message });
+      if (!data) return reply.status(404).send({ error: 'Merchant not found' });
+      fastify.log.info({ merchantId: id, notes }, '[admin] KYC rejected');
       return reply.send({ ok: true, merchant: data });
     },
   );

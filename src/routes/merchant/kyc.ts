@@ -92,7 +92,7 @@ const merchantKycRoute: FastifyPluginAsync = async (fastify) => {
           company_name,
           company_rccm:    company_rccm    ?? null,
           company_idnat:   company_idnat   ?? null,
-          kyc_status:      'pending',
+          kyc_status:      'submitted',
           kyc_submitted_at: new Date().toISOString(),
           kyc_notes:       null,
         })
