@@ -14,15 +14,18 @@ const PROVIDER_IDS: Record<string, number> = {
 export type AvadaOperator = 'Orange' | 'Airtel' | 'Afrimoney';
 export type AvadaStatus = 'pending' | 'processing' | 'success' | 'failed' | 'cancelled';
 
+// Real Unipesa callback payload shape
 export interface AvadaCallbackPayload {
-  transaction_id: string;
-  reference: string;
-  status: AvadaStatus;
-  operator: string;
+  order_id: string;       // = our reference (WD-XXXXXXXX)
+  transaction_id: string; // Unipesa internal ID
+  status: number;         // 0=pending,1=processing,2=success,3=failed
+  customer_id: string;    // phone number
+  provider_id: number;    // 10=Orange,17=Airtel,19=Afrimoney
   amount: number;
-  msisdn: string;
-  timestamp: string;
-  metadata?: Record<string, unknown>;
+  currency?: string;
+  merchant_id?: string;
+  signature?: string;
+  [key: string]: unknown;
 }
 
 export interface NormalizedCallback {
@@ -34,6 +37,19 @@ export interface NormalizedCallback {
   phone: string;
   raw: AvadaCallbackPayload;
 }
+
+const CALLBACK_STATUS_MAP: Record<number, AvadaStatus> = {
+  0: 'pending',
+  1: 'processing',
+  2: 'success',
+  3: 'failed',
+};
+
+const CALLBACK_PROVIDER_MAP: Record<number, string> = {
+  10: 'orange',
+  17: 'airtel',
+  19: 'afrimoney',
+};
 
 export interface UnipesaBalance {
   balance: number;
@@ -189,11 +205,11 @@ export function verifyCallbackSignature(body: Record<string, unknown>): boolean 
 export function normalizeCallback(payload: AvadaCallbackPayload): NormalizedCallback {
   return {
     avada_transaction_id: payload.transaction_id,
-    reference:            payload.reference,
-    status:               payload.status,
-    operator:             payload.operator.toLowerCase(),
+    reference:            payload.order_id,
+    status:               CALLBACK_STATUS_MAP[payload.status] ?? 'pending',
+    operator:             CALLBACK_PROVIDER_MAP[payload.provider_id] ?? String(payload.provider_id),
     amount:               payload.amount,
-    phone:                payload.msisdn,
+    phone:                payload.customer_id,
     raw:                  payload,
   };
 }

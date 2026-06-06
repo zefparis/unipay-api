@@ -34,17 +34,19 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
       schema: {
         body: {
           type: 'object',
-          required: ['transaction_id', 'reference', 'status', 'operator', 'amount', 'msisdn'],
+          required: ['order_id', 'transaction_id', 'status', 'customer_id', 'provider_id', 'amount'],
           properties: {
+            order_id:       { type: 'string' },
             transaction_id: { type: 'string' },
-            reference: { type: 'string' },
-            status: { type: 'string', enum: ['pending', 'processing', 'success', 'failed', 'cancelled'] },
-            operator: { type: 'string' },
-            amount: { type: 'number' },
-            msisdn: { type: 'string' },
-            timestamp: { type: 'string' },
-            metadata: { type: 'object', additionalProperties: true },
+            status:         { type: 'number' },
+            customer_id:    { type: 'string' },
+            provider_id:    { type: 'number' },
+            amount:         { type: 'number' },
+            currency:       { type: 'string' },
+            merchant_id:    { type: 'string' },
+            signature:      { type: 'string' },
           },
+          additionalProperties: true,
         },
         response: {
           200: {
