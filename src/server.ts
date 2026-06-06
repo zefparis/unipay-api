@@ -29,6 +29,7 @@ import walletDepositRoute from './routes/wallet/deposit';
 import walletWithdrawRoute from './routes/wallet/withdraw';
 import walletTransactionsRoute from './routes/wallet/transactions';
 import walletP2PRoute from './routes/wallet/p2p';
+import walletReconcileRoute from './routes/admin/wallet-reconcile';
 
 export async function buildServer() {
   const server = Fastify({
@@ -127,6 +128,7 @@ export async function buildServer() {
       v1.register(walletWithdrawRoute);
       v1.register(walletTransactionsRoute);
       v1.register(walletP2PRoute);
+      v1.register(walletReconcileRoute);
     },
     { prefix: '/v1' },
   );
