@@ -292,8 +292,8 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
         properties: {
           page:      { type: 'integer', minimum: 1, default: 1 },
           limit:     { type: 'integer', minimum: 1, maximum: 100, default: 20 },
-          direction: { type: 'string', enum: ['collect', 'payout', 'p2p'] },
-          status:    { type: 'string', enum: ['pending', 'processing', 'success', 'failed', 'cancelled'] },
+          direction: { type: 'string' },
+          status:    { type: 'string' },
           operator:  { type: 'string' },
           date_from: { type: 'string' },
           date_to:   { type: 'string' },
