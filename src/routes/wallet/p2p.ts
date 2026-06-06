@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
+import { getLimits } from '../../utils/kyc-limits';
 import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
 
@@ -60,12 +61,24 @@ const walletP2PRoute: FastifyPluginAsync = async (fastify) => {
       // Fetch sender wallet
       const { data: sender } = await fastify.supabase
         .from('wallet_users')
-        .select('id, phone, balance_cdf, is_active')
+        .select('id, phone, balance_cdf, is_active, kyc_level')
         .eq('id', senderWalletId)
         .maybeSingle();
 
       if (!sender?.is_active) {
         return reply.status(403).send({ error: 'Sender account is suspended', statusCode: 403 });
+      }
+
+      // ── KYC P2P single transfer limit ────────────────────
+      const kycLevel = Number(sender.kyc_level ?? 0);
+      const limits   = getLimits(kycLevel);
+      if (amount > limits.p2p_single) {
+        return reply.status(403).send({
+          error:      'KYC_LIMIT_EXCEEDED',
+          limit:      limits.p2p_single,
+          kyc_level:  kycLevel,
+          statusCode: 403,
+        });
       }
 
       const senderBalance = Number(sender.balance_cdf ?? 0);

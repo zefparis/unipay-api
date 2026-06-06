@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
+import multipart from '@fastify/multipart';
 import crypto from 'node:crypto';
 import { env } from './config/env';
 
@@ -30,6 +31,7 @@ import walletWithdrawRoute from './routes/wallet/withdraw';
 import walletTransactionsRoute from './routes/wallet/transactions';
 import walletP2PRoute from './routes/wallet/p2p';
 import walletProfileRoute from './routes/wallet/profile';
+import walletKycRoute from './routes/wallet/kyc';
 import walletReconcileRoute from './routes/admin/wallet-reconcile';
 import walletInspectRoute from './routes/admin/wallet-inspect';
 
@@ -78,6 +80,9 @@ export async function buildServer() {
 
   // Security headers
   await server.register(helmet, { global: true });
+
+  // Multipart (for KYC document uploads)
+  await server.register(multipart, { limits: { fileSize: 10 * 1024 * 1024, files: 3 } });
 
   // Core plugins (order matters — supabase before hmac)
   await server.register(corsPlugin);
@@ -131,6 +136,7 @@ export async function buildServer() {
       v1.register(walletTransactionsRoute);
       v1.register(walletP2PRoute);
       v1.register(walletProfileRoute);
+      v1.register(walletKycRoute);
       v1.register(walletReconcileRoute);
       v1.register(walletInspectRoute);
     },

@@ -5,6 +5,7 @@ import { requireWallet } from '../../utils/wallet-jwt';
 import { getProviderService } from '../../services/index';
 import { sandboxCollection } from '../../services/avada';
 import type { Channel } from '../../types/payment';
+import { getLimits } from '../../utils/kyc-limits';
 
 // Wallet-supported MM operators (Vodacash pending due diligence, USDT not in wallet scope)
 const WALLET_OPERATORS: Channel[] = ['orange', 'airtel', 'afrimoney'];
@@ -64,12 +65,34 @@ const walletDepositRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data: wallet } = await fastify.supabase
         .from('wallet_users')
-        .select('id, is_active, balance_cdf')
+        .select('id, is_active, balance_cdf, kyc_level')
         .eq('id', walletId)
         .maybeSingle();
 
       if (!wallet?.is_active) {
         return reply.status(403).send({ error: 'Account is suspended', statusCode: 403 });
+      }
+
+      // ── KYC daily deposit limit check ─────────────────────
+      const kycLevel = Number(wallet.kyc_level ?? 0);
+      const limits   = getLimits(kycLevel);
+      const dayStart = new Date(); dayStart.setUTCHours(0, 0, 0, 0);
+      const { data: todayRows } = await fastify.supabase
+        .from('transactions')
+        .select('amount')
+        .eq('wallet_user_id', walletId)
+        .eq('direction', 'collect')
+        .in('status', ['processing', 'success'])
+        .gte('created_at', dayStart.toISOString());
+      const dailyUsed = (todayRows ?? []).reduce((s, r) => s + Number(r.amount), 0);
+      if (dailyUsed + amount > limits.deposit_daily) {
+        return reply.status(403).send({
+          error:      'KYC_LIMIT_EXCEEDED',
+          limit:      limits.deposit_daily,
+          daily_used: dailyUsed,
+          kyc_level:  kycLevel,
+          statusCode: 403,
+        });
       }
 
       // Sandbox detection via header
