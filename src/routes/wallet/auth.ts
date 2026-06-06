@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
-import { signWalletToken } from '../../utils/wallet-jwt';
+import { signWalletToken, requireWallet } from '../../utils/wallet-jwt';
 
 interface RegisterBody {
   phone: string;
@@ -149,6 +149,68 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
         phone:        wallet.phone,
         full_name:    wallet.full_name ?? null,
       };
+    },
+  );
+
+  /* ── POST /v1/wallet/auth/change-pin ────────────────────── */
+  fastify.post<{ Body: { current_pin: string; new_pin: string; confirm_pin: string } }>(
+    '/wallet/auth/change-pin',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['current_pin', 'new_pin', 'confirm_pin'],
+          properties: {
+            current_pin: { type: 'string', minLength: 4, maxLength: 8, pattern: '^[0-9]+$' },
+            new_pin:     { type: 'string', minLength: 4, maxLength: 8, pattern: '^[0-9]+$' },
+            confirm_pin: { type: 'string', minLength: 4, maxLength: 8, pattern: '^[0-9]+$' },
+          },
+        },
+        response: {
+          200: { type: 'object', properties: { ok: { type: 'boolean' } } },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth service not configured' });
+
+      const wp = requireWallet(request.headers.authorization, env.JWT_SECRET);
+      if (!wp) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
+
+      const { current_pin, new_pin, confirm_pin } = request.body;
+
+      if (new_pin !== confirm_pin) {
+        return reply.status(400).send({ error: 'New PIN and confirmation do not match', statusCode: 400 });
+      }
+
+      const { data: walletRow, error: fetchErr } = await fastify.supabase
+        .from('wallet_users')
+        .select('pin_hash')
+        .eq('id', wp.wallet_id)
+        .maybeSingle();
+
+      if (fetchErr || !walletRow) {
+        return reply.status(404).send({ error: 'Wallet not found', statusCode: 404 });
+      }
+
+      const match = await bcrypt.compare(current_pin, walletRow.pin_hash as string);
+      if (!match) {
+        return reply.status(401).send({ error: 'Current PIN is incorrect', statusCode: 401 });
+      }
+
+      const newHash = await bcrypt.hash(new_pin, 12);
+      const { error: updateErr } = await fastify.supabase
+        .from('wallet_users')
+        .update({ pin_hash: newHash })
+        .eq('id', wp.wallet_id);
+
+      if (updateErr) {
+        fastify.log.error({ err: updateErr, walletId: wp.wallet_id }, 'PIN change failed');
+        return reply.status(500).send({ error: 'PIN change failed', statusCode: 500 });
+      }
+
+      fastify.log.info({ walletId: wp.wallet_id }, 'PIN changed');
+      return reply.send({ ok: true });
     },
   );
 };

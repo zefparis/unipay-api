@@ -29,6 +29,7 @@ import walletDepositRoute from './routes/wallet/deposit';
 import walletWithdrawRoute from './routes/wallet/withdraw';
 import walletTransactionsRoute from './routes/wallet/transactions';
 import walletP2PRoute from './routes/wallet/p2p';
+import walletProfileRoute from './routes/wallet/profile';
 import walletReconcileRoute from './routes/admin/wallet-reconcile';
 import walletInspectRoute from './routes/admin/wallet-inspect';
 
@@ -129,6 +130,7 @@ export async function buildServer() {
       v1.register(walletWithdrawRoute);
       v1.register(walletTransactionsRoute);
       v1.register(walletP2PRoute);
+      v1.register(walletProfileRoute);
       v1.register(walletReconcileRoute);
       v1.register(walletInspectRoute);
     },
