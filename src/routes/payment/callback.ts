@@ -80,7 +80,7 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data: tx, error } = await fastify.supabase
         .from('transactions')
-        .select('id, merchant_id, status')
+        .select('id, merchant_id, status, wallet_user_id, direction, net_amount')
         .eq('avada_transaction_id', avada_transaction_id)
         .maybeSingle();
 
@@ -103,6 +103,38 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
         .from('transactions')
         .update({ status: dbStatus, metadata: normalized.raw })
         .eq('id', tx.id);
+
+      // ── Wallet balance credit (deposit confirmed) ─────────────
+      const walletUserId = (tx as { wallet_user_id?: string | null }).wallet_user_id;
+      const txDirection  = (tx as { direction?: string }).direction;
+      const txNetAmount  = Number((tx as { net_amount?: number }).net_amount ?? 0);
+
+      if (dbStatus === 'success' && txDirection === 'collect' && walletUserId) {
+        const { data: walletRow } = await fastify.supabase
+          .from('wallet_users')
+          .select('balance_cdf')
+          .eq('id', walletUserId)
+          .maybeSingle();
+
+        if (walletRow) {
+          const { error: creditError } = await fastify.supabase
+            .from('wallet_users')
+            .update({ balance_cdf: Number(walletRow.balance_cdf ?? 0) + txNetAmount })
+            .eq('id', walletUserId);
+
+          if (creditError) {
+            fastify.log.error(
+              { err: creditError, walletUserId, txId: tx.id },
+              '[wallet-credit] balance credit failed — manual reconciliation required',
+            );
+          } else {
+            fastify.log.info(
+              { walletUserId, netAmount: txNetAmount, txId: tx.id },
+              '[wallet-credit] balance credited',
+            );
+          }
+        }
+      }
 
       fastify.log.info({ transactionId: tx.id, avada_transaction_id, status: dbStatus }, 'Transaction updated via Avada callback');
 

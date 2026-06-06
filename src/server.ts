@@ -23,6 +23,12 @@ import merchantWebhookRoute from './routes/merchant/webhook';
 import merchantKycRoute from './routes/merchant/kyc';
 import merchantModeRoute from './routes/merchant/mode';
 import adminKycRoute from './routes/admin/kyc';
+import walletAuthRoute from './routes/wallet/auth';
+import walletBalanceRoute from './routes/wallet/balance';
+import walletDepositRoute from './routes/wallet/deposit';
+import walletWithdrawRoute from './routes/wallet/withdraw';
+import walletTransactionsRoute from './routes/wallet/transactions';
+import walletP2PRoute from './routes/wallet/p2p';
 
 export async function buildServer() {
   const server = Fastify({
@@ -115,6 +121,12 @@ export async function buildServer() {
       v1.register(merchantKycRoute);
       v1.register(merchantModeRoute);
       v1.register(adminKycRoute);
+      v1.register(walletAuthRoute);
+      v1.register(walletBalanceRoute);
+      v1.register(walletDepositRoute);
+      v1.register(walletWithdrawRoute);
+      v1.register(walletTransactionsRoute);
+      v1.register(walletP2PRoute);
     },
     { prefix: '/v1' },
   );

@@ -20,6 +20,8 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
     if (PUBLIC_PATHS.has(urlPath)) return;
     // Merchant routes use JWT auth — handled inside each route
     if (urlPath.startsWith('/v1/merchant/')) return;
+    // Wallet routes use wallet JWT auth — handled inside each route
+    if (urlPath.startsWith('/v1/wallet/')) return;
 
     // Admin secret bypass — avoids API key requirement for admin tooling
     const adminSecretHeader = request.headers['x-admin-secret'];
