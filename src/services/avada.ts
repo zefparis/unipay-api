@@ -2,23 +2,17 @@ import crypto from 'node:crypto';
 import { fetch as undiciFetch, ProxyAgent } from 'undici';
 import { env } from '../config/env';
 
+const BASE = 'https://api.unipesa.tech';
+
+// AvadaPay provider IDs (same as congogaming)
+const PROVIDER_IDS: Record<string, number> = {
+  orange:    10,
+  airtel:    17,
+  afrimoney: 19,
+};
+
 export type AvadaOperator = 'Orange' | 'Airtel' | 'Afrimoney';
 export type AvadaStatus = 'pending' | 'processing' | 'success' | 'failed' | 'cancelled';
-
-interface UnipesaEnvelope<T> {
-  status: 'success' | 'error';
-  data: T;
-  message?: string;
-}
-
-interface UnipesaTransactionData {
-  transaction_id: string;
-  status: AvadaStatus;
-  reference?: string;
-  operator?: string;
-  amount?: number;
-  msisdn?: string;
-}
 
 export interface AvadaCallbackPayload {
   transaction_id: string;
@@ -41,22 +35,42 @@ export interface NormalizedCallback {
   raw: AvadaCallbackPayload;
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-function requireUnipesaEnv(): { url: string; publicId: string; merchantId: string } {
-  if (!env.UNIPESA_API_URL || !env.UNIPESA_PUBLIC_ID || !env.UNIPESA_MERCHANT_ID) {
-    throw new Error(
-      'Unipesa integration not configured: UNIPESA_API_URL, UNIPESA_PUBLIC_ID, UNIPESA_MERCHANT_ID required',
-    );
-  }
-  return {
-    url: env.UNIPESA_API_URL,
-    publicId: env.UNIPESA_PUBLIC_ID,
-    merchantId: env.UNIPESA_MERCHANT_ID,
-  };
+export interface UnipesaBalance {
+  balance: number;
+  currency: string;
 }
 
-// Re-use a single ProxyAgent instance for all requests (keepAlive)
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function requireUnipesaEnv(): { publicId: string; merchantId: string; secretKey: string; callbackUrl: string } {
+  const publicId    = env.UNIPESA_PUBLIC_ID;
+  const merchantId  = env.UNIPESA_MERCHANT_ID;
+  const secretKey   = env.UNIPESA_SECRET_KEY;
+  const callbackUrl = env.UNIPESA_CALLBACK_URL;
+  if (!publicId || !merchantId || !secretKey || !callbackUrl) {
+    throw new Error(
+      'Unipesa integration not configured: UNIPESA_PUBLIC_ID, UNIPESA_MERCHANT_ID, UNIPESA_SECRET_KEY, UNIPESA_CALLBACK_URL required',
+    );
+  }
+  return { publicId, merchantId, secretKey, callbackUrl };
+}
+
+// HMAC-SHA512 signature — same algorithm as congogaming/AvadaPay spec
+function calculateSignature(data: Record<string, unknown>, secretKey: string): string {
+  let str = '';
+  for (const [key, value] of Object.entries(data)) {
+    if (key === 'signature') continue;
+    if (value !== null && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        str += `${key}.${k}${v}`;
+      }
+    } else {
+      str += `${key}${value}`;
+    }
+  }
+  return crypto.createHmac('sha512', secretKey).update(str).digest('hex').toLowerCase();
+}
+
 let _proxyAgent: ProxyAgent | undefined;
 function getProxyAgent(): ProxyAgent | undefined {
   if (!env.FIXIE_URL) return undefined;
@@ -64,127 +78,123 @@ function getProxyAgent(): ProxyAgent | undefined {
   return _proxyAgent;
 }
 
-async function unipesaRequest<T>(
-  method: 'GET' | 'POST',
-  path: string,
-  body?: object,
-): Promise<T> {
-  const { url, publicId, merchantId } = requireUnipesaEnv();
+async function unipesaPost(publicId: string, path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
   const dispatcher = getProxyAgent();
-
-  // URL pattern: {base}/{publicId}{path}  e.g. https://api.unipesa.tech/{id}/payment_c2b
-  const res = await undiciFetch(`${url}/${publicId}${path}`, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Api-Key': publicId,
-      'X-Merchant-Id': merchantId,
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
+  const res = await undiciFetch(`${BASE}/${publicId}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(15_000),
     ...(dispatcher ? { dispatcher } : {}),
-  });
+  } as Parameters<typeof undiciFetch>[1]);
 
   const text = await res.text();
-
   if (!res.ok) {
     throw new Error(`Unipesa HTTP ${res.status}: ${text}`);
   }
-
-  let json: UnipesaEnvelope<T>;
+  let json: Record<string, unknown>;
   try {
-    json = JSON.parse(text) as UnipesaEnvelope<T>;
+    json = JSON.parse(text) as Record<string, unknown>;
   } catch {
     throw new Error(`Unipesa non-JSON response: ${text}`);
   }
-
-  if (json.status !== 'success') {
-    throw new Error(`Unipesa error: ${json.message ?? JSON.stringify(json)}`);
-  }
-
-  return json.data;
+  return json;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export async function initiateCollection(
-  operator: AvadaOperator,
+  operator: string,
   phone: string,
   amount: number,
   reference: string,
   currency = 'CDF',
 ): Promise<{ avada_transaction_id: string }> {
-  const data = await unipesaRequest<UnipesaTransactionData>('POST', '/payment_c2b', {
-    operator,
-    msisdn: phone,
+  const { publicId, merchantId, secretKey, callbackUrl } = requireUnipesaEnv();
+  const provider_id = PROVIDER_IDS[operator.toLowerCase()];
+  if (!provider_id) throw new Error(`Unknown operator: ${operator}`);
+
+  const payload: Record<string, unknown> = {
+    merchant_id:  merchantId,
+    customer_id:  phone,
+    order_id:     reference,
     amount,
     currency,
-    reference,
-    callback_url: env.UNIPESA_CALLBACK_URL,
-  });
-  return { avada_transaction_id: data.transaction_id };
+    country:      'CD',
+    callback_url: callbackUrl,
+    provider_id,
+  };
+  payload['signature'] = calculateSignature(payload, secretKey);
+
+  const data = await unipesaPost(publicId, '/payment_c2b', payload);
+  return { avada_transaction_id: String(data['transaction_id'] ?? reference) };
 }
 
 export async function initiatePayout(
-  operator: AvadaOperator,
+  operator: string,
   phone: string,
   amount: number,
   reference: string,
   currency = 'CDF',
 ): Promise<{ avada_transaction_id: string }> {
-  const data = await unipesaRequest<UnipesaTransactionData>('POST', '/payment_b2c', {
-    operator,
-    msisdn: phone,
+  const { publicId, merchantId, secretKey, callbackUrl } = requireUnipesaEnv();
+  const provider_id = PROVIDER_IDS[operator.toLowerCase()];
+  if (!provider_id) throw new Error(`Unknown operator: ${operator}`);
+
+  const payload: Record<string, unknown> = {
+    merchant_id:  merchantId,
+    customer_id:  phone,
+    order_id:     reference,
     amount,
     currency,
-    reference,
-    callback_url: env.UNIPESA_CALLBACK_URL,
-  });
-  return { avada_transaction_id: data.transaction_id };
+    country:      'CD',
+    callback_url: callbackUrl,
+    provider_id,
+  };
+  payload['signature'] = calculateSignature(payload, secretKey);
+
+  const data = await unipesaPost(publicId, '/payment_b2c', payload);
+  return { avada_transaction_id: String(data['transaction_id'] ?? reference) };
 }
 
 export async function getTransactionStatus(avadaTransactionId: string): Promise<AvadaStatus> {
-  const data = await unipesaRequest<UnipesaTransactionData>(
-    'GET',
-    `/status?transaction_id=${encodeURIComponent(avadaTransactionId)}`,
-  );
-  return data.status;
-}
-
-export interface UnipesaBalance {
-  balance: number;
-  currency: string;
+  const { publicId, merchantId, secretKey } = requireUnipesaEnv();
+  const payload: Record<string, unknown> = {
+    merchant_id: merchantId,
+    order_id:    avadaTransactionId,
+  };
+  payload['signature'] = calculateSignature(payload, secretKey);
+  const data = await unipesaPost(publicId, '/status', payload);
+  return (data['status'] as AvadaStatus) ?? 'pending';
 }
 
 export async function getBalance(): Promise<UnipesaBalance> {
-  return unipesaRequest<UnipesaBalance>('GET', '/balance');
+  const { publicId, merchantId, secretKey } = requireUnipesaEnv();
+  const payload: Record<string, unknown> = { merchant_id: merchantId };
+  payload['signature'] = calculateSignature(payload, secretKey);
+  const data = await unipesaPost(publicId, '/balance', payload);
+  const raw = data['balance'] ?? data['balance_cdf'] ?? data['amount'] ?? 0;
+  return { balance: Number(raw), currency: 'CDF' };
 }
 
-export function verifyCallbackSignature(rawBody: string, signature: string): boolean {
+// Callback signature verification — HMAC-SHA512, same as congogaming
+export function verifyCallbackSignature(body: Record<string, unknown>): boolean {
   if (!env.UNIPESA_SECRET_KEY) return false;
-  const expected = `sha256=${crypto
-    .createHmac('sha256', env.UNIPESA_SECRET_KEY)
-    .update(rawBody)
-    .digest('hex')}`;
-  try {
-    return (
-      expected.length === signature.length &&
-      crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))
-    );
-  } catch {
-    return false;
-  }
+  const provided = String(body['signature'] ?? '');
+  if (!provided) return false;
+  const expected = calculateSignature(body, env.UNIPESA_SECRET_KEY);
+  return provided.toLowerCase() === expected.toLowerCase();
 }
 
 export function normalizeCallback(payload: AvadaCallbackPayload): NormalizedCallback {
   return {
     avada_transaction_id: payload.transaction_id,
-    reference: payload.reference,
-    status: payload.status,
-    operator: payload.operator.toLowerCase(),
-    amount: payload.amount,
-    phone: payload.msisdn,
-    raw: payload,
+    reference:            payload.reference,
+    status:               payload.status,
+    operator:             payload.operator.toLowerCase(),
+    amount:               payload.amount,
+    phone:                payload.msisdn,
+    raw:                  payload,
   };
 }
 

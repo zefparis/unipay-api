@@ -58,11 +58,9 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      // Avada signature verification
-      const signature = request.headers['x-avada-signature'];
-      if (signature) {
-        const rawBody = JSON.stringify(request.body);
-        if (typeof signature !== 'string' || !verifyCallbackSignature(rawBody, signature)) {
+      // Avada signature verification — signature is embedded in the body (AvadaPay HMAC-SHA512 spec)
+      if (request.body && 'signature' in request.body) {
+        if (!verifyCallbackSignature(request.body as Record<string, unknown>)) {
           fastify.log.warn({ transaction_id: request.body?.transaction_id }, 'Invalid Avada signature');
           return reply.status(401).send({ error: 'Invalid webhook signature', statusCode: 401 });
         }
