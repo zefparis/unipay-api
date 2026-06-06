@@ -388,6 +388,58 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
       return reply.send(header + csv);
     },
   );
+
+  /* ── GET /v1/admin/merchants ─────────────────────────────── */
+  fastify.get('/admin/merchants', async (request, reply) => {
+    if (!requireAdmin(request.isAdmin)) {
+      return reply.status(403).send({ error: 'Admin access required' });
+    }
+
+    const { data, error } = await fastify.supabase
+      .from('merchants')
+      .select('id, name, email, mode, kyc_status, status, created_at')
+      .order('created_at', { ascending: false });
+
+    if (error) return reply.status(500).send({ error: error.message });
+    return reply.send({ data: data ?? [] });
+  });
+
+  /* ── POST /v1/admin/merchants/:id/mode ───────────────────── */
+  fastify.post<{ Params: { id: string }; Body: { mode: string } }>(
+    '/admin/merchants/:id/mode',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['mode'],
+          properties: {
+            mode: { type: 'string', enum: ['sandbox', 'live'] },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required' });
+      }
+
+      const { id } = request.params;
+      const { mode } = request.body;
+
+      const { data, error } = await fastify.supabase
+        .from('merchants')
+        .update({ mode })
+        .eq('id', id)
+        .select('id, email, mode')
+        .maybeSingle();
+
+      if (error) return reply.status(500).send({ error: error.message });
+      if (!data) return reply.status(404).send({ error: 'Merchant not found' });
+
+      fastify.log.info({ merchantId: id, mode }, '[admin] merchant mode updated');
+      return reply.send({ ok: true, merchant: data });
+    },
+  );
 };
 
 export default adminWalletRoute;
