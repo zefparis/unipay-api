@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { verifyToken } from '../../utils/jwt';
+import { getBalance } from '../../services/avada';
 
 const merchantBalanceRoute: FastifyPluginAsync = async (fastify) => {
   fastify.get(
@@ -11,9 +12,9 @@ const merchantBalanceRoute: FastifyPluginAsync = async (fastify) => {
           200: {
             type: 'object',
             properties: {
-              merchant_id: { type: 'string' },
-              balance_cdf: { type: 'number' },
+              balance:  { type: 'number' },
               currency: { type: 'string' },
+              mode:     { type: 'string' },
             },
           },
         },
@@ -34,8 +35,8 @@ const merchantBalanceRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       const { data, error } = await fastify.supabase
-        .from('operators')
-        .select('id, balance_cdf')
+        .from('merchants')
+        .select('id, name, email, mode')
         .eq('id', payload.merchant_id)
         .maybeSingle();
 
@@ -43,11 +44,21 @@ const merchantBalanceRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(404).send({ error: 'Merchant not found', statusCode: 404 });
       }
 
-      return {
-        merchant_id: data.id,
-        balance_cdf: data.balance_cdf ?? 0,
+      let balance = 0;
+      try {
+        const avadaBalance = await getBalance();
+        balance = avadaBalance.balance;
+      } catch (e) {
+        fastify.log.warn({ err: e, merchantId: payload.merchant_id }, '[balance] getBalance() failed, returning 0');
+      }
+
+      fastify.log.info({ merchantId: payload.merchant_id, balance, mode: data.mode }, '[balance] returned');
+
+      return reply.send({
+        balance,
         currency: 'CDF',
-      };
+        mode: data.mode,
+      });
     },
   );
 };

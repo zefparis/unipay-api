@@ -188,8 +188,11 @@ export async function getBalance(): Promise<UnipesaBalance> {
   const { publicId, merchantId, secretKey } = requireUnipesaEnv();
   const payload: Record<string, unknown> = { merchant_id: merchantId };
   payload['signature'] = calculateSignature(payload, secretKey);
+  console.log('[avada:getBalance] calling Unipesa balance endpoint');
   const data = await unipesaPost(publicId, '/balance', payload);
+  console.log('[avada:getBalance] raw response:', JSON.stringify(data));
   const raw = data['balance'] ?? data['balance_cdf'] ?? data['amount'] ?? 0;
+  console.log('[avada:getBalance] parsed balance:', raw);
   return { balance: Number(raw), currency: 'CDF' };
 }
 
