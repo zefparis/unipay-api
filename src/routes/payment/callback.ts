@@ -76,19 +76,38 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
 
       const dbStatus = status === 'cancelled' ? 'failed' : status;
 
-      const { data: tx, error } = await fastify.supabase
-        .from('transactions')
-        .select('id, merchant_id, status, wallet_user_id, direction, net_amount')
-        .eq('avada_transaction_id', avada_transaction_id)
-        .maybeSingle();
+      // Primary lookup: by avada_transaction_id
+      // Fallback: by reference (our WD-XXXXXXXX order_id), in case Unipesa's
+      // callback transaction_id differs from the one returned in the collection response
+      let tx: { id: string; merchant_id: string; status: string; wallet_user_id?: string | null; direction?: string; net_amount?: number } | null = null;
+      {
+        const { data, error } = await fastify.supabase
+          .from('transactions')
+          .select('id, merchant_id, status, wallet_user_id, direction, net_amount')
+          .eq('avada_transaction_id', avada_transaction_id)
+          .maybeSingle();
+        if (error) {
+          fastify.log.error({ err: error, avada_transaction_id }, 'Callback DB lookup error');
+          return reply.status(500).send({ error: 'Internal Server Error', statusCode: 500 });
+        }
+        tx = data;
+      }
 
-      if (error) {
-        fastify.log.error({ err: error, avada_transaction_id }, 'Callback DB lookup error');
-        return reply.status(500).send({ error: 'Internal Server Error', statusCode: 500 });
+      if (!tx && reference) {
+        const { data, error } = await fastify.supabase
+          .from('transactions')
+          .select('id, merchant_id, status, wallet_user_id, direction, net_amount')
+          .eq('reference', reference)
+          .maybeSingle();
+        if (error) {
+          fastify.log.error({ err: error, reference }, 'Callback DB lookup (by reference) error');
+          return reply.status(500).send({ error: 'Internal Server Error', statusCode: 500 });
+        }
+        tx = data;
       }
 
       if (!tx) {
-        fastify.log.warn({ avada_transaction_id, reference }, 'Callback for unknown avada_transaction_id');
+        fastify.log.warn({ avada_transaction_id, reference }, 'Callback for unknown transaction');
         return reply.status(404).send({ error: 'Transaction not found', statusCode: 404 });
       }
 
