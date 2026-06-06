@@ -27,7 +27,7 @@ const walletDepositRoute: FastifyPluginAsync = async (fastify) => {
           type: 'object',
           required: ['phone_mm', 'operator', 'amount'],
           properties: {
-            phone_mm: { type: 'string', pattern: '^\\+?[1-9]\\d{7,14}$' },
+            phone_mm: { type: 'string', pattern: '^(0|\\+?[1-9])\\d{6,14}$' },
             operator: { type: 'string', enum: WALLET_OPERATORS },
             amount:   { type: 'number', minimum: 100 },
             currency: { type: 'string', minLength: 3, maxLength: 3, default: 'CDF' },
