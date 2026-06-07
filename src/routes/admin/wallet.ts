@@ -243,6 +243,27 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
     return reply.send({ ok: true, is_active: true });
   });
 
+  /* ── POST /v1/admin/wallet/users/:id/kyc/approve ─────────── */
+  fastify.post<{ Params: { id: string } }>('/admin/wallet/users/:id/kyc/approve', async (request, reply) => {
+    if (!requireAdmin(request.isAdmin)) {
+      return reply.status(403).send({ error: 'Admin access required' });
+    }
+
+    const { id } = request.params;
+    const { data, error } = await fastify.supabase
+      .from('wallet_users')
+      .update({ kyc_level: 1, is_verified: true, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select('id, phone, full_name, balance_cdf, kyc_level, is_active, is_verified, created_at, updated_at, kyc_submitted_at')
+      .maybeSingle();
+
+    if (error) return reply.status(500).send({ error: error.message });
+    if (!data) return reply.status(404).send({ error: 'Wallet user not found' });
+
+    fastify.log.info({ userId: id }, '[wallet-user-kyc-approved]');
+    return reply.send({ ok: true, user: data });
+  });
+
   /* ── POST /v1/admin/wallet/adjust ───────────────────────── */
   fastify.post<{ Body: AdjustBody }>('/admin/wallet/adjust', {
     schema: {
