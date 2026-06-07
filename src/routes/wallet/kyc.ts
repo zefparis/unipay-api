@@ -5,8 +5,6 @@ import { requireWallet } from '../../utils/wallet-jwt';
 import { enrollPayGuard } from '../../services/payguard';
 import { fetchImageAsBase64 } from '../../utils/storage';
 
-interface RejectBody { reviewer_note: string }
-
 const walletKycRoute: FastifyPluginAsync = async (fastify) => {
 
   /* ── POST /v1/wallet/kyc/submit ─────────────────────────────
@@ -218,115 +216,6 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
     },
   );
 
-  /* ── GET /v1/admin/wallet/kyc ──────────────────────────── */
-  fastify.get<{ Querystring: { status?: string; page?: number; limit?: number } }>(
-    '/admin/wallet/kyc',
-    {
-      schema: {
-        querystring: {
-          type: 'object',
-          properties: {
-            status: { type: 'string', enum: ['pending', 'approved', 'rejected'] },
-            page:   { type: 'integer', minimum: 1, default: 1 },
-            limit:  { type: 'integer', minimum: 1, maximum: 50, default: 20 },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      if (!request.isAdmin) return reply.status(403).send({ error: 'Admin access required' });
-
-      const { status = 'pending', page = 1, limit = 20 } = request.query;
-      const offset = (page - 1) * limit;
-
-      let q = fastify.supabase
-        .from('kyc_submissions')
-        .select('*, wallet_users(phone, full_name, balance_cdf)', { count: 'exact' })
-        .order('submitted_at', { ascending: false })
-        .range(offset, offset + limit - 1);
-
-      if (status) q = q.eq('status', status);
-
-      const { data, error, count } = await q;
-      if (error) return reply.status(500).send({ error: error.message });
-
-      return reply.send({ data: data ?? [], total: count ?? 0 });
-    },
-  );
-
-  /* ── POST /v1/admin/wallet/kyc/:id/approve ─────────────── */
-  fastify.post<{ Params: { id: string } }>(
-    '/admin/wallet/kyc/:id/approve',
-    async (request, reply) => {
-      if (!request.isAdmin) return reply.status(403).send({ error: 'Admin access required' });
-
-      const { id } = request.params;
-
-      const { data: sub, error: fetchErr } = await fastify.supabase
-        .from('kyc_submissions')
-        .select('id, wallet_user_id, status')
-        .eq('id', id)
-        .maybeSingle();
-
-      if (fetchErr || !sub) return reply.status(404).send({ error: 'Submission not found' });
-
-      const now = new Date().toISOString();
-
-      const { error: subErr } = await fastify.supabase
-        .from('kyc_submissions')
-        .update({ status: 'approved', reviewed_at: now })
-        .eq('id', id);
-      if (subErr) return reply.status(500).send({ error: subErr.message });
-
-      const { error: userErr } = await fastify.supabase
-        .from('wallet_users')
-        .update({ kyc_level: 1, is_verified: true })
-        .eq('id', sub.wallet_user_id);
-      if (userErr) return reply.status(500).send({ error: userErr.message });
-
-      fastify.log.info({ id, walletUserId: sub.wallet_user_id }, '[kyc-approved]');
-      return reply.send({ ok: true, status: 'approved' });
-    },
-  );
-
-  /* ── POST /v1/admin/wallet/kyc/:id/reject ──────────────── */
-  fastify.post<{ Params: { id: string }; Body: RejectBody }>(
-    '/admin/wallet/kyc/:id/reject',
-    {
-      schema: {
-        body: {
-          type: 'object',
-          required: ['reviewer_note'],
-          properties: {
-            reviewer_note: { type: 'string', minLength: 1, maxLength: 1024 },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      if (!request.isAdmin) return reply.status(403).send({ error: 'Admin access required' });
-
-      const { id } = request.params;
-      const { reviewer_note } = request.body;
-
-      const { data: sub } = await fastify.supabase
-        .from('kyc_submissions')
-        .select('id')
-        .eq('id', id)
-        .maybeSingle();
-
-      if (!sub) return reply.status(404).send({ error: 'Submission not found' });
-
-      const { error } = await fastify.supabase
-        .from('kyc_submissions')
-        .update({ status: 'rejected', reviewer_note, reviewed_at: new Date().toISOString() })
-        .eq('id', id);
-      if (error) return reply.status(500).send({ error: error.message });
-
-      fastify.log.info({ id }, '[kyc-rejected]');
-      return reply.send({ ok: true, status: 'rejected' });
-    },
-  );
 };
 
 export default walletKycRoute;
