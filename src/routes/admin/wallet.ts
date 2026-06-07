@@ -413,7 +413,7 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
     const { data, error } = await fastify.supabase
       .from('merchants')
       .select('id, name, email, mode, kyc_status, status, company_name, company_rccm, company_idnat, kyc_submitted_at, kyc_notes')
-      .order('kyc_submitted_at', { ascending: false, nullsFirst: false });
+      .order('email', { ascending: true });
 
     if (error) return reply.status(500).send({ error: error.message });
     return reply.send({ data: data ?? [] });
