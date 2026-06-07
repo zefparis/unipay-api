@@ -26,6 +26,11 @@ const envSchema = z.object({
 
   // USDT on-chain
   USDT_WALLET_ADDRESS: z.string().optional(),
+  CGLT_NODE_URL: z.string().url().optional(),
+  CGLT_CONTRACT_ADDRESS: z.string().optional(),
+  CGLT_MINTER_KEY: z.string().optional(),
+  USDT_ADDRESS: z.string().optional(),
+  ENCRYPTION_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/).optional(),
 
   // Merchant JWT
   JWT_SECRET: z.string().min(32).optional(),

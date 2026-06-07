@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { signWalletToken, requireWallet } from '../../utils/wallet-jwt';
+import { encryptPrivateKey, generateWallet } from '../../services/blockchain';
 
 interface RegisterBody {
   phone: string;
@@ -71,10 +72,19 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       const pinHash = await bcrypt.hash(pin, 12);
+      const blockchainWallet = generateWallet();
+      const encryptedPrivateKey = encryptPrivateKey(blockchainWallet.privateKey);
 
       const { data: wallet, error } = await fastify.supabase
         .from('wallet_users')
-        .insert({ phone: normalizedPhone, full_name: full_name ?? null, pin_hash: pinHash })
+        .insert({
+          phone: normalizedPhone,
+          full_name: full_name ?? null,
+          pin_hash: pinHash,
+          blockchain_address: blockchainWallet.address,
+          blockchain_private_key_encrypted: encryptedPrivateKey,
+          cglt_balance: 0,
+        })
         .select('id, phone, full_name')
         .single();
 
