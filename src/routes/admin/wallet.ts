@@ -168,7 +168,7 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
     const [userRes, txRes, ledgerRes] = await Promise.all([
       fastify.supabase
         .from('wallet_users')
-        .select('id, phone, full_name, email, balance_cdf, kyc_level, is_active, created_at, updated_at')
+        .select('id, phone, full_name, balance_cdf, kyc_level, is_active, created_at, updated_at')
         .eq('id', id)
         .maybeSingle(),
       fastify.supabase
