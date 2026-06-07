@@ -168,7 +168,7 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
     const [userRes, txRes, ledgerRes] = await Promise.all([
       fastify.supabase
         .from('wallet_users')
-        .select('id, phone, full_name, email, balance_cdf, kyc_level, is_active, created_at, updated_at, kyc_submitted_at, kyc_approved_at, kyc_document_urls')
+        .select('id, phone, full_name, email, balance_cdf, kyc_level, is_active, created_at, updated_at')
         .eq('id', id)
         .maybeSingle(),
       fastify.supabase
@@ -185,7 +185,11 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
         .limit(10),
     ]);
 
-    if (userRes.error || !userRes.data) {
+    if (userRes.error) {
+      fastify.log.error({ err: userRes.error, id }, '[admin] wallet user fetch failed');
+      return reply.status(500).send({ error: userRes.error.message });
+    }
+    if (!userRes.data) {
       return reply.status(404).send({ error: 'User not found' });
     }
 
