@@ -62,6 +62,14 @@ const walletDepositRoute: FastifyPluginAsync = async (fastify) => {
 
       const { phone_mm, operator, amount, currency = 'CDF' } = request.body;
       const walletId = walletPayload.wallet_id;
+      const normalizedPhone = phone_mm.replace(/\s/g, '');
+
+      if (!/^\+243[0-9]{9}$/.test(normalizedPhone)) {
+        return reply.status(400).send({
+          error: 'INVALID_PHONE',
+          message: 'Numéro DRC invalide. Format requis : +243XXXXXXXXX (9 chiffres après +243)',
+        });
+      }
 
       const { data: wallet } = await fastify.supabase
         .from('wallet_users')
@@ -116,7 +124,7 @@ const walletDepositRoute: FastifyPluginAsync = async (fastify) => {
           fee,
           net_amount:           netAmount,
           currency,
-          phone:                phone_mm,
+          phone:                normalizedPhone,
           reference,
           avada_transaction_id: mockRef,
           status:               'success',
@@ -155,7 +163,7 @@ const walletDepositRoute: FastifyPluginAsync = async (fastify) => {
           fee,
           net_amount:     netAmount,
           currency,
-          phone:          phone_mm,
+          phone:          normalizedPhone,
           reference,
           status:         'pending',
           metadata:       { source: 'wallet_deposit' },
@@ -173,7 +181,7 @@ const walletDepositRoute: FastifyPluginAsync = async (fastify) => {
           transaction_id: txId,
           amount,
           currency,
-          phone:          phone_mm,
+          phone:          normalizedPhone,
           direction:      'collect',
           reference,
         });

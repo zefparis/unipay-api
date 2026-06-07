@@ -14,6 +14,13 @@ interface LoginBody {
   pin: string;
 }
 
+function normalizePhone(raw: string): string {
+  const digits = raw.replace(/\D/g, '');
+  if (digits.startsWith('243')) return `+${digits}`;
+  if (digits.startsWith('0')) return `+243${digits.slice(1)}`;
+  return `+${digits}`;
+}
+
 const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
 
   /* ── POST /v1/wallet/register ───────────────────────────── */
@@ -44,11 +51,19 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       const { phone, full_name, pin } = request.body;
+      const normalizedPhone = normalizePhone(phone);
+
+      if (!/^\+243[0-9]{9}$/.test(normalizedPhone)) {
+        return reply.status(400).send({
+          error: 'INVALID_PHONE',
+          message: 'Numéro de téléphone invalide',
+        });
+      }
 
       const { data: existing } = await fastify.supabase
         .from('wallet_users')
         .select('id')
-        .eq('phone', phone)
+        .eq('phone', normalizedPhone)
         .maybeSingle();
 
       if (existing) {
@@ -59,16 +74,16 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data: wallet, error } = await fastify.supabase
         .from('wallet_users')
-        .insert({ phone, full_name: full_name ?? null, pin_hash: pinHash })
+        .insert({ phone: normalizedPhone, full_name: full_name ?? null, pin_hash: pinHash })
         .select('id, phone, full_name')
         .single();
 
       if (error || !wallet) {
-        fastify.log.error({ err: error, phone }, 'Wallet register failed');
+        fastify.log.error({ err: error, phone: normalizedPhone }, 'Wallet register failed');
         return reply.status(500).send({ error: 'Registration failed', statusCode: 500 });
       }
 
-      fastify.log.info({ walletId: wallet.id, phone }, 'Wallet user registered');
+      fastify.log.info({ walletId: wallet.id, phone: normalizedPhone }, 'Wallet user registered');
 
       return reply.status(201).send({
         wallet_id: wallet.id,
