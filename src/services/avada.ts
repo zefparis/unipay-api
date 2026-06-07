@@ -211,7 +211,10 @@ export async function getTransactionStatus(avadaTransactionId: string): Promise<
 
 export async function getBalance(): Promise<UnipesaBalance> {
   const { publicId, merchantId, secretKey } = requireUnipesaEnv();
-  const payload: Record<string, unknown> = { merchant_id: merchantId };
+  const payload: Record<string, unknown> = {
+    merchant_id: merchantId,
+    order_id: `BAL-${Date.now()}`,
+  };
   payload['signature'] = calculateSignature(payload, secretKey);
   console.log('[avada:getBalance] calling Unipesa balance endpoint');
   const data = await unipesaPost(publicId, '/balance', payload);
