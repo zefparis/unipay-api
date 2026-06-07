@@ -1,6 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { getBalance } from '../../services/avada';
 
 function requireAdmin(isAdmin: boolean): boolean {
   return isAdmin;
@@ -50,8 +49,7 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
       return reply.status(403).send({ error: 'Admin access required' });
     }
     try {
-      const balance = await getBalance();
-      return reply.send({ balance: balance.balance, currency: 'CDF' });
+      return reply.send({ balance: null, currency: 'CDF', error: 'unsupported' });
     } catch (e) {
       fastify.log.error({ err: e }, '[admin] avada balance fetch failed');
       return reply.status(500).send({ error: e instanceof Error ? e.message : 'Admin wallet balance unavailable' });
