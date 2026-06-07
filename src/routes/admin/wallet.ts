@@ -1,6 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { getBalance } from '../../services/avada';
 
 function requireAdmin(isAdmin: boolean): boolean {
   return isAdmin;
@@ -39,11 +38,42 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
       return reply.status(403).send({ error: 'Admin access required' });
     }
     try {
-      const bal = await getBalance();
-      return reply.send({ balance: bal.balance, currency: bal.currency });
+      const [collectRes, payoutRes, ledgerRes] = await Promise.all([
+        fastify.supabase
+          .from('transactions')
+          .select('net_amount')
+          .eq('direction', 'collect')
+          .eq('status', 'success'),
+        fastify.supabase
+          .from('transactions')
+          .select('net_amount')
+          .eq('direction', 'payout')
+          .eq('status', 'success'),
+        fastify.supabase
+          .from('ledger_entries')
+          .select('direction, amount'),
+      ]);
+
+      if (collectRes.error) throw collectRes.error;
+      if (payoutRes.error) throw payoutRes.error;
+      if (ledgerRes.error) throw ledgerRes.error;
+
+      const deposited = (collectRes.data ?? []).reduce((sum, tx) => sum + Number(tx.net_amount ?? 0), 0);
+      const withdrawn = (payoutRes.data ?? []).reduce((sum, tx) => sum + Number(tx.net_amount ?? 0), 0);
+      const adminCredits = (ledgerRes.data ?? [])
+        .filter((entry) => entry.direction === 'credit')
+        .reduce((sum, entry) => sum + Number(entry.amount ?? 0), 0);
+      const adminDebits = (ledgerRes.data ?? [])
+        .filter((entry) => entry.direction === 'debit')
+        .reduce((sum, entry) => sum + Number(entry.amount ?? 0), 0);
+
+      return reply.send({
+        balance: deposited - withdrawn - adminCredits + adminDebits,
+        currency: 'CDF',
+      });
     } catch (e) {
       fastify.log.error({ err: e }, '[admin] avada balance fetch failed');
-      return reply.status(502).send({ error: e instanceof Error ? e.message : 'Avada balance unavailable' });
+      return reply.status(500).send({ error: e instanceof Error ? e.message : 'Admin wallet balance unavailable' });
     }
   });
 
