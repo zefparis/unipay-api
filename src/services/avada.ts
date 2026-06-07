@@ -168,7 +168,15 @@ export async function initiateCollection(
   payload['signature'] = calculateSignature(payload, secretKey);
 
   const data = await unipesaPost(publicId, '/payment_c2b', payload);
-  return { avada_transaction_id: String(data['transaction_id'] ?? reference) };
+  console.log('[avada:initiateCollection] raw response:', JSON.stringify(data));
+  const avadaId =
+    data['transaction_id'] ||
+    data['order_id'] ||
+    data['payment_id'] ||
+    data['trx_id'] ||
+    data['id'] ||
+    null;
+  return { avada_transaction_id: avadaId ? String(avadaId) : reference };
 }
 
 export async function initiatePayout(
@@ -195,7 +203,16 @@ export async function initiatePayout(
   payload['signature'] = calculateSignature(payload, secretKey);
 
   const data = await unipesaPost(publicId, '/payment_b2c', payload);
-  return { avada_transaction_id: String(data['transaction_id'] ?? reference) };
+  console.log('[avada:initiatePayout] raw response:', JSON.stringify(data));
+  const avadaId =
+    data['transaction_id'] ||
+    data['order_id'] ||
+    data['payment_id'] ||
+    data['trx_id'] ||
+    data['id'] ||
+    null;
+  console.log('[avada:initiatePayout] resolved avada_id:', avadaId);
+  return { avada_transaction_id: avadaId ? String(avadaId) : reference };
 }
 
 export async function getTransactionStatus(avadaTransactionId: string): Promise<AvadaStatus> {
