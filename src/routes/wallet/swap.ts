@@ -55,7 +55,7 @@ const walletSwapRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data: wallet } = await fastify.supabase
         .from('wallet_users')
-        .select('id, phone, is_active, cglt_balance, blockchain_address')
+        .select('id, phone, is_active, cglt_balance, usdt_balance, blockchain_address')
         .eq('id', payload.wallet_id)
         .maybeSingle();
 
@@ -67,12 +67,23 @@ const walletSwapRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       const cgltBalance = Number(wallet.cglt_balance ?? 0);
+      const usdtBalance = Number(wallet.usdt_balance ?? 0);
 
       // CGLT -> USDT requires sufficient CGLT ledger balance
       if (direction === 'cglt_to_usdt' && cgltBalance < amount) {
         return reply.status(402).send({
           error:        'Insufficient CGLT balance',
           cglt_balance: cgltBalance,
+          required:     amount,
+          statusCode:   402,
+        });
+      }
+
+      // USDT -> CGLT requires sufficient USDT ledger balance
+      if (direction === 'usdt_to_cglt' && usdtBalance < amount) {
+        return reply.status(402).send({
+          error:        'Insufficient USDT balance',
+          usdt_balance: usdtBalance,
           required:     amount,
           statusCode:   402,
         });
@@ -87,15 +98,22 @@ const walletSwapRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(502).send({ error: 'Swap execution failed', statusCode: 502 });
       }
 
-      // ── Update CGLT ledger balance ─────────────────────────
-      const newCgltBalance =
-        direction === 'cglt_to_usdt'
-          ? Math.max(cgltBalance - amount, 0)
-          : cgltBalance + result.amountOut;
+      // ── Update CGLT + USDT ledger balances ─────────────────
+      let newCgltBalance: number;
+      let newUsdtBalance: number;
+      if (direction === 'cglt_to_usdt') {
+        // débite CGLT, crédite USDT
+        newCgltBalance = Math.max(cgltBalance - amount, 0);
+        newUsdtBalance = usdtBalance + result.amountOut;
+      } else {
+        // débite USDT, crédite CGLT
+        newUsdtBalance = Math.max(usdtBalance - amount, 0);
+        newCgltBalance = cgltBalance + result.amountOut;
+      }
 
       await fastify.supabase
         .from('wallet_users')
-        .update({ cglt_balance: newCgltBalance })
+        .update({ cglt_balance: newCgltBalance, usdt_balance: newUsdtBalance })
         .eq('id', wallet.id);
 
       // ── Record transaction ─────────────────────────────────
