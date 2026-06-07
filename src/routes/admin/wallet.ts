@@ -43,7 +43,7 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
       return reply.send({ balance: bal.balance, currency: bal.currency });
     } catch (e) {
       fastify.log.error({ err: e }, '[admin] avada balance fetch failed');
-      return reply.status(502).send({ error: 'Avada balance unavailable' });
+      return reply.status(502).send({ error: e instanceof Error ? e.message : 'Avada balance unavailable' });
     }
   });
 

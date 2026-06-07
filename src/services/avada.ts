@@ -117,6 +117,31 @@ async function unipesaPost(publicId: string, path: string, body: Record<string, 
   return json;
 }
 
+function toNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const normalized = value.replace(/\s/g, '').replace(',', '.');
+    const parsed = Number(normalized);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function findBalanceValue(data: unknown): number | null {
+  if (!data || typeof data !== 'object') return null;
+  const obj = data as Record<string, unknown>;
+  const directKeys = ['balance', 'balance_cdf', 'available_balance', 'available', 'amount', 'solde'];
+  for (const key of directKeys) {
+    const value = toNumber(obj[key]);
+    if (value !== null) return value;
+  }
+  for (const value of Object.values(obj)) {
+    const nested = findBalanceValue(value);
+    if (nested !== null) return nested;
+  }
+  return null;
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export async function initiateCollection(
@@ -191,9 +216,12 @@ export async function getBalance(): Promise<UnipesaBalance> {
   console.log('[avada:getBalance] calling Unipesa balance endpoint');
   const data = await unipesaPost(publicId, '/balance', payload);
   console.log('[avada:getBalance] raw response:', JSON.stringify(data));
-  const raw = data['balance'] ?? data['balance_cdf'] ?? data['amount'] ?? 0;
-  console.log('[avada:getBalance] parsed balance:', raw);
-  return { balance: Number(raw), currency: 'CDF' };
+  const balance = findBalanceValue(data);
+  console.log('[avada:getBalance] parsed balance:', balance);
+  if (balance === null) {
+    throw new Error(`Unipesa balance response does not contain a recognized balance field: ${JSON.stringify(data)}`);
+  }
+  return { balance, currency: 'CDF' };
 }
 
 // Callback signature verification — HMAC-SHA512, same as congogaming
