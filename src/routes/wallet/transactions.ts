@@ -41,7 +41,7 @@ const walletTransactionsRoute: FastifyPluginAsync = async (fastify) => {
       let query = fastify.supabase
         .from('transactions')
         .select(
-          'id, operator, direction, amount, fee, net_amount, currency, phone, reference, status, created_at, updated_at',
+          'id, operator, direction, amount, fee, net_amount, currency, usdt_amount, phone, reference, status, created_at, updated_at',
           { count: 'exact' },
         )
         .eq('wallet_user_id', walletPayload.wallet_id)
