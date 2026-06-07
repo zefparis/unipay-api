@@ -209,7 +209,7 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
     const { id } = request.params;
     const { error } = await fastify.supabase
       .from('wallet_users')
-      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .update({ is_active: false })
       .eq('id', id);
 
     if (error) return reply.status(500).send({ error: error.message });
@@ -226,7 +226,7 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
     const { id } = request.params;
     const { error } = await fastify.supabase
       .from('wallet_users')
-      .update({ is_active: true, updated_at: new Date().toISOString() })
+      .update({ is_active: true })
       .eq('id', id);
 
     if (error) return reply.status(500).send({ error: error.message });
