@@ -28,6 +28,7 @@ const envSchema = z.object({
   USDT_WALLET_ADDRESS: z.string().optional(),
   CGLT_NODE_URL: z.string().url().optional(),
   CGLT_CONTRACT_ADDRESS: z.string().optional(),
+  CGLT_RESERVE_ADDRESS: z.string().optional(),
   CGLT_MINTER_KEY: z.string().optional(),
   USDT_ADDRESS: z.string().optional(),
   ENCRYPTION_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/).optional(),

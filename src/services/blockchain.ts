@@ -7,18 +7,50 @@ const CGLT_ABI = [
   'function balanceOf(address) view returns (uint256)',
 ];
 
-function getCgltContract() {
+const ERC20_ABI = [
+  'function approve(address spender, uint256 amount) returns (bool)',
+  'function allowance(address owner, address spender) view returns (uint256)',
+  'function balanceOf(address) view returns (uint256)',
+];
+
+const RESERVE_ABI = [
+  'function cgltPerUsdt() view returns (uint256)',
+  'function feePercent() view returns (uint256)',
+  'function paused() view returns (bool)',
+  'function swapCGLTtoUSDT(uint256 cgltAmount) external',
+  'function swapUSDTtoCGLT(uint256 usdtAmount6) external',
+];
+
+function getProvider() {
   const nodeUrl = process.env.CGLT_NODE_URL;
-  const minterKey = process.env.CGLT_MINTER_KEY;
-  const contractAddress = process.env.CGLT_CONTRACT_ADDRESS;
-
-  if (!nodeUrl || !minterKey || !contractAddress) {
-    throw new Error('CGLT blockchain service is not configured');
+  if (!nodeUrl) {
+    throw new Error('CGLT_NODE_URL is not configured');
   }
+  return new ethers.JsonRpcProvider(nodeUrl);
+}
 
-  const provider = new ethers.JsonRpcProvider(nodeUrl);
-  const signer = new ethers.Wallet(minterKey, provider);
-  return new ethers.Contract(contractAddress, CGLT_ABI, signer);
+function getSigner() {
+  const minterKey = process.env.CGLT_MINTER_KEY;
+  if (!minterKey) {
+    throw new Error('CGLT_MINTER_KEY is not configured');
+  }
+  return new ethers.Wallet(minterKey, getProvider());
+}
+
+function getCgltContract() {
+  const contractAddress = process.env.CGLT_CONTRACT_ADDRESS;
+  if (!contractAddress) {
+    throw new Error('CGLT_CONTRACT_ADDRESS is not configured');
+  }
+  return new ethers.Contract(contractAddress, CGLT_ABI, getSigner());
+}
+
+function getReserveAddress() {
+  const reserveAddress = process.env.CGLT_RESERVE_ADDRESS;
+  if (!reserveAddress) {
+    throw new Error('CGLT_RESERVE_ADDRESS is not configured');
+  }
+  return reserveAddress;
 }
 
 export function encryptPrivateKey(privateKey: string): string {
@@ -74,4 +106,82 @@ export function generateWallet(): { address: string; privateKey: string } {
     address: wallet.address,
     privateKey: wallet.privateKey,
   };
+}
+
+export interface SwapRate {
+  rate: number;
+  fee: number;
+  paused: boolean;
+}
+
+export async function getSwapRate(): Promise<SwapRate> {
+  const reserve = new ethers.Contract(getReserveAddress(), RESERVE_ABI, getProvider());
+  const [rate, feePercent, paused] = await Promise.all([
+    reserve.cgltPerUsdt(),
+    reserve.feePercent(),
+    reserve.paused(),
+  ]);
+  return {
+    rate: Number(rate),
+    fee: Number(feePercent) / 100, // basis points -> percent (50 -> 0.5)
+    paused: Boolean(paused),
+  };
+}
+
+export type SwapDirection = 'cglt_to_usdt' | 'usdt_to_cglt';
+
+export interface SwapResult {
+  amountIn: number;
+  amountOut: number;
+  fee: number;
+  txHash: string;
+}
+
+async function ensureAllowance(
+  tokenAddress: string,
+  signer: ethers.Wallet,
+  spender: string,
+  required: bigint,
+): Promise<void> {
+  const token = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
+  const current: bigint = await token.allowance(signer.address, spender);
+  if (current < required) {
+    const tx = await token.approve(spender, ethers.MaxUint256);
+    await tx.wait();
+  }
+}
+
+export async function executeSwap(
+  direction: SwapDirection,
+  amount: number,
+): Promise<SwapResult> {
+  const signer = getSigner();
+  const reserveAddress = getReserveAddress();
+  const reserve = new ethers.Contract(reserveAddress, RESERVE_ABI, signer);
+
+  const [rateRaw, feePercentRaw] = await Promise.all([
+    reserve.cgltPerUsdt(),
+    reserve.feePercent(),
+  ]);
+  const rate = Number(rateRaw);
+  const feeRatio = Number(feePercentRaw) / 10000; // 50 -> 0.005
+
+  if (direction === 'cglt_to_usdt') {
+    const cgltWei = ethers.parseUnits(amount.toString(), 18);
+    await ensureAllowance(process.env.CGLT_CONTRACT_ADDRESS as string, signer, reserveAddress, cgltWei);
+    const tx = await reserve.swapCGLTtoUSDT(cgltWei);
+    const receipt = await tx.wait();
+    const gross = amount / rate;
+    const fee = gross * feeRatio;
+    return { amountIn: amount, amountOut: gross - fee, fee, txHash: receipt.hash };
+  }
+
+  // usdt_to_cglt
+  const usdt6 = ethers.parseUnits(amount.toString(), 6);
+  await ensureAllowance(process.env.USDT_ADDRESS as string, signer, reserveAddress, usdt6);
+  const tx = await reserve.swapUSDTtoCGLT(usdt6);
+  const receipt = await tx.wait();
+  const feeUsdt = amount * feeRatio;
+  const netUsdt = amount - feeUsdt;
+  return { amountIn: amount, amountOut: netUsdt * rate, fee: feeUsdt, txHash: receipt.hash };
 }
