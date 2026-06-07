@@ -24,10 +24,21 @@ interface TransactionsQuery {
   phone?: string;
 }
 
+interface KycQuery {
+  page: number;
+  limit: number;
+  status?: 'pending' | 'approved' | 'rejected';
+}
+
 interface AdjustBody {
   wallet_user_id: string;
   amount: number;
   reason: string;
+}
+
+interface KycRejectBody {
+  note?: string;
+  reviewer_note?: string;
 }
 
 const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
@@ -331,6 +342,134 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
 
     fastify.log.info({ wallet_user_id, amount, reason, newBalance }, 'admin balance adjustment');
     return reply.send({ ok: true, new_balance_cdf: newBalance });
+  });
+
+  /* ── GET /v1/admin/wallet/kyc ────────────────────────────── */
+  fastify.get<{ Querystring: KycQuery }>('/admin/wallet/kyc', {
+    schema: {
+      querystring: {
+        type: 'object',
+        properties: {
+          page:   { type: 'integer', minimum: 1, default: 1 },
+          limit:  { type: 'integer', minimum: 1, maximum: 100, default: 50 },
+          status: { type: 'string', enum: ['pending', 'approved', 'rejected'] },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    if (!requireAdmin(request.isAdmin)) {
+      return reply.status(403).send({ error: 'Admin access required' });
+    }
+
+    const { page, limit, status } = request.query;
+    const offset = (page - 1) * limit;
+
+    let q = fastify.supabase
+      .from('kyc_submissions')
+      .select(
+        'id, wallet_user_id, status, doc_type, full_name, birth_date, doc_number, doc_front_url, doc_back_url, selfie_url, reviewer_note, submitted_at, reviewed_at, payguard_confidence, payguard_decision, wallet_users(id, phone, full_name, balance_cdf, kyc_level, is_verified)',
+        { count: 'exact' },
+      )
+      .order('submitted_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (status) q = q.eq('status', status);
+
+    const { data, error, count } = await q;
+    if (error) {
+      fastify.log.error({ err: error }, 'admin wallet kyc query failed');
+      return reply.status(500).send({ error: 'Internal Server Error' });
+    }
+
+    const rows = await Promise.all((data ?? []).map(async (row) => {
+      let selfie_signed_url: string | null = null;
+      if (row.selfie_url) {
+        const { data: signed, error: signedErr } = await fastify.supabase.storage
+          .from('kyc-docs')
+          .createSignedUrl(row.selfie_url, 3600);
+        if (signedErr) {
+          fastify.log.warn({ err: signedErr, submissionId: row.id }, '[admin] kyc selfie signed url failed');
+        }
+        selfie_signed_url = signed?.signedUrl ?? null;
+      }
+      return { ...row, selfie_signed_url };
+    }));
+
+    return reply.send({
+      data: rows,
+      pagination: { page, limit, total: count ?? 0, pages: Math.ceil((count ?? 0) / limit) },
+    });
+  });
+
+  /* ── POST /v1/admin/wallet/kyc/:id/approve ───────────────── */
+  fastify.post<{ Params: { id: string } }>('/admin/wallet/kyc/:id/approve', async (request, reply) => {
+    if (!requireAdmin(request.isAdmin)) {
+      return reply.status(403).send({ error: 'Admin access required' });
+    }
+
+    const { id } = request.params;
+    const { data: sub, error: fetchErr } = await fastify.supabase
+      .from('kyc_submissions')
+      .select('id, wallet_user_id')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (fetchErr) return reply.status(500).send({ error: fetchErr.message });
+    if (!sub) return reply.status(404).send({ error: 'KYC submission not found' });
+
+    const now = new Date().toISOString();
+    const [submissionRes, userRes] = await Promise.all([
+      fastify.supabase
+        .from('kyc_submissions')
+        .update({ status: 'approved', reviewer_note: null, reviewed_at: now })
+        .eq('id', id),
+      fastify.supabase
+        .from('wallet_users')
+        .update({ kyc_level: 1, is_verified: true })
+        .eq('id', sub.wallet_user_id),
+    ]);
+
+    if (submissionRes.error) return reply.status(500).send({ error: submissionRes.error.message });
+    if (userRes.error) return reply.status(500).send({ error: userRes.error.message });
+
+    fastify.log.info({ submissionId: id, walletUserId: sub.wallet_user_id }, '[kyc-admin-approved]');
+    return reply.send({ ok: true });
+  });
+
+  /* ── POST /v1/admin/wallet/kyc/:id/reject ────────────────── */
+  fastify.post<{ Params: { id: string }; Body: KycRejectBody }>('/admin/wallet/kyc/:id/reject', {
+    schema: {
+      body: {
+        type: 'object',
+        properties: {
+          note: { type: 'string' },
+          reviewer_note: { type: 'string' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    if (!requireAdmin(request.isAdmin)) {
+      return reply.status(403).send({ error: 'Admin access required' });
+    }
+
+    const { id } = request.params;
+    const note = request.body?.note ?? request.body?.reviewer_note ?? null;
+    const { data, error } = await fastify.supabase
+      .from('kyc_submissions')
+      .update({
+        status: 'rejected',
+        reviewer_note: note,
+        reviewed_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+      .select('id, wallet_user_id')
+      .maybeSingle();
+
+    if (error) return reply.status(500).send({ error: error.message });
+    if (!data) return reply.status(404).send({ error: 'KYC submission not found' });
+
+    fastify.log.info({ submissionId: id, walletUserId: data.wallet_user_id }, '[kyc-admin-rejected]');
+    return reply.send({ ok: true });
   });
 
   /* ── GET /v1/admin/wallet/transactions ───────────────────── */
