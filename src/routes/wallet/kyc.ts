@@ -2,6 +2,8 @@ import type { FastifyPluginAsync } from 'fastify';
 import '@fastify/multipart';
 import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
+import { enrollPayGuard } from '../../services/payguard';
+import { fetchImageAsBase64 } from '../../utils/storage';
 
 interface RejectBody { reviewer_note: string }
 
@@ -10,7 +12,7 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
   /* ── POST /v1/wallet/kyc/submit ─────────────────────────────
      Accepts multipart/form-data:
        Fields : doc_type, full_name, birth_date, doc_number
-       Files  : doc_front, doc_back, selfie
+       Files  : selfie
   ───────────────────────────────────────────────────────────── */
   fastify.post(
     '/wallet/kyc/submit',
@@ -58,18 +60,14 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
       if (!doc_type || !full_name) {
         return reply.status(400).send({ error: 'doc_type and full_name are required' });
       }
-      if (!files['doc_front'] || !files['selfie']) {
-        return reply.status(400).send({ error: 'doc_front and selfie files are required' });
+      if (!files['selfie']) {
+        return reply.status(400).send({ error: 'selfie file is required' });
       }
 
       // Upload images to Supabase Storage (bucket: kyc-docs)
       const uploads: Array<{ path: string; buffer: Buffer }> = [
-        { path: `${walletId}/front.jpg`,  buffer: files['doc_front'] },
         { path: `${walletId}/selfie.jpg`, buffer: files['selfie']    },
       ];
-      if (files['doc_back']) {
-        uploads.push({ path: `${walletId}/back.jpg`, buffer: files['doc_back'] });
-      }
 
       for (const { path, buffer } of uploads) {
         const { error: upErr } = await fastify.supabase.storage
@@ -81,8 +79,8 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
         }
       }
 
-      const doc_front_url = `${walletId}/front.jpg`;
-      const doc_back_url  = files['doc_back'] ? `${walletId}/back.jpg` : null;
+      const doc_front_url = null;
+      const doc_back_url  = null;
       const selfie_url    = `${walletId}/selfie.jpg`;
 
       // Insert submission (upsert pending — replace rejected)
@@ -114,14 +112,79 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(500).send({ error: 'Submission failed' });
       }
 
+      const walletUserId = walletId;
+      const submissionId = sub.id;
+
       await fastify.supabase
         .from('wallet_users')
         .update({ kyc_submitted_at: new Date().toISOString() })
         .eq('id', walletId);
 
-      fastify.log.info({ walletId, submissionId: sub.id }, '[kyc] submitted');
+      let payguardResult: { student_id: string; confidence: number } | null = null;
+      try {
+        const { data: signed, error: signedErr } = await fastify.supabase.storage
+          .from('kyc-docs')
+          .createSignedUrl(selfie_url, 300);
 
-      return reply.status(201).send({ submission_id: sub.id, status: 'pending' });
+        if (signedErr || !signed?.signedUrl) {
+          throw signedErr ?? new Error('Selfie signed URL failed');
+        }
+
+        const selfieBuffer = await fetchImageAsBase64(signed.signedUrl);
+        const [firstName, ...lastNameParts] = full_name.trim().split(/\s+/);
+        const lastName = lastNameParts.join(' ') || full_name;
+
+        payguardResult = await enrollPayGuard({
+          selfie_b64: selfieBuffer,
+          first_name: firstName,
+          last_name: lastName,
+        });
+
+        if (payguardResult.confidence >= 85) {
+          await fastify.supabase
+            .from('wallet_users')
+            .update({
+              kyc_level: 1,
+              is_verified: true,
+              payguard_student_id: payguardResult.student_id,
+            })
+            .eq('id', walletUserId);
+
+          await fastify.supabase
+            .from('kyc_submissions')
+            .update({
+              status: 'approved',
+              payguard_confidence: payguardResult.confidence,
+              payguard_decision: 'auto_approved',
+              reviewed_at: new Date().toISOString(),
+            })
+            .eq('id', submissionId);
+
+          request.log.info({ walletUserId, confidence: payguardResult.confidence }, '[kyc] auto-approved by PayGuard');
+        } else {
+          await fastify.supabase
+            .from('kyc_submissions')
+            .update({
+              payguard_confidence: payguardResult.confidence,
+              payguard_decision: 'manual_review',
+            })
+            .eq('id', submissionId);
+          request.log.info({ walletUserId, confidence: payguardResult.confidence }, '[kyc] queued for manual review');
+        }
+      } catch (err) {
+        request.log.warn({ err }, '[kyc] PayGuard enroll failed, queuing for manual review');
+      }
+
+      fastify.log.info({ walletId, submissionId }, '[kyc] submitted');
+
+      const confidence = payguardResult?.confidence ?? null;
+
+      return reply.status(201).send({
+        submission_id: submissionId,
+        status: (confidence ?? 0) >= 85 ? 'approved' : 'pending',
+        confidence,
+        auto_approved: (confidence ?? 0) >= 85,
+      });
     },
   );
 
