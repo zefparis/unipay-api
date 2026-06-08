@@ -1,0 +1,363 @@
+/**
+ * /v1/wallet/unipesa — USD deposit, withdrawal, and callback webhook.
+ *
+ * Routes:
+ *   POST /wallet/unipesa/deposit   – C2B: collect USD from subscriber's mobile money
+ *   POST /wallet/unipesa/withdraw  – B2C: pay USD to subscriber's mobile money
+ *   POST /wallet/unipesa/callback  – Unipesa webhook (public, signature-verified)
+ *
+ * Callback logic:
+ *   currency === 'USD' → credit usd_balance  (via wallet_credit_usd RPC)
+ *   currency === 'CDF' → credit balance_cdf  (via direct update)
+ */
+import crypto from 'node:crypto';
+import type { FastifyPluginAsync } from 'fastify';
+import { env } from '../../config/env';
+import { requireWallet } from '../../utils/wallet-jwt';
+import {
+  depositUSD,
+  withdrawUSD,
+  verifyCallbackSignature,
+  newOrderId,
+  UNIPESA_PROVIDER_IDS,
+} from '../../lib/unipesa';
+
+const FEE_RATE       = 0.03;
+const USD_OPERATORS  = ['orange', 'airtel', 'afrimoney'] as const;
+const MIN_USD_AMOUNT = 1;
+
+const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
+
+  /* ─────────────────────────────────────────────────────────────
+   * POST /v1/wallet/unipesa/deposit
+   * Initiates a USD Mobile Money → UniPay collection (C2B).
+   * Body: { phone_mm, operator, amount_usd }
+   * ───────────────────────────────────────────────────────────── */
+  fastify.post<{ Body: { phone_mm: string; operator: string; amount_usd: number } }>(
+    '/wallet/unipesa/deposit',
+    {
+      schema: {
+        body: {
+          type:       'object',
+          required:   ['phone_mm', 'operator', 'amount_usd'],
+          properties: {
+            phone_mm:   { type: 'string', pattern: '^(0|\\+?[1-9])\\d{6,14}$' },
+            operator:   { type: 'string', enum: [...USD_OPERATORS] },
+            amount_usd: { type: 'number', minimum: MIN_USD_AMOUNT },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth not configured' });
+      const authPayload = requireWallet(request.headers.authorization, env.JWT_SECRET);
+      if (!authPayload) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
+
+      const { phone_mm, operator, amount_usd } = request.body;
+      const walletId        = authPayload.wallet_id;
+      const normalizedPhone = phone_mm.replace(/\s/g, '');
+
+      if (!/^\+243[0-9]{9}$/.test(normalizedPhone)) {
+        return reply.status(400).send({
+          error:   'INVALID_PHONE',
+          message: 'Format requis : +243XXXXXXXXX',
+        });
+      }
+
+      const { data: wallet } = await fastify.supabase
+        .from('wallet_users')
+        .select('id, is_active, kyc_level')
+        .eq('id', walletId)
+        .maybeSingle();
+
+      if (!wallet?.is_active) {
+        return reply.status(403).send({ error: 'Account is suspended', statusCode: 403 });
+      }
+
+      const fee        = Math.round(amount_usd * FEE_RATE * 100) / 100;
+      const netAmount  = Math.round((amount_usd - fee) * 100) / 100;
+      const txId       = crypto.randomUUID();
+      const orderId    = newOrderId();
+      const providerId = UNIPESA_PROVIDER_IDS[operator] ?? 1;
+
+      const { error: insertErr } = await fastify.supabase.from('transactions').insert({
+        id:             txId,
+        wallet_user_id: walletId,
+        operator,
+        direction:      'collect',
+        amount:         amount_usd,
+        fee,
+        net_amount:     netAmount,
+        currency:       'USD',
+        phone:          normalizedPhone,
+        reference:      orderId,
+        status:         'pending',
+        metadata:       { source: 'unipesa_usd_deposit' },
+      });
+
+      if (insertErr) {
+        fastify.log.error({ err: insertErr, txId }, '[unipesa/deposit] insert failed');
+        return reply.status(500).send({ error: 'Failed to create deposit', statusCode: 500 });
+      }
+
+      try {
+        await depositUSD({
+          order_id:    orderId,
+          customer_id: normalizedPhone,
+          amount:      amount_usd,
+          provider_id: providerId,
+        });
+
+        await fastify.supabase
+          .from('transactions')
+          .update({ status: 'processing' })
+          .eq('id', txId);
+
+        fastify.log.info({ txId, walletId, operator, amount_usd }, '[unipesa/deposit] initiated');
+
+        return reply.status(201).send({
+          transaction_id: txId,
+          status:         'processing',
+          amount:         amount_usd,
+          fee,
+          net_amount:     netAmount,
+          currency:       'USD',
+        });
+      } catch (err) {
+        fastify.log.error({ err, txId, operator }, '[unipesa/deposit] provider call failed');
+        await fastify.supabase.from('transactions').update({ status: 'failed' }).eq('id', txId);
+        return reply.status(502).send({ error: 'Provider service unavailable', statusCode: 502 });
+      }
+    },
+  );
+
+  /* ─────────────────────────────────────────────────────────────
+   * POST /v1/wallet/unipesa/withdraw
+   * Initiates a UniPay → Mobile Money payout (B2C) in USD.
+   * Atomically debits usd_balance before calling Unipesa.
+   * Refunds on provider failure.
+   * Body: { phone_mm, operator, amount_usd }
+   * ───────────────────────────────────────────────────────────── */
+  fastify.post<{ Body: { phone_mm: string; operator: string; amount_usd: number } }>(
+    '/wallet/unipesa/withdraw',
+    {
+      schema: {
+        body: {
+          type:       'object',
+          required:   ['phone_mm', 'operator', 'amount_usd'],
+          properties: {
+            phone_mm:   { type: 'string', pattern: '^(0|\\+?[1-9])\\d{6,14}$' },
+            operator:   { type: 'string', enum: [...USD_OPERATORS] },
+            amount_usd: { type: 'number', minimum: MIN_USD_AMOUNT },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth not configured' });
+      const authPayload = requireWallet(request.headers.authorization, env.JWT_SECRET);
+      if (!authPayload) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
+
+      const { phone_mm, operator, amount_usd } = request.body;
+      const walletId        = authPayload.wallet_id;
+      const normalizedPhone = phone_mm.replace(/\s/g, '');
+
+      if (!/^\+243[0-9]{9}$/.test(normalizedPhone)) {
+        return reply.status(400).send({
+          error:   'INVALID_PHONE',
+          message: 'Format requis : +243XXXXXXXXX',
+        });
+      }
+
+      const { data: wallet } = await fastify.supabase
+        .from('wallet_users')
+        .select('id, is_active, usd_balance')
+        .eq('id', walletId)
+        .maybeSingle();
+
+      if (!wallet?.is_active) {
+        return reply.status(403).send({ error: 'Account is suspended', statusCode: 403 });
+      }
+
+      const usdBalance = Number(wallet.usd_balance ?? 0);
+      const fee        = Math.round(amount_usd * FEE_RATE * 100) / 100;
+      const totalCost  = Math.round((amount_usd + fee) * 100) / 100;
+
+      if (usdBalance < totalCost) {
+        return reply.status(402).send({
+          error:       'Insufficient USD balance',
+          usd_balance: usdBalance,
+          required:    totalCost,
+          statusCode:  402,
+        });
+      }
+
+      // Atomic debit — raises INSUFFICIENT_FUNDS if race-condition
+      const { error: debitErr } = await fastify.supabase
+        .rpc('wallet_debit_usd', { p_user_id: walletId, p_amount: totalCost });
+
+      if (debitErr) {
+        const isInsufficient = debitErr.message?.includes('INSUFFICIENT_FUNDS');
+        return reply.status(isInsufficient ? 402 : 500).send({
+          error:      isInsufficient ? 'Insufficient USD balance' : 'Debit failed',
+          statusCode: isInsufficient ? 402 : 500,
+        });
+      }
+
+      const txId       = crypto.randomUUID();
+      const orderId    = newOrderId();
+      const providerId = UNIPESA_PROVIDER_IDS[operator] ?? 1;
+
+      await fastify.supabase.from('transactions').insert({
+        id:             txId,
+        wallet_user_id: walletId,
+        operator,
+        direction:      'payout',
+        amount:         amount_usd,
+        fee,
+        net_amount:     amount_usd,
+        currency:       'USD',
+        phone:          normalizedPhone,
+        reference:      orderId,
+        status:         'pending',
+        metadata:       { source: 'unipesa_usd_withdraw' },
+      });
+
+      try {
+        await withdrawUSD({
+          order_id:    orderId,
+          customer_id: normalizedPhone,
+          amount:      amount_usd,
+          provider_id: providerId,
+        });
+
+        await fastify.supabase
+          .from('transactions')
+          .update({ status: 'processing' })
+          .eq('id', txId);
+
+        fastify.log.info({ txId, walletId, operator, amount_usd }, '[unipesa/withdraw] initiated');
+
+        return reply.status(201).send({
+          transaction_id: txId,
+          status:         'processing',
+          amount:         amount_usd,
+          fee,
+          net_amount:     amount_usd,
+          currency:       'USD',
+        });
+      } catch (err) {
+        // Refund: restore the deducted USD balance
+        fastify.log.error({ err, txId, walletId }, '[unipesa/withdraw] provider failed — refunding');
+        await fastify.supabase.from('wallet_users')
+          .update({ usd_balance: usdBalance })
+          .eq('id', walletId);
+        await fastify.supabase.from('transactions')
+          .update({ status: 'failed' })
+          .eq('id', txId);
+        return reply.status(502).send({ error: 'Provider service unavailable', statusCode: 502 });
+      }
+    },
+  );
+
+  /* ─────────────────────────────────────────────────────────────
+   * POST /v1/wallet/unipesa/callback   (public — no JWT)
+   *
+   * Unipesa sends this after a C2B or B2C completes.
+   * We verify the HMAC signature, then:
+   *   status=1 + direction=collect + currency=USD  → credit usd_balance
+   *   status=1 + direction=collect + currency=CDF  → credit balance_cdf
+   *   status=1 + direction=payout                  → mark tx success (already debited)
+   *   status≠1                                     → mark tx failed
+   *
+   * Idempotent: already-successful transactions are silently ignored.
+   * ───────────────────────────────────────────────────────────── */
+  fastify.post('/wallet/unipesa/callback', async (request, reply) => {
+    const body = (request.body ?? {}) as Record<string, any>;
+
+    if (!verifyCallbackSignature(body)) {
+      fastify.log.warn({ body }, '[unipesa/callback] invalid signature');
+      return reply.status(400).send({ error: 'Invalid signature' });
+    }
+
+    const { order_id, status, currency, amount } = body;
+    if (!order_id) return reply.status(400).send({ error: 'Missing order_id' });
+
+    fastify.log.info({ order_id, status, currency, amount }, '[unipesa/callback] received');
+
+    // Unipesa status=1 → success
+    if (Number(status) !== 1) {
+      await fastify.supabase
+        .from('transactions')
+        .update({ status: 'failed', metadata: { unipesa_status: status } })
+        .eq('reference', order_id)
+        .in('status', ['pending', 'processing']);
+      return reply.status(200).send({ received: true, credited: false });
+    }
+
+    // Find the pending/processing transaction by reference (= orderId we sent)
+    const { data: tx } = await fastify.supabase
+      .from('transactions')
+      .select('id, wallet_user_id, net_amount, currency, direction, status')
+      .eq('reference', order_id)
+      .maybeSingle();
+
+    if (!tx) {
+      fastify.log.warn({ order_id }, '[unipesa/callback] tx not found');
+      return reply.status(404).send({ error: 'Transaction not found' });
+    }
+
+    // Idempotency guard
+    if (tx.status === 'success') {
+      return reply.status(200).send({ received: true, already_credited: true });
+    }
+
+    // For payouts (B2C), balance was already debited at initiation — just confirm.
+    if (tx.direction === 'payout') {
+      await fastify.supabase
+        .from('transactions')
+        .update({ status: 'success' })
+        .eq('id', tx.id);
+      return reply.status(200).send({ received: true, credited: false });
+    }
+
+    // For collections (C2B), credit the correct balance.
+    const netCredited = Number(tx.net_amount ?? amount);
+    const txCurrency  = String(tx.currency ?? currency).toUpperCase();
+
+    if (txCurrency === 'USD') {
+      const { error: creditErr } = await fastify.supabase
+        .rpc('wallet_credit_usd', { p_user_id: tx.wallet_user_id, p_amount: netCredited });
+      if (creditErr) {
+        fastify.log.error({ err: creditErr.message, txId: tx.id }, '[unipesa/callback] USD credit failed');
+        return reply.status(500).send({ error: 'Credit failed' });
+      }
+    } else {
+      // CDF — plain update (read-modify-write acceptable for rare callback path)
+      const { data: w } = await fastify.supabase
+        .from('wallet_users')
+        .select('balance_cdf')
+        .eq('id', tx.wallet_user_id)
+        .single();
+      const newCdf = Number(w?.balance_cdf ?? 0) + netCredited;
+      await fastify.supabase
+        .from('wallet_users')
+        .update({ balance_cdf: newCdf })
+        .eq('id', tx.wallet_user_id);
+    }
+
+    await fastify.supabase
+      .from('transactions')
+      .update({ status: 'success' })
+      .eq('id', tx.id);
+
+    fastify.log.info(
+      { txId: tx.id, walletId: tx.wallet_user_id, txCurrency, netCredited },
+      '[unipesa/callback] credited',
+    );
+
+    return reply.status(200).send({ received: true, credited: true, currency: txCurrency, amount: netCredited });
+  });
+};
+
+export default walletUnipesaRoute;

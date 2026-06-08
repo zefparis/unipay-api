@@ -5,8 +5,14 @@ import { requireWallet } from '../../utils/wallet-jwt';
 import { getSwapRate, executeSwap, mintCGLT, burnCGLT } from '../../services/blockchain';
 import type { SwapDirection } from '../../services/blockchain';
 
-// AMM swaps (CGLT <-> USDT) plus internal 1:1 conversions (CDF <-> CGLT).
-type SwapRouteDirection = SwapDirection | 'cdf_to_cglt' | 'cglt_to_cdf';
+const getFiatRate = () => Number(env.FIAT_USD_CDF_RATE ?? '2850') || 2850;
+
+// AMM swaps (CGLT <-> USDT), internal conversions (CDF <-> CGLT), and fiat/stablecoin (USD <-> CDF/USDT).
+type SwapRouteDirection =
+  | SwapDirection
+  | 'cdf_to_cglt' | 'cglt_to_cdf'
+  | 'usd_to_cdf'  | 'cdf_to_usd'
+  | 'usd_to_usdt' | 'usdt_to_usd';
 
 interface SwapBody {
   direction: SwapRouteDirection;
@@ -35,7 +41,7 @@ const walletSwapRoute: FastifyPluginAsync = async (fastify) => {
           type: 'object',
           required: ['direction', 'amount'],
           properties: {
-            direction: { type: 'string', enum: ['cglt_to_usdt', 'usdt_to_cglt', 'cdf_to_cglt', 'cglt_to_cdf'] },
+            direction: { type: 'string', enum: ['cglt_to_usdt', 'usdt_to_cglt', 'cdf_to_cglt', 'cglt_to_cdf', 'usd_to_cdf', 'cdf_to_usd', 'usd_to_usdt', 'usdt_to_usd'] },
             amount:    { type: 'number', minimum: 0 },
           },
         },
@@ -58,7 +64,7 @@ const walletSwapRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data: wallet } = await fastify.supabase
         .from('wallet_users')
-        .select('id, phone, is_active, balance_cdf, cglt_balance, usdt_balance, blockchain_address')
+        .select('id, phone, is_active, balance_cdf, cglt_balance, usdt_balance, usd_balance, blockchain_address')
         .eq('id', payload.wallet_id)
         .maybeSingle();
 
@@ -72,6 +78,121 @@ const walletSwapRoute: FastifyPluginAsync = async (fastify) => {
       const cdfBalance  = Number(wallet.balance_cdf ?? 0);
       const cgltBalance = Number(wallet.cglt_balance ?? 0);
       const usdtBalance = Number(wallet.usdt_balance ?? 0);
+      const usdBalance  = Number(wallet.usd_balance  ?? 0);
+
+      /* ── USD ↔ CDF  (rate = FIAT_USD_CDF_RATE, e.g. 2850) ────── */
+      if (direction === 'usd_to_cdf' || direction === 'cdf_to_usd') {
+        const rate = getFiatRate();
+        if (direction === 'usd_to_cdf' && usdBalance < amount) {
+          return reply.status(402).send({ error: 'Insufficient USD balance', usd_balance: usdBalance, required: amount, statusCode: 402 });
+        }
+        if (direction === 'cdf_to_usd') {
+          const cdfCost = Math.ceil(amount * rate * 100) / 100;
+          if (cdfBalance < cdfCost) {
+            return reply.status(402).send({ error: 'Insufficient CDF balance', balance_cdf: cdfBalance, required: cdfCost, statusCode: 402 });
+          }
+        }
+
+        const txId      = crypto.randomUUID();
+        const reference = `SW-${txId.slice(0, 8).toUpperCase()}`;
+
+        let newUsdBalance: number;
+        let newCdfBalance: number;
+        let cdfAmount:  number;
+        let usdAmount:  number;
+
+        if (direction === 'usd_to_cdf') {
+          usdAmount    = amount;
+          cdfAmount    = Math.floor(amount * rate * 100) / 100;
+          newUsdBalance = Math.max(usdBalance - usdAmount, 0);
+          newCdfBalance = cdfBalance + cdfAmount;
+        } else {
+          // cdf_to_usd: amount is the USD desired; debit CDF equivalent
+          usdAmount    = amount;
+          cdfAmount    = Math.ceil(amount * rate * 100) / 100;
+          newUsdBalance = usdBalance + usdAmount;
+          newCdfBalance = Math.max(cdfBalance - cdfAmount, 0);
+        }
+
+        await fastify.supabase.from('wallet_users')
+          .update({ balance_cdf: newCdfBalance, usd_balance: newUsdBalance })
+          .eq('id', wallet.id);
+
+        await fastify.supabase.from('transactions').insert({
+          id:             txId,
+          wallet_user_id: wallet.id,
+          operator:       'unipesa',
+          direction:      'swap',
+          amount,
+          fee:            0,
+          net_amount:     direction === 'usd_to_cdf' ? cdfAmount : usdAmount,
+          currency:       direction === 'usd_to_cdf' ? 'USD' : 'CDF',
+          phone:          wallet.phone,
+          reference,
+          swap_direction: direction,
+          status:         'success',
+          metadata:       { source: 'wallet_swap', direction, rate },
+        });
+
+        fastify.log.info({ walletId: wallet.id, direction, amount, rate }, '[swap] fiat conversion completed');
+
+        return reply.status(201).send({
+          success:       true,
+          direction,
+          rate,
+          ...(direction === 'usd_to_cdf'
+            ? { usd_spent: usdAmount, cdf_received: cdfAmount }
+            : { cdf_spent: cdfAmount, usd_received: usdAmount }
+          ),
+        });
+      }
+
+      /* ── USD ↔ USDT  (1:1 peg) ──────────────────────────────── */
+      if (direction === 'usd_to_usdt' || direction === 'usdt_to_usd') {
+        if (direction === 'usd_to_usdt' && usdBalance < amount) {
+          return reply.status(402).send({ error: 'Insufficient USD balance', usd_balance: usdBalance, required: amount, statusCode: 402 });
+        }
+        if (direction === 'usdt_to_usd' && usdtBalance < amount) {
+          return reply.status(402).send({ error: 'Insufficient USDT balance', usdt_balance: usdtBalance, required: amount, statusCode: 402 });
+        }
+
+        const txId      = crypto.randomUUID();
+        const reference = `SW-${txId.slice(0, 8).toUpperCase()}`;
+
+        const newUsdBalance  = direction === 'usd_to_usdt' ? Math.max(usdBalance - amount, 0)  : usdBalance + amount;
+        const newUsdtBalance = direction === 'usd_to_usdt' ? usdtBalance + amount : Math.max(usdtBalance - amount, 0);
+
+        await fastify.supabase.from('wallet_users')
+          .update({ usd_balance: newUsdBalance, usdt_balance: newUsdtBalance })
+          .eq('id', wallet.id);
+
+        await fastify.supabase.from('transactions').insert({
+          id:             txId,
+          wallet_user_id: wallet.id,
+          operator:       'unipesa',
+          direction:      'swap',
+          amount,
+          fee:            0,
+          net_amount:     amount,
+          currency:       direction === 'usd_to_usdt' ? 'USD' : 'USDT',
+          phone:          wallet.phone,
+          reference,
+          swap_direction: direction,
+          status:         'success',
+          metadata:       { source: 'wallet_swap', direction },
+        });
+
+        fastify.log.info({ walletId: wallet.id, direction, amount }, '[swap] USD↔USDT completed');
+
+        return reply.status(201).send({
+          success: true,
+          direction,
+          ...(direction === 'usd_to_usdt'
+            ? { usd_spent: amount, usdt_received: amount }
+            : { usdt_spent: amount, usd_received: amount }
+          ),
+        });
+      }
 
       /* ── Internal 1:1 conversions (CDF <-> CGLT, free) ──────── */
       if (direction === 'cdf_to_cglt' || direction === 'cglt_to_cdf') {

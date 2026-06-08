@@ -42,6 +42,9 @@ const envSchema = z.object({
   // Congo Gaming ↔ UniPay shared secret (CGLT betting integration)
   GAMING_API_KEY: z.string().min(8).optional(),
 
+  // Fiat USD↔CDF conversion rate (manual oracle; update on Render when rate changes)
+  FIAT_USD_CDF_RATE: z.string().regex(/^\d+(\.\d+)?$/).default('2850'),
+
   // Brevo transactional email
   BREVO_API_KEY:      z.string().min(1).optional(),
   BREVO_SENDER_EMAIL: z.string().email().default('contact@unipaycongo.com'),
