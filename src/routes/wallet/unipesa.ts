@@ -23,7 +23,7 @@ import {
 } from '../../lib/unipesa';
 
 const FEE_RATE       = 0.03;
-const USD_OPERATORS  = ['orange', 'airtel', 'afrimoney'] as const;
+const USD_OPERATORS  = ['orange', 'airtel', 'mpesa'] as const;
 const MIN_USD_AMOUNT = 1;
 
 const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
@@ -33,17 +33,17 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
    * Initiates a USD Mobile Money → UniPay collection (C2B).
    * Body: { phone_mm, operator, amount_usd }
    * ───────────────────────────────────────────────────────────── */
-  fastify.post<{ Body: { phone_mm: string; operator: string; amount_usd: number } }>(
+  fastify.post<{ Body: { phone: string; operator: string; amount: number } }>(
     '/wallet/unipesa/deposit',
     {
       schema: {
         body: {
           type:       'object',
-          required:   ['phone_mm', 'operator', 'amount_usd'],
+          required:   ['phone', 'operator', 'amount'],
           properties: {
-            phone_mm:   { type: 'string', pattern: '^(0|\\+?[1-9])\\d{6,14}$' },
-            operator:   { type: 'string', enum: [...USD_OPERATORS] },
-            amount_usd: { type: 'number', minimum: MIN_USD_AMOUNT },
+            phone:    { type: 'string' },
+            operator: { type: 'string', enum: [...USD_OPERATORS] },
+            amount:   { type: 'number', minimum: MIN_USD_AMOUNT },
           },
         },
       },
@@ -53,9 +53,9 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       const authPayload = requireWallet(request.headers.authorization, env.JWT_SECRET);
       if (!authPayload) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
 
-      const { phone_mm, operator, amount_usd } = request.body;
+      const { phone, operator, amount: amount_usd } = request.body;
       const walletId        = authPayload.wallet_id;
-      const normalizedPhone = phone_mm.replace(/\s/g, '');
+      const normalizedPhone = phone.replace(/\s/g, '');
 
       if (!/^\+243[0-9]{9}$/.test(normalizedPhone)) {
         return reply.status(400).send({
@@ -138,17 +138,17 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
    * Refunds on provider failure.
    * Body: { phone_mm, operator, amount_usd }
    * ───────────────────────────────────────────────────────────── */
-  fastify.post<{ Body: { phone_mm: string; operator: string; amount_usd: number } }>(
+  fastify.post<{ Body: { phone: string; operator: string; amount: number } }>(
     '/wallet/unipesa/withdraw',
     {
       schema: {
         body: {
           type:       'object',
-          required:   ['phone_mm', 'operator', 'amount_usd'],
+          required:   ['phone', 'operator', 'amount'],
           properties: {
-            phone_mm:   { type: 'string', pattern: '^(0|\\+?[1-9])\\d{6,14}$' },
-            operator:   { type: 'string', enum: [...USD_OPERATORS] },
-            amount_usd: { type: 'number', minimum: MIN_USD_AMOUNT },
+            phone:    { type: 'string' },
+            operator: { type: 'string', enum: [...USD_OPERATORS] },
+            amount:   { type: 'number', minimum: MIN_USD_AMOUNT },
           },
         },
       },
@@ -158,9 +158,9 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       const authPayload = requireWallet(request.headers.authorization, env.JWT_SECRET);
       if (!authPayload) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
 
-      const { phone_mm, operator, amount_usd } = request.body;
+      const { phone, operator, amount: amount_usd } = request.body;
       const walletId        = authPayload.wallet_id;
-      const normalizedPhone = phone_mm.replace(/\s/g, '');
+      const normalizedPhone = phone.replace(/\s/g, '');
 
       if (!/^\+243[0-9]{9}$/.test(normalizedPhone)) {
         return reply.status(400).send({
@@ -247,11 +247,9 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
           currency:       'USD',
         });
       } catch (err) {
-        // Refund: restore the deducted USD balance
+        // Refund: atomically credit back the deducted amount
         fastify.log.error({ err, txId, walletId }, '[unipesa/withdraw] provider failed — refunding');
-        await fastify.supabase.from('wallet_users')
-          .update({ usd_balance: usdBalance })
-          .eq('id', walletId);
+        await fastify.supabase.rpc('wallet_credit_usd', { p_user_id: walletId, p_amount: totalCost });
         await fastify.supabase.from('transactions')
           .update({ status: 'failed' })
           .eq('id', txId);

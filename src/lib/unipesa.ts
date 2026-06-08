@@ -26,6 +26,7 @@ export const UNIPESA_PROVIDER_IDS: Record<string, number> = {
   orange:    1,
   airtel:    2,
   afrimoney: 3,
+  mpesa:     4,
 };
 
 export type UnipesaResponse = {
