@@ -23,7 +23,7 @@ import {
 } from '../../lib/unipesa';
 
 const FEE_RATE       = 0.03;
-const USD_OPERATORS  = ['orange', 'airtel', 'mpesa'] as const;
+const USD_OPERATORS  = ['orange', 'airtel', 'africell'] as const;
 const MIN_USD_AMOUNT = 1;
 
 const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
