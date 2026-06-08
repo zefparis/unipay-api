@@ -19,7 +19,7 @@ import {
   withdrawUSD,
   verifyCallbackSignature,
   newOrderId,
-  UNIPESA_PROVIDER_IDS,
+  UNIPESA_USD_PROVIDER_IDS,
 } from '../../lib/unipesa';
 
 const FEE_RATE       = 0.03;
@@ -78,7 +78,12 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       const netAmount  = Math.round((amount_usd - fee) * 100) / 100;
       const txId       = crypto.randomUUID();
       const orderId    = newOrderId();
-      const providerId = UNIPESA_PROVIDER_IDS[operator] ?? 1;
+      const providerId = UNIPESA_USD_PROVIDER_IDS[operator];
+
+      if (providerId === undefined) {
+        fastify.log.error({ operator }, '[unipesa/deposit] unknown USD operator — no provider_id mapped');
+        return reply.status(400).send({ error: 'Opérateur USD non supporté', statusCode: 400 });
+      }
 
       const { error: insertErr } = await fastify.supabase.from('transactions').insert({
         id:             txId,
@@ -101,12 +106,19 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       try {
-        await depositUSD({
+        fastify.log.info(
+          { txId, walletId, operator, providerId, currency: 'USD', amount_usd, orderId, phone: normalizedPhone },
+          '[unipesa/deposit] calling Unipesa C2B',
+        );
+
+        const unipesaResp = await depositUSD({
           order_id:    orderId,
           customer_id: normalizedPhone,
           amount:      amount_usd,
           provider_id: providerId,
         });
+
+        fastify.log.info({ txId, unipesaResp }, '[unipesa/deposit] Unipesa response');
 
         await fastify.supabase
           .from('transactions')
@@ -123,8 +135,11 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
           net_amount:     netAmount,
           currency:       'USD',
         });
-      } catch (err) {
-        fastify.log.error({ err, txId, operator }, '[unipesa/deposit] provider call failed');
+      } catch (err: any) {
+        fastify.log.error(
+          { err: err?.message, errResponse: (err as any)?.response, txId, operator },
+          '[unipesa/deposit] provider call failed',
+        );
         await fastify.supabase.from('transactions').update({ status: 'failed' }).eq('id', txId);
         return reply.status(502).send({ error: 'Provider service unavailable', statusCode: 502 });
       }
@@ -206,7 +221,13 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
 
       const txId       = crypto.randomUUID();
       const orderId    = newOrderId();
-      const providerId = UNIPESA_PROVIDER_IDS[operator] ?? 1;
+      const providerId = UNIPESA_USD_PROVIDER_IDS[operator];
+
+      if (providerId === undefined) {
+        fastify.log.error({ operator }, '[unipesa/withdraw] unknown USD operator — no provider_id mapped');
+        await fastify.supabase.rpc('wallet_credit_usd', { p_user_id: walletId, p_amount: totalCost });
+        return reply.status(400).send({ error: 'Opérateur USD non supporté', statusCode: 400 });
+      }
 
       await fastify.supabase.from('transactions').insert({
         id:             txId,
@@ -224,12 +245,19 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       });
 
       try {
-        await withdrawUSD({
+        fastify.log.info(
+          { txId, walletId, operator, providerId, currency: 'USD', amount_usd, totalCost, fee, orderId, phone: normalizedPhone },
+          '[unipesa/withdraw] calling Unipesa B2C',
+        );
+
+        const unipesaResp = await withdrawUSD({
           order_id:    orderId,
           customer_id: normalizedPhone,
           amount:      amount_usd,
           provider_id: providerId,
         });
+
+        fastify.log.info({ txId, unipesaResp }, '[unipesa/withdraw] Unipesa response');
 
         await fastify.supabase
           .from('transactions')
@@ -246,9 +274,12 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
           net_amount:     amount_usd,
           currency:       'USD',
         });
-      } catch (err) {
+      } catch (err: any) {
         // Refund: atomically credit back the deducted amount
-        fastify.log.error({ err, txId, walletId }, '[unipesa/withdraw] provider failed — refunding');
+        fastify.log.error(
+          { err: err?.message, errResponse: (err as any)?.response, txId, walletId },
+          '[unipesa/withdraw] provider failed — refunding',
+        );
         await fastify.supabase.rpc('wallet_credit_usd', { p_user_id: walletId, p_amount: totalCost });
         await fastify.supabase.from('transactions')
           .update({ status: 'failed' })

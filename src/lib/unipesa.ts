@@ -21,12 +21,25 @@ const fetchWithProxy: typeof fetch = proxyAgent
       undiciFetch(url, { ...(opts ?? {}), dispatcher: proxyAgent }) as any)
   : fetch;
 
-/** Maps mobile-money operator slug to the Unipesa numeric provider_id. */
+/** Maps mobile-money operator slug to the Unipesa numeric provider_id (CDF flows). */
 export const UNIPESA_PROVIDER_IDS: Record<string, number> = {
   orange:    1,
   airtel:    2,
   afrimoney: 3,
   mpesa:     4,
+};
+
+/**
+ * Maps mobile-money operator slug to the Unipesa numeric provider_id for USD flows.
+ * USD providers have different IDs from their CDF equivalents.
+ *   Orange USD  → 10
+ *   Airtel USD  → 17
+ *   Africell USD → 19
+ */
+export const UNIPESA_USD_PROVIDER_IDS: Record<string, number> = {
+  orange:   10,
+  airtel:   17,
+  africell: 19,
 };
 
 export type UnipesaResponse = {
