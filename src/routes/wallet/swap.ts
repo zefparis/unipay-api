@@ -2,11 +2,14 @@ import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
-import { getSwapRate, executeSwap } from '../../services/blockchain';
+import { getSwapRate, executeSwap, mintCGLT, burnCGLT } from '../../services/blockchain';
 import type { SwapDirection } from '../../services/blockchain';
 
+// AMM swaps (CGLT <-> USDT) plus internal 1:1 conversions (CDF <-> CGLT).
+type SwapRouteDirection = SwapDirection | 'cdf_to_cglt' | 'cglt_to_cdf';
+
 interface SwapBody {
-  direction: SwapDirection;
+  direction: SwapRouteDirection;
   amount: number;
 }
 
@@ -32,7 +35,7 @@ const walletSwapRoute: FastifyPluginAsync = async (fastify) => {
           type: 'object',
           required: ['direction', 'amount'],
           properties: {
-            direction: { type: 'string', enum: ['cglt_to_usdt', 'usdt_to_cglt'] },
+            direction: { type: 'string', enum: ['cglt_to_usdt', 'usdt_to_cglt', 'cdf_to_cglt', 'cglt_to_cdf'] },
             amount:    { type: 'number', minimum: 0 },
           },
         },
@@ -55,7 +58,7 @@ const walletSwapRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data: wallet } = await fastify.supabase
         .from('wallet_users')
-        .select('id, phone, is_active, cglt_balance, usdt_balance, blockchain_address')
+        .select('id, phone, is_active, balance_cdf, cglt_balance, usdt_balance, blockchain_address')
         .eq('id', payload.wallet_id)
         .maybeSingle();
 
@@ -66,8 +69,77 @@ const walletSwapRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(403).send({ error: 'Account is suspended', statusCode: 403 });
       }
 
+      const cdfBalance  = Number(wallet.balance_cdf ?? 0);
       const cgltBalance = Number(wallet.cglt_balance ?? 0);
       const usdtBalance = Number(wallet.usdt_balance ?? 0);
+
+      /* ── Internal 1:1 conversions (CDF <-> CGLT, free) ──────── */
+      if (direction === 'cdf_to_cglt' || direction === 'cglt_to_cdf') {
+        if (direction === 'cdf_to_cglt' && cdfBalance < amount) {
+          return reply.status(402).send({
+            error: 'Insufficient CDF balance', balance_cdf: cdfBalance, required: amount, statusCode: 402,
+          });
+        }
+        if (direction === 'cglt_to_cdf' && cgltBalance < amount) {
+          return reply.status(402).send({
+            error: 'Insufficient CGLT balance', cglt_balance: cgltBalance, required: amount, statusCode: 402,
+          });
+        }
+
+        // On-chain mint/burn (treasury-mediated). Requires a blockchain address.
+        let blockchainTxHash: string | null = null;
+        const txId      = crypto.randomUUID();
+        const reference = `SW-${txId.slice(0, 8).toUpperCase()}`;
+
+        if (wallet.blockchain_address) {
+          try {
+            blockchainTxHash = direction === 'cdf_to_cglt'
+              ? await mintCGLT(wallet.blockchain_address as string, amount, reference)
+              : await burnCGLT(wallet.blockchain_address as string, amount, reference);
+          } catch (err) {
+            fastify.log.error({ err, walletId: wallet.id, direction, amount }, '[swap] on-chain mint/burn failed');
+            return reply.status(502).send({ error: 'Conversion execution failed', statusCode: 502 });
+          }
+        }
+
+        // Update ledger balances (1 CDF = 1 CGLT).
+        const newCdfBalance  = direction === 'cdf_to_cglt' ? cdfBalance - amount : cdfBalance + amount;
+        const newCgltBalance = direction === 'cdf_to_cglt' ? cgltBalance + amount : cgltBalance - amount;
+
+        await fastify.supabase
+          .from('wallet_users')
+          .update({ balance_cdf: Math.max(newCdfBalance, 0), cglt_balance: Math.max(newCgltBalance, 0) })
+          .eq('id', wallet.id);
+
+        await fastify.supabase.from('transactions').insert({
+          id:                 txId,
+          wallet_user_id:     wallet.id,
+          operator:           'cglt',
+          direction:          'swap',
+          amount,
+          fee:                0,
+          net_amount:         amount,
+          currency:           direction === 'cdf_to_cglt' ? 'CDF' : 'CGLT',
+          phone:              wallet.phone,
+          reference,
+          swap_direction:     direction,
+          cglt_amount:        amount,
+          blockchain_tx_hash: blockchainTxHash,
+          status:             'success',
+          metadata:           { source: 'wallet_swap', direction },
+        });
+
+        fastify.log.info({ walletId: wallet.id, direction, amount, txHash: blockchainTxHash }, '[swap] internal conversion completed');
+
+        if (direction === 'cdf_to_cglt') {
+          return reply.status(201).send({
+            success: true, cdf_spent: amount, cglt_received: amount, blockchain_tx_hash: blockchainTxHash,
+          });
+        }
+        return reply.status(201).send({
+          success: true, cglt_spent: amount, cdf_received: amount, blockchain_tx_hash: blockchainTxHash,
+        });
+      }
 
       // CGLT -> USDT requires sufficient CGLT ledger balance
       if (direction === 'cglt_to_usdt' && cgltBalance < amount) {

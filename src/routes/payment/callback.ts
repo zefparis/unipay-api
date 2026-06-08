@@ -1,6 +1,5 @@
 import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
-import { mintCGLT } from '../../services/blockchain';
 import { verifyCallbackSignature, normalizeCallback } from '../../services/avada';
 import type { AvadaCallbackPayload } from '../../services/avada';
 
@@ -132,37 +131,19 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
       if (dbStatus === 'success' && txDirection === 'collect' && walletUserId) {
         const { data: walletRow } = await fastify.supabase
           .from('wallet_users')
-          .select('balance_cdf, blockchain_address, cglt_balance')
+          .select('balance_cdf')
           .eq('id', walletUserId)
           .maybeSingle();
 
         if (walletRow) {
-          let blockchainTxHash: string | null = null;
-          if (walletRow.blockchain_address) {
-            try {
-              blockchainTxHash = await mintCGLT(walletRow.blockchain_address as string, txNetAmount, tx.id);
-            } catch (err) {
-              fastify.log.error(
-                { err, walletUserId, txId: tx.id },
-                '[wallet-credit] CGLT mint failed — manual reconciliation required',
-              );
-            }
-          }
-
+          // Deposits only credit the CDF balance. Converting CDF to CGLT is now
+          // an explicit user action handled by the swap route.
           const { error: creditError } = await fastify.supabase
             .from('wallet_users')
             .update({
               balance_cdf: Number(walletRow.balance_cdf ?? 0) + txNetAmount,
-              cglt_balance: Number(walletRow.cglt_balance ?? 0) + txNetAmount,
             })
             .eq('id', walletUserId);
-
-          if (blockchainTxHash) {
-            await fastify.supabase
-              .from('transactions')
-              .update({ blockchain_tx_hash: blockchainTxHash, cglt_amount: txNetAmount })
-              .eq('id', tx.id);
-          }
 
           if (creditError) {
             fastify.log.error(
