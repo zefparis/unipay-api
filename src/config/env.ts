@@ -39,6 +39,9 @@ const envSchema = z.object({
   // Admin secret (plain header — internal tooling only)
   ADMIN_SECRET: z.string().min(16).optional(),
 
+  // Congo Gaming ↔ UniPay shared secret (CGLT betting integration)
+  GAMING_API_KEY: z.string().min(8).optional(),
+
   // Brevo transactional email
   BREVO_API_KEY:      z.string().min(1).optional(),
   BREVO_SENDER_EMAIL: z.string().email().default('contact@unipaycongo.com'),
