@@ -112,19 +112,47 @@ export interface SwapRate {
   rate: number;
   fee: number;
   paused: boolean;
+  /** Reserve (AMM pool) balances held by the reserve contract. */
+  pool_usdt: number;
+  pool_cglt: number;
 }
 
 export async function getSwapRate(): Promise<SwapRate> {
-  const reserve = new ethers.Contract(getReserveAddress(), RESERVE_ABI, getProvider());
+  const provider = getProvider();
+  const reserveAddress = getReserveAddress();
+  const reserve = new ethers.Contract(reserveAddress, RESERVE_ABI, provider);
+
   const [rate, feePercent, paused] = await Promise.all([
     reserve.cgltPerUsdt(),
     reserve.feePercent(),
     reserve.paused(),
   ]);
+
+  // Best-effort: read the pool balances held by the reserve contract.
+  // USDT uses 6 decimals, CGLT uses 18.
+  let poolUsdt = 0;
+  let poolCglt = 0;
+  try {
+    const usdtAddress = process.env.USDT_ADDRESS;
+    const cgltAddress = process.env.CGLT_CONTRACT_ADDRESS;
+    if (usdtAddress) {
+      const usdt = new ethers.Contract(usdtAddress, ERC20_ABI, provider);
+      poolUsdt = Number(ethers.formatUnits(await usdt.balanceOf(reserveAddress), 6));
+    }
+    if (cgltAddress) {
+      const cglt = new ethers.Contract(cgltAddress, ERC20_ABI, provider);
+      poolCglt = Number(ethers.formatUnits(await cglt.balanceOf(reserveAddress), 18));
+    }
+  } catch {
+    /* pool balances are best-effort; keep zeros on failure */
+  }
+
   return {
     rate: Number(rate),
     fee: Number(feePercent) / 100, // basis points -> percent (50 -> 0.5)
     paused: Boolean(paused),
+    pool_usdt: poolUsdt,
+    pool_cglt: poolCglt,
   };
 }
 

@@ -76,6 +76,8 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
       p2pRes,
       todayRes,
       chartRes,
+      cgltRes,
+      swapsTodayRes,
     ] = await Promise.all([
       fastify.supabase.from('wallet_users').select('id', { count: 'exact', head: true }),
       fastify.supabase.from('wallet_users').select('id', { count: 'exact', head: true }).gte('kyc_level', 1),
@@ -88,11 +90,18 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
         .select('direction, created_at')
         .gte('created_at', sevenDaysAgo)
         .order('created_at', { ascending: true }),
+      fastify.supabase.from('wallet_users').select('cglt_balance'),
+      fastify.supabase
+        .from('transactions')
+        .select('id', { count: 'exact', head: true })
+        .eq('direction', 'swap')
+        .gte('created_at', todayIso),
     ]);
 
     const totalDeposited = (depositRes.data ?? []).reduce((s, r) => s + Number(r.net_amount ?? 0), 0);
     const totalWithdrawn = (withdrawRes.data ?? []).reduce((s, r) => s + Number(r.net_amount ?? 0), 0);
     const totalP2P = (p2pRes.data ?? []).reduce((s, r) => s + Number(r.net_amount ?? 0), 0);
+    const totalCgltCirculating = (cgltRes.data ?? []).reduce((s, r) => s + Number(r.cglt_balance ?? 0), 0);
 
     // Build 7-day chart data
     const days: Record<string, { collect: number; payout: number; p2p: number; date: string }> = {};
@@ -118,6 +127,8 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
       total_withdrawn_cdf: totalWithdrawn,
       total_p2p_cdf: totalP2P,
       transactions_today: todayRes.count ?? 0,
+      total_cglt_circulating: totalCgltCirculating,
+      swaps_today: swapsTodayRes.count ?? 0,
       chart: Object.values(days),
     });
   });
@@ -489,7 +500,7 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
     let q = fastify.supabase
       .from('transactions')
       .select(
-        'id, wallet_user_id, direction, operator, phone, amount, fee, net_amount, currency, status, reference, created_at, updated_at, wallet_users(phone, full_name)',
+        'id, wallet_user_id, direction, operator, phone, amount, fee, net_amount, currency, status, reference, created_at, updated_at, swap_direction, cglt_amount, usdt_amount, blockchain_tx_hash, wallet_users(phone, full_name)',
         { count: 'exact' },
       )
       .not('wallet_user_id', 'is', null)
