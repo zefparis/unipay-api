@@ -179,6 +179,21 @@ async function ensureAllowance(
   }
 }
 
+export async function mintWCGLTonBSC(
+  bscAddress: string,
+  amount: number,
+): Promise<string> {
+  const bridgeUrl = process.env.BRIDGE_API_URL ?? 'http://104.248.166.144:3099';
+  const res = await fetch(`${bridgeUrl}/bridge/mint`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ to: bscAddress, amount }),
+  });
+  const data = await res.json() as { success?: boolean; hash?: string; error?: string };
+  if (!data.success) throw new Error(data.error ?? 'bridge_failed');
+  return data.hash ?? '';
+}
+
 export async function executeSwap(
   direction: SwapDirection,
   amount: number,
