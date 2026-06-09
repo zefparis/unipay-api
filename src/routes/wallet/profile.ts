@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
+import { generateWallet, encryptPrivateKey } from '../../services/blockchain';
 
 interface PatchProfileBody { full_name: string }
 
@@ -41,6 +42,26 @@ const walletProfileRoute: FastifyPluginAsync = async (fastify) => {
 
       if (error || !data) return reply.status(404).send({ error: 'Wallet not found' });
 
+      // Auto-provision blockchain wallet for accounts created before the feature
+      let blockchainAddress = (data.blockchain_address as string | null) ?? null;
+      if (!blockchainAddress) {
+        try {
+          const newWallet = generateWallet();
+          const encryptedKey = encryptPrivateKey(newWallet.privateKey);
+          await fastify.supabase
+            .from('wallet_users')
+            .update({
+              blockchain_address:               newWallet.address,
+              blockchain_private_key_encrypted: encryptedKey,
+            })
+            .eq('id', data.id);
+          blockchainAddress = newWallet.address;
+          fastify.log.info({ walletId: data.id }, '[profile] blockchain wallet auto-provisioned');
+        } catch (e) {
+          fastify.log.error({ err: e, walletId: data.id }, '[profile] blockchain wallet provision failed');
+        }
+      }
+
       return reply.send({
         wallet_id:   data.id,
         phone:       data.phone,
@@ -48,7 +69,7 @@ const walletProfileRoute: FastifyPluginAsync = async (fastify) => {
         kyc_level:   Number(data.kyc_level ?? 0),
         is_verified: Boolean(data.is_verified),
         balance_cdf:        Number(data.balance_cdf ?? 0),
-        blockchain_address: (data.blockchain_address as string | null) ?? null,
+        blockchain_address: blockchainAddress,
         created_at:         data.created_at,
       });
     },
