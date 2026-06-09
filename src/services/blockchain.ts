@@ -13,6 +13,16 @@ const ERC20_ABI = [
   'function balanceOf(address) view returns (uint256)',
 ];
 
+const PANCAKE_ROUTER = '0x10ED43C718714eb63d5aA57B78B54704E256024E';
+const WCGLT_BSC     = '0x6b402687B45f98913dF7409660A8f04f81752f8B';
+const USDT_BSC      = '0x55d398326f99059fF775485246999027B3197955';
+const WBNB          = '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c';
+
+const PANCAKE_ABI = [
+  'function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) returns (uint[] memory amounts)',
+  'function getAmountsOut(uint amountIn, address[] calldata path) view returns (uint[] memory amounts)',
+];
+
 const RESERVE_ABI = [
   'function cgltPerUsdt() view returns (uint256)',
   'function feePercent() view returns (uint256)',
@@ -20,6 +30,16 @@ const RESERVE_ABI = [
   'function swapCGLTtoUSDT(uint256 cgltAmount) external',
   'function swapUSDTtoCGLT(uint256 usdtAmount6) external',
 ];
+
+function getBscProvider() {
+  return new ethers.JsonRpcProvider(process.env.BSC_RPC_URL ?? 'https://bsc-dataseed.binance.org');
+}
+
+function getBscSigner() {
+  const key = process.env.BSC_OWNER_KEY;
+  if (!key) throw new Error('BSC_OWNER_KEY not configured');
+  return new ethers.Wallet(key, getBscProvider());
+}
 
 function getProvider() {
   const nodeUrl = process.env.CGLT_NODE_URL;
@@ -192,6 +212,40 @@ export async function mintWCGLTonBSC(
   const data = await res.json() as { success?: boolean; hash?: string; error?: string };
   if (!data.success) throw new Error(data.error ?? 'bridge_failed');
   return data.hash ?? '';
+}
+
+export async function swapWCGLTtoUSDT(
+  wcgltAmount: number,
+  recipientAddress: string,
+): Promise<{ usdtReceived: number; txHash: string }> {
+  const signer    = getBscSigner();
+  const wcgltWei  = ethers.parseEther(wcgltAmount.toString());
+
+  const wcglt     = new ethers.Contract(WCGLT_BSC, ERC20_ABI, signer);
+  const allowance: bigint = await wcglt.allowance(signer.address, PANCAKE_ROUTER);
+  if (allowance < wcgltWei) {
+    const approveTx = await wcglt.approve(PANCAKE_ROUTER, ethers.MaxUint256);
+    await approveTx.wait();
+  }
+
+  const router    = new ethers.Contract(PANCAKE_ROUTER, PANCAKE_ABI, signer);
+  const path      = [WCGLT_BSC, WBNB, USDT_BSC];
+  const amounts: bigint[] = await router.getAmountsOut(wcgltWei, path);
+  const expectedUsdt = amounts[2];
+  const amountOutMin = expectedUsdt * 95n / 100n;
+
+  const deadline = Math.floor(Date.now() / 1000) + 300;
+  const tx = await router.swapExactTokensForTokens(
+    wcgltWei,
+    amountOutMin,
+    path,
+    recipientAddress,
+    deadline,
+  );
+  const receipt = await tx.wait();
+
+  const usdtReceived = Number(ethers.formatUnits(expectedUsdt, 18));
+  return { usdtReceived, txHash: receipt.hash };
 }
 
 export async function executeSwap(
