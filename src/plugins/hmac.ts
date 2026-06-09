@@ -22,6 +22,8 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
     if (urlPath.startsWith('/v1/merchant/')) return;
     // Wallet routes use wallet JWT auth — handled inside each route
     if (urlPath.startsWith('/v1/wallet/')) return;
+    // Internal routes are authenticated via x-api-key (GAMING_API_KEY) only
+    if (urlPath.startsWith('/v1/internal/')) return;
 
     // Admin secret bypass — avoids API key requirement for admin tooling
     const adminSecretHeader = request.headers['x-admin-secret'];
