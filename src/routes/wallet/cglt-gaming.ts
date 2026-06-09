@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { env } from '../../config/env';
 import { mintCGLT, getSwapRate, mintWCGLTonBSC } from '../../services/blockchain';
+import { requireWallet } from '../../utils/wallet-jwt';
 
 const CGLT_PER_WCGLT = parseInt(process.env.CGLT_PER_WCGLT ?? '500');
 
@@ -332,6 +333,88 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
       });
     },
   );
+
+  /* ── POST /v1/wallet/user/cglt-withdraw-bsc — user-facing (JWT auth) ── */
+  fastify.post<{ Body: { amount: number; bsc_address: string } }>(
+    '/wallet/user/cglt-withdraw-bsc',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['amount', 'bsc_address'],
+          properties: {
+            amount:      { type: 'number', minimum: 500 },
+            bsc_address: { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth not configured' });
+      const jwtPayload = requireWallet(request.headers.authorization, env.JWT_SECRET);
+      if (!jwtPayload) return reply.status(401).send({ error: 'Unauthorized' });
+
+      const { amount, bsc_address } = request.body;
+      const phone = jwtPayload.phone;
+
+      const { data: wallet } = await fastify.supabase
+        .from('wallet_users')
+        .select('id, phone, is_active, cglt_balance')
+        .eq('phone', phone)
+        .maybeSingle();
+
+      if (!wallet) return reply.status(404).send({ error: 'WALLET_NOT_FOUND' });
+      if (!wallet.is_active) return reply.status(403).send({ error: 'ACCOUNT_SUSPENDED' });
+
+      const cgltBalance = Number(wallet.cglt_balance ?? 0);
+      if (cgltBalance < amount) {
+        return reply.status(402).send({ error: 'INSUFFICIENT_CGLT', available: cgltBalance });
+      }
+
+      const wCGLTAmount = amount / CGLT_PER_WCGLT;
+      if (wCGLTAmount < 0.001) {
+        return reply.status(400).send({ error: 'AMOUNT_TOO_SMALL', min_cglt: CGLT_PER_WCGLT });
+      }
+
+      const newBalance = cgltBalance - amount;
+      await fastify.supabase.from('wallet_users').update({ cglt_balance: newBalance }).eq('id', wallet.id);
+
+      let bscTxHash: string | null = null;
+      try {
+        bscTxHash = await mintWCGLTonBSC(bsc_address, wCGLTAmount);
+      } catch (err) {
+        await fastify.supabase.from('wallet_users').update({ cglt_balance: cgltBalance }).eq('id', wallet.id);
+        fastify.log.error({ err, phone, bsc_address, amount }, '[cglt-user] BSC bridge failed (refunded)');
+        return reply.status(502).send({ error: 'BRIDGE_FAILED' });
+      }
+
+      await fastify.supabase.from('transactions').insert({
+        id:                 crypto.randomUUID(),
+        wallet_user_id:     wallet.id,
+        operator:           'cglt',
+        direction:          'cglt_bsc_withdraw',
+        amount,
+        fee:                0,
+        net_amount:         amount,
+        currency:           'CGLT',
+        phone:              wallet.phone,
+        reference:          bscTxHash,
+        cglt_amount:        -amount,
+        blockchain_tx_hash: bscTxHash,
+        status:             'success',
+        metadata:           { bsc_address, bridge_tx: bscTxHash, wcglt_amount: wCGLTAmount, cglt_per_wcglt: CGLT_PER_WCGLT },
+      });
+
+      return reply.status(201).send({
+        success:      true,
+        new_balance:  newBalance,
+        bsc_tx_hash:  bscTxHash,
+        bsc_address,
+        wcglt_amount: wCGLTAmount,
+      });
+    },
+  );
 };
 
 export default cgltGamingRoute;
+
