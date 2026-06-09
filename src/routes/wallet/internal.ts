@@ -27,7 +27,11 @@ const walletInternalRoute: FastifyPluginAsync = async (fastify) => {
         fastify.log.error({ err: error }, '[internal] bsc-addresses fetch failed');
         return reply.status(500).send({ error: 'Database error' });
       }
-      return reply.send(data);
+      const normalized = (data ?? []).map((row) => ({
+        ...row,
+        blockchain_address: row.blockchain_address?.toLowerCase() ?? null,
+      }));
+      return reply.send(normalized);
     },
   );
 
@@ -53,7 +57,8 @@ const walletInternalRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(401).send({ error: 'Unauthorized' });
       }
 
-      const { phone, cglt_amount, tx_hash, bsc_address } = request.body;
+      const { phone, cglt_amount, tx_hash } = request.body;
+      const bsc_address = request.body.bsc_address.toLowerCase();
 
       // Idempotence — vérifie si la tx est déjà traitée
       const { data: existing } = await fastify.supabase
@@ -70,7 +75,7 @@ const walletInternalRoute: FastifyPluginAsync = async (fastify) => {
       const { data: wallet } = await fastify.supabase
         .from('wallet_users')
         .select('id, cglt_balance')
-        .eq('blockchain_address', bsc_address)
+        .eq('blockchain_address', bsc_address)  // bsc_address already lowercased
         .maybeSingle();
 
       if (!wallet) {
