@@ -39,6 +39,7 @@ import walletReconcileRoute from './routes/admin/wallet-reconcile';
 import walletInspectRoute from './routes/admin/wallet-inspect';
 import adminWalletRoute from './routes/admin/wallet';
 import wcgltSwapRoute from './routes/wallet/wcglt-swap';
+import walletInternalRoute from './routes/wallet/internal';
 
 export async function buildServer() {
   const server = Fastify({
@@ -149,6 +150,7 @@ export async function buildServer() {
       v1.register(walletInspectRoute);
       v1.register(adminWalletRoute);
       v1.register(wcgltSwapRoute);
+      v1.register(walletInternalRoute);
     },
     { prefix: '/v1' },
   );
