@@ -3,6 +3,8 @@ import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { env } from '../../config/env';
 import { mintCGLT, getSwapRate, mintWCGLTonBSC } from '../../services/blockchain';
 
+const CGLT_PER_WCGLT = parseInt(process.env.CGLT_PER_WCGLT ?? '500');
+
 interface DebitBody {
   phone: string;
   amount: number;
@@ -277,6 +279,12 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(402).send({ error: 'INSUFFICIENT_CGLT', available: cgltBalance });
       }
 
+      // Conversion CGLT gaming → wCGLT BSC
+      const wCGLTAmount = amount / CGLT_PER_WCGLT;
+      if (wCGLTAmount < 0.001) {
+        return reply.status(400).send({ error: 'AMOUNT_TOO_SMALL', min_cglt: CGLT_PER_WCGLT });
+      }
+
       // Débiter le wallet UniPay
       const newBalance = cgltBalance - amount;
       await fastify.supabase
@@ -287,7 +295,7 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
       // Minter wCGLT sur BSC
       let bscTxHash: string | null = null;
       try {
-        bscTxHash = await mintWCGLTonBSC(bsc_address, amount);
+        bscTxHash = await mintWCGLTonBSC(bsc_address, wCGLTAmount);
       } catch (err) {
         // Rembourser si le bridge échoue
         await fastify.supabase
@@ -312,14 +320,15 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
         cglt_amount:        -amount,
         blockchain_tx_hash: bscTxHash,
         status:             'success',
-        metadata:           { bsc_address, bridge_tx: bscTxHash },
+        metadata:           { bsc_address, bridge_tx: bscTxHash, wcglt_amount: wCGLTAmount, cglt_per_wcglt: CGLT_PER_WCGLT },
       });
 
       return reply.status(201).send({
-        success:     true,
-        new_balance: newBalance,
-        bsc_tx_hash: bscTxHash,
+        success:      true,
+        new_balance:  newBalance,
+        bsc_tx_hash:  bscTxHash,
         bsc_address,
+        wcglt_amount: wCGLTAmount,
       });
     },
   );
