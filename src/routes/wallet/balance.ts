@@ -18,6 +18,7 @@ const walletBalanceRoute: FastifyPluginAsync = async (fastify) => {
               usd_balance:  { type: 'number' },
               currency:     { type: 'string' },
               kyc_level:    { type: 'number' },
+              phone:        { type: 'string' },
             },
           },
         },
@@ -35,7 +36,7 @@ const walletBalanceRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data, error } = await fastify.supabase
         .from('wallet_users')
-        .select('id, balance_cdf, cglt_balance, usdt_balance, usd_balance, kyc_level, is_active')
+        .select('id, phone, balance_cdf, cglt_balance, usdt_balance, usd_balance, kyc_level, is_active')
         .eq('id', payload.wallet_id)
         .maybeSingle();
 
@@ -55,6 +56,7 @@ const walletBalanceRoute: FastifyPluginAsync = async (fastify) => {
         usd_balance:  Number(data.usd_balance ?? 0),
         currency:     'CDF',
         kyc_level:    data.kyc_level ?? 0,
+        phone:        data.phone ?? '',
       };
     },
   );
