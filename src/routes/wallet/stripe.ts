@@ -88,7 +88,8 @@ const walletStripeRoute: FastifyPluginAsync = async (fastify) => {
    *   Events: payment_intent.succeeded
    * ───────────────────────────────────────────────────────────── */
   fastify.register(async (sub) => {
-    // Raw body required for Stripe signature verification
+    // Fastify v4 inherits the parent JSON parser — remove it before registering the buffer parser
+    sub.removeContentTypeParser('application/json');
     sub.addContentTypeParser('application/json', { parseAs: 'buffer' }, (_req, body, done) => {
       done(null, body);
     });
