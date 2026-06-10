@@ -207,18 +207,16 @@ const walletSwapRoute: FastifyPluginAsync = async (fastify) => {
           });
         }
 
-        // On-chain mint/burn (treasury-mediated). Requires a blockchain address.
+        // On-chain mint only for cdf_to_cglt. cglt_to_cdf is a pure internal DB conversion.
         let blockchainTxHash: string | null = null;
         const txId      = crypto.randomUUID();
         const reference = `SW-${txId.slice(0, 8).toUpperCase()}`;
 
-        if (wallet.blockchain_address) {
+        if (direction === 'cdf_to_cglt' && wallet.blockchain_address) {
           try {
-            blockchainTxHash = direction === 'cdf_to_cglt'
-              ? await mintCGLT(wallet.blockchain_address as string, amount, reference)
-              : await burnCGLT(wallet.blockchain_address as string, amount, reference);
+            blockchainTxHash = await mintCGLT(wallet.blockchain_address as string, amount, reference);
           } catch (err) {
-            fastify.log.error({ err, walletId: wallet.id, direction, amount }, '[swap] on-chain mint/burn failed');
+            fastify.log.error({ err, walletId: wallet.id, direction, amount }, '[swap] on-chain mint failed');
             return reply.status(502).send({ error: 'Conversion execution failed', statusCode: 502 });
           }
         }
