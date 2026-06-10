@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
+import { sendWalletDepositEmail } from '../../services/email';
 
 const MIN_FIAT  = 10;  // USD/EUR minimum
 const SPREAD    = 0.985; // 1.5% UniPay spread applied on the CDF rate
@@ -255,6 +256,20 @@ const walletTransakRoute: FastifyPluginAsync = async (fastify) => {
               { userId: order.user_id, cryptoAmt },
               '[transak] usd_balance credited',
             );
+            // Send deposit confirmation email — fetch user's email/lang
+            const { data: usr } = await fastify.supabase
+              .from('wallet_users')
+              .select('email, full_name, lang')
+              .eq('id', order.user_id)
+              .maybeSingle();
+            if (usr?.email) {
+              sendWalletDepositEmail({
+                to: usr.email, name: usr.full_name ?? '',
+                amount: cryptoAmt.toFixed(2), currency: 'USDT',
+                method: 'Crypto (Transak)', txRef: eventData.id ?? order.id,
+                lang: usr.lang ?? 'fr',
+              });
+            }
           }
         }
       }

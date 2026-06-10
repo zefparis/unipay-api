@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { verifyCallbackSignature, normalizeCallback } from '../../services/avada';
 import type { AvadaCallbackPayload } from '../../services/avada';
+import { sendWalletDepositEmail } from '../../services/email';
 
 // SSRF guard: only HTTPS to non-private/loopback hosts
 function isSafeWebhookUrl(raw: string): boolean {
@@ -131,7 +132,7 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
       if (dbStatus === 'success' && txDirection === 'collect' && walletUserId) {
         const { data: walletRow } = await fastify.supabase
           .from('wallet_users')
-          .select('balance_cdf')
+          .select('balance_cdf, email, full_name, lang')
           .eq('id', walletUserId)
           .maybeSingle();
 
@@ -155,6 +156,16 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
               { walletUserId, netAmount: txNetAmount, txId: tx.id },
               '[wallet-credit] balance credited',
             );
+            // Send deposit confirmation email (fire-and-forget)
+            const wr = walletRow as unknown as { email?: string; full_name?: string; lang?: string };
+            if (wr?.email) {
+              sendWalletDepositEmail({
+                to: wr.email, name: wr.full_name ?? '',
+                amount: txNetAmount.toFixed(0), currency: 'CDF',
+                method: 'Mobile Money', txRef: reference ?? tx.id,
+                lang: wr.lang ?? 'fr',
+              });
+            }
           }
         }
       }

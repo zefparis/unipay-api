@@ -3,11 +3,14 @@ import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { signWalletToken, signRefreshToken, verifyRefreshToken, requireWallet } from '../../utils/wallet-jwt';
 import { encryptPrivateKey, generateWallet } from '../../services/blockchain';
+import { sendWalletWelcomeEmail, sendWalletPinChangedEmail } from '../../services/email';
 
 interface RegisterBody {
   phone: string;
   full_name?: string;
   pin: string;
+  email?: string;
+  lang?: string;
 }
 
 interface LoginBody {
@@ -37,6 +40,8 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
             phone:     { type: 'string', pattern: '^\\+?[0-9]{8,15}$' },
             full_name: { type: 'string', minLength: 2, maxLength: 100 },
             pin:       { type: 'string', minLength: 4, maxLength: 8, pattern: '^[0-9]+$' },
+            email:     { type: 'string', format: 'email', maxLength: 254 },
+            lang:      { type: 'string', enum: ['fr', 'en'], default: 'fr' },
           },
         },
         response: {
@@ -52,7 +57,7 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      const { phone, full_name, pin } = request.body;
+      const { phone, full_name, pin, email, lang } = request.body;
       const normalizedPhone = normalizePhone(phone);
 
       if (!/^\+[1-9][0-9]{7,14}$/.test(normalizedPhone)) {
@@ -85,6 +90,8 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
           blockchain_address: blockchainWallet.address,
           blockchain_private_key_encrypted: encryptedPrivateKey,
           cglt_balance: 0,
+          email: email ?? null,
+          lang: lang ?? 'fr',
         })
         .select('id, phone, full_name')
         .single();
@@ -95,6 +102,10 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       fastify.log.info({ walletId: wallet.id, phone: normalizedPhone }, 'Wallet user registered');
+
+      if (wallet && email) {
+        sendWalletWelcomeEmail(email, full_name ?? '', normalizedPhone, lang ?? 'fr');
+      }
 
       return reply.status(201).send({
         wallet_id: wallet.id,
@@ -256,7 +267,7 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data: walletRow, error: fetchErr } = await fastify.supabase
         .from('wallet_users')
-        .select('pin_hash')
+        .select('pin_hash, email, full_name, phone, lang')
         .eq('id', wp.wallet_id)
         .maybeSingle();
 
@@ -281,6 +292,12 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       fastify.log.info({ walletId: wp.wallet_id }, 'PIN changed');
+
+      const wr = walletRow as { email?: string; full_name?: string; phone?: string; lang?: string } | null;
+      if (wr?.email) {
+        sendWalletPinChangedEmail({ to: wr.email, name: wr.full_name ?? '', phone: wr.phone ?? '', lang: wr.lang ?? 'fr' });
+      }
+
       return reply.send({ ok: true });
     },
   );

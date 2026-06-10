@@ -21,6 +21,7 @@ import {
   newOrderId,
   UNIPESA_USD_PROVIDER_IDS,
 } from '../../lib/unipesa';
+import { sendWalletDepositEmail } from '../../services/email';
 
 const FEE_RATE       = 0.03;
 const USD_OPERATORS  = ['orange', 'airtel', 'africell'] as const;
@@ -384,6 +385,21 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       { txId: tx.id, walletId: tx.wallet_user_id, txCurrency, netCredited },
       '[unipesa/callback] credited',
     );
+
+    // Fire-and-forget deposit confirmation email
+    const { data: uUser } = await fastify.supabase
+      .from('wallet_users')
+      .select('email, full_name, lang')
+      .eq('id', tx.wallet_user_id)
+      .maybeSingle();
+    if (uUser?.email) {
+      sendWalletDepositEmail({
+        to: uUser.email, name: uUser.full_name ?? '',
+        amount: netCredited.toFixed(txCurrency === 'USD' ? 2 : 0), currency: txCurrency,
+        method: 'Mobile Money (USD)', txRef: order_id,
+        lang: uUser.lang ?? 'fr',
+      });
+    }
 
     return reply.status(200).send({ received: true, credited: true, currency: txCurrency, amount: netCredited });
   });

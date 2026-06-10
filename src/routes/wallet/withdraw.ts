@@ -3,6 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
 import { getProviderService } from '../../services/index';
+import { sendWalletWithdrawalEmail } from '../../services/email';
 import { sandboxPayout } from '../../services/avada';
 import { burnCGLT } from '../../services/blockchain';
 import type { Channel } from '../../types/payment';
@@ -74,7 +75,7 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
       // Fetch wallet with current balance
       const { data: wallet } = await fastify.supabase
         .from('wallet_users')
-        .select('id, is_active, balance_cdf, kyc_level, blockchain_address, cglt_balance')
+        .select('id, is_active, balance_cdf, kyc_level, blockchain_address, cglt_balance, email, full_name, lang')
         .eq('id', walletId)
         .maybeSingle();
 
@@ -238,6 +239,15 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
           .eq('id', walletId);
 
         fastify.log.info({ txId, walletId, operator }, 'Wallet withdrawal initiated');
+
+        const wUser = wallet as unknown as { email?: string; full_name?: string; lang?: string };
+        if (wUser?.email) {
+          sendWalletWithdrawalEmail({
+            to: wUser.email, name: wUser.full_name ?? '', amount: String(amount),
+            currency, phone: normalizedPhone, operator, txRef: reference,
+            lang: wUser.lang ?? 'fr',
+          });
+        }
 
         return reply.status(201).send({
           transaction_id: txId,

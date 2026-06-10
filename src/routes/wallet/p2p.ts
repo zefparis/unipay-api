@@ -3,6 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { getLimits } from '../../utils/kyc-limits';
 import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
+import { sendWalletTransferEmail } from '../../services/email';
 
 interface SendBody {
   recipient_phone: string;
@@ -66,7 +67,7 @@ const walletP2PRoute: FastifyPluginAsync = async (fastify) => {
       // Fetch sender wallet
       const { data: sender } = await fastify.supabase
         .from('wallet_users')
-        .select('id, phone, balance_cdf, is_active, kyc_level')
+        .select('id, phone, balance_cdf, is_active, kyc_level, email, full_name, lang')
         .eq('id', senderWalletId)
         .maybeSingle();
 
@@ -164,6 +165,16 @@ const walletP2PRoute: FastifyPluginAsync = async (fastify) => {
       ]);
 
       fastify.log.info({ transferId, senderWalletId, recipientId: recipient.id, amount }, 'P2P transfer done');
+
+      const snd = sender as unknown as { email?: string; full_name?: string; lang?: string };
+      if (snd?.email) {
+        sendWalletTransferEmail({
+          to: snd.email, name: snd.full_name ?? '',
+          amount: String(amount), currency: 'CDF',
+          recipient: recipient_phone, txRef: reference,
+          lang: snd.lang ?? 'fr',
+        });
+      }
 
       return reply.status(201).send({
         transfer_id:     transferId,

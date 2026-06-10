@@ -251,6 +251,160 @@ export async function sendKycRejectedEmail(to: string, name: string, reason: str
   });
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+ * WALLET user transactional emails (FR / EN)
+ * All functions are fire-and-forget — never throw into business logic.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+function walletNote(lang: string): string {
+  return lang === 'en'
+    ? "If you did not initiate this action, please contact our <a href='mailto:support@unipaycongo.com' style='color:#1D9E75;text-decoration:none;'>support team</a> immediately."
+    : "Si vous n'êtes pas à l'origine de cette action, contactez notre <a href='mailto:support@unipaycongo.com' style='color:#1D9E75;text-decoration:none;'>support</a> immédiatement.";
+}
+
+function amountBox(sign: string, amount: string, currency: string, label: string, color: string, bg: string, border: string): string {
+  return `
+    <div style="background:${bg};border:1px solid ${border};border-radius:12px;padding:20px;text-align:center;margin-bottom:20px;">
+      <p style="margin:0;font-size:36px;font-weight:800;color:${color};">${sign}${amount} ${currency}</p>
+      <p style="margin:6px 0 0;font-size:13px;color:${color};opacity:0.8;">${label}</p>
+    </div>`;
+}
+
+function detailTable(rows: { key: string; val: string }[]): string {
+  const trs = rows.map((r, i) => `
+    <tr>
+      <td style="padding:10px 16px;font-size:13px;font-weight:600;color:#64748b;width:40%;${i > 0 ? 'border-top:1px solid #e2e8f0;' : ''}">${r.key}</td>
+      <td style="padding:10px 16px;font-size:13px;color:#0f172a;${i > 0 ? 'border-top:1px solid #e2e8f0;' : ''}">${r.val}</td>
+    </tr>`).join('');
+  return `<table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:20px;">${trs}</table>`;
+}
+
+async function sendWalletEmail(to: string, name: string | null, subject: string, bodyHtml: string, lang: string): Promise<void> {
+  const api = getClient();
+  if (!api) return;
+  const html = layout(`
+    ${bodyHtml}
+    <p style="margin:24px 0 0;font-size:12px;color:#94a3b8;line-height:1.6;">${walletNote(lang)}</p>
+  `);
+  try {
+    await api.transactionalEmails.sendTransacEmail({
+      subject,
+      htmlContent: html,
+      sender: { name: env.BREVO_SENDER_NAME, email: env.BREVO_SENDER_EMAIL },
+      to: [{ email: to, name: name ?? undefined }],
+    });
+  } catch (err) {
+    console.error(`[email] ${subject} → failed:`, err);
+  }
+}
+
+/* ── Wallet welcome ─────────────────────────────────────────── */
+export async function sendWalletWelcomeEmail(to: string, name: string, phone: string, lang = 'fr'): Promise<void> {
+  const fr = lang !== 'en';
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#0f172a;">
+      ${fr ? `Bienvenue${name ? `, ${name}` : ''} 👋` : `Welcome${name ? `, ${name}` : ''} 👋`}
+    </h2>
+    <p style="margin:0 0 20px;font-size:15px;color:#475569;line-height:1.6;">
+      ${fr
+        ? "Votre wallet <strong>UniPay Congo</strong> a été créé avec succès. Vous pouvez maintenant envoyer, recevoir et échanger de l'argent facilement."
+        : "Your <strong>UniPay Congo</strong> wallet has been successfully created. You can now send, receive and exchange money easily."}
+    </p>
+    ${detailTable([
+      { key: fr ? 'Téléphone' : 'Phone',   val: phone },
+      { key: fr ? 'Réseau' : 'Network',    val: 'CDF · USD · USDT · CGLT' },
+    ])}
+    <a href="https://app.unipaycongo.com"
+       style="display:inline-block;background:#1D9E75;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:12px 28px;border-radius:10px;">
+      ${fr ? 'Accéder à mon wallet' : 'Open my wallet'}
+    </a>`;
+  await sendWalletEmail(to, name, fr ? 'Bienvenue sur UniPay Congo 🎉' : 'Welcome to UniPay Congo 🎉', body, lang);
+}
+
+/* ── Deposit confirmed ──────────────────────────────────────── */
+export async function sendWalletDepositEmail(params: {
+  to: string; name: string; amount: string; currency: string; method: string; txRef: string; lang?: string;
+}): Promise<void> {
+  const fr = params.lang !== 'en';
+  const date = new Date().toLocaleString(fr ? 'fr-FR' : 'en-GB');
+  const body = `
+    <h2 style="margin:0 0 16px;font-size:22px;font-weight:700;color:#0f172a;">${fr ? 'Dépôt confirmé ✅' : 'Deposit confirmed ✅'}</h2>
+    ${amountBox('+', params.amount, params.currency, fr ? 'Crédité sur votre wallet' : 'Credited to your wallet', '#15803d', '#f0fdf4', '#bbf7d0')}
+    ${detailTable([
+      { key: fr ? 'Méthode'    : 'Method',    val: params.method },
+      { key: fr ? 'Référence'  : 'Reference', val: `<span style="font-family:monospace;">${params.txRef}</span>` },
+      { key: 'Date',                          val: date },
+    ])}`;
+  await sendWalletEmail(params.to, params.name,
+    fr ? `Dépôt confirmé — ${params.amount} ${params.currency}` : `Deposit confirmed — ${params.amount} ${params.currency}`,
+    body, params.lang ?? 'fr');
+}
+
+/* ── Transfer sent ──────────────────────────────────────────── */
+export async function sendWalletTransferEmail(params: {
+  to: string; name: string; amount: string; currency: string; recipient: string; txRef: string; lang?: string;
+}): Promise<void> {
+  const fr = params.lang !== 'en';
+  const date = new Date().toLocaleString(fr ? 'fr-FR' : 'en-GB');
+  const body = `
+    <h2 style="margin:0 0 16px;font-size:22px;font-weight:700;color:#0f172a;">${fr ? 'Transfert envoyé ✅' : 'Transfer sent ✅'}</h2>
+    ${amountBox('-', params.amount, params.currency, fr ? 'Débité de votre wallet' : 'Debited from your wallet', '#1d4ed8', '#eff6ff', '#bfdbfe')}
+    ${detailTable([
+      { key: fr ? 'Destinataire' : 'Recipient', val: params.recipient },
+      { key: fr ? 'Référence'    : 'Reference', val: `<span style="font-family:monospace;">${params.txRef}</span>` },
+      { key: 'Date',                            val: date },
+    ])}`;
+  await sendWalletEmail(params.to, params.name,
+    fr ? `Transfert envoyé — ${params.amount} ${params.currency}` : `Transfer sent — ${params.amount} ${params.currency}`,
+    body, params.lang ?? 'fr');
+}
+
+/* ── Withdrawal initiated ───────────────────────────────────── */
+export async function sendWalletWithdrawalEmail(params: {
+  to: string; name: string; amount: string; currency: string; phone: string; operator: string; txRef: string; lang?: string;
+}): Promise<void> {
+  const fr = params.lang !== 'en';
+  const body = `
+    <h2 style="margin:0 0 16px;font-size:22px;font-weight:700;color:#0f172a;">${fr ? 'Retrait initié ✅' : 'Withdrawal initiated ✅'}</h2>
+    ${amountBox('', params.amount, params.currency, fr ? 'En cours vers votre Mobile Money' : 'In progress to your Mobile Money', '#c2410c', '#fff7ed', '#fed7aa')}
+    ${detailTable([
+      { key: fr ? 'Numéro'     : 'Phone',     val: params.phone },
+      { key: fr ? 'Opérateur'  : 'Operator',  val: `<span style="text-transform:capitalize;">${params.operator}</span>` },
+      { key: fr ? 'Référence'  : 'Reference', val: `<span style="font-family:monospace;">${params.txRef}</span>` },
+    ])}`;
+  await sendWalletEmail(params.to, params.name,
+    fr ? `Retrait effectué — ${params.amount} ${params.currency}` : `Withdrawal completed — ${params.amount} ${params.currency}`,
+    body, params.lang ?? 'fr');
+}
+
+/* ── PIN changed ────────────────────────────────────────────── */
+export async function sendWalletPinChangedEmail(params: {
+  to: string; name: string; phone: string; lang?: string;
+}): Promise<void> {
+  const fr = params.lang !== 'en';
+  const body = `
+    <h2 style="margin:0 0 16px;font-size:22px;font-weight:700;color:#0f172a;">${fr ? 'PIN modifié 🔐' : 'PIN changed 🔐'}</h2>
+    <p style="margin:0 0 16px;font-size:15px;color:#475569;line-height:1.6;">
+      ${fr
+        ? "Le code PIN de votre wallet <strong>UniPay Congo</strong> a été modifié avec succès."
+        : "Your <strong>UniPay Congo</strong> wallet PIN has been successfully changed."}
+    </p>
+    <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:16px;margin-bottom:20px;">
+      <p style="margin:0;font-size:14px;color:#991b1b;">
+        ⚠️ ${fr
+          ? "Si vous n'êtes pas à l'origine de ce changement, contactez notre support immédiatement."
+          : "If you did not make this change, contact our support immediately."}
+      </p>
+    </div>
+    <a href="mailto:support@unipaycongo.com"
+       style="display:inline-block;background:#1D9E75;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:12px 28px;border-radius:10px;">
+      ${fr ? 'Contacter le support' : 'Contact support'}
+    </a>`;
+  await sendWalletEmail(params.to, params.name,
+    fr ? 'Votre PIN a été modifié — UniPay Congo' : 'Your PIN has been changed — UniPay Congo',
+    body, params.lang ?? 'fr');
+}
+
 /* ── sendAdminNewMerchantEmail ──────────────────────────────── */
 export async function sendAdminNewMerchantEmail(
   merchantName: string,
