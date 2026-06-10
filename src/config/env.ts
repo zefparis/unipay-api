@@ -54,6 +54,10 @@ const envSchema = z.object({
   BREVO_SENDER_EMAIL: z.string().email().default('contact@unipaycongo.com'),
   BREVO_SENDER_NAME:  z.string().default('UniPay Congo'),
 
+  // BSC crypto deposits (Option B — one address per user)
+  BSCSCAN_API_KEY:          z.string().min(1).optional(),
+  UNIPAY_HD_WALLET_MNEMONIC: z.string().min(1).optional(), // 12-word BIP-39 phrase — keep in Render Secrets
+
   // Transak fiat→USDT (all optional — routes disabled when API key absent)
   TRANSAK_API_KEY:     z.string().min(1).optional(),
   TRANSAK_SECRET:      z.string().min(1).optional(), // webhook HMAC secret

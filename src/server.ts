@@ -42,6 +42,7 @@ import wcgltSwapRoute from './routes/wallet/wcglt-swap';
 import walletInternalRoute from './routes/wallet/internal';
 import walletStripeRoute from './routes/wallet/stripe';
 import walletTransakRoute from './routes/wallet/transak';
+import walletCryptoDepositRoute from './routes/wallet/crypto-deposit';
 
 export async function buildServer() {
   const server = Fastify({
@@ -155,6 +156,7 @@ export async function buildServer() {
       v1.register(walletInternalRoute);
       v1.register(walletStripeRoute);
       v1.register(walletTransakRoute);
+      v1.register(walletCryptoDepositRoute);
     },
     { prefix: '/v1' },
   );
