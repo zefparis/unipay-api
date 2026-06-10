@@ -67,7 +67,7 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
       if (!/^\+243[0-9]{9}$/.test(normalizedPhone)) {
         return reply.status(400).send({
           error: 'INVALID_PHONE',
-          message: 'Numéro DRC invalide. Format requis : +243XXXXXXXXX (9 chiffres après +243)',
+          message: 'Invalid DRC number. Required format: +243XXXXXXXXX (9 digits after +243)',
         });
       }
 

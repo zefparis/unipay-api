@@ -60,7 +60,7 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       if (!/^\+243[0-9]{9}$/.test(normalizedPhone)) {
         return reply.status(400).send({
           error:   'INVALID_PHONE',
-          message: 'Format requis : +243XXXXXXXXX',
+          message: 'Required format: +243XXXXXXXXX',
         });
       }
 
@@ -82,7 +82,7 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
 
       if (providerId === undefined) {
         fastify.log.error({ operator }, '[unipesa/deposit] unknown USD operator — no provider_id mapped');
-        return reply.status(400).send({ error: 'Opérateur USD non supporté', statusCode: 400 });
+        return reply.status(400).send({ error: 'Unsupported USD operator', statusCode: 400 });
       }
 
       const { error: insertErr } = await fastify.supabase.from('transactions').insert({
@@ -180,7 +180,7 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       if (!/^\+243[0-9]{9}$/.test(normalizedPhone)) {
         return reply.status(400).send({
           error:   'INVALID_PHONE',
-          message: 'Format requis : +243XXXXXXXXX',
+          message: 'Required format: +243XXXXXXXXX',
         });
       }
 
@@ -226,7 +226,7 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       if (providerId === undefined) {
         fastify.log.error({ operator }, '[unipesa/withdraw] unknown USD operator — no provider_id mapped');
         await fastify.supabase.rpc('wallet_credit_usd', { p_user_id: walletId, p_amount: totalCost });
-        return reply.status(400).send({ error: 'Opérateur USD non supporté', statusCode: 400 });
+        return reply.status(400).send({ error: 'Unsupported USD operator', statusCode: 400 });
       }
 
       await fastify.supabase.from('transactions').insert({
