@@ -80,6 +80,75 @@ const walletStripeRoute: FastifyPluginAsync = async (fastify) => {
   );
 
   /* ─────────────────────────────────────────────────────────────
+   * POST /v1/wallet/deposit/stripe/create-checkout
+   * Creates a Stripe Checkout Session (hosted payment page).
+   * No Stripe.js needed on the frontend — just redirect to session.url.
+   * Auth: wallet_token (JWT)
+   * Body: { amount_usd, success_url, cancel_url }
+   * Returns: { url }
+   * ───────────────────────────────────────────────────────────── */
+  fastify.post<{ Body: { amount_usd: number; success_url: string; cancel_url: string } }>(
+    '/wallet/deposit/stripe/create-checkout',
+    {
+      schema: {
+        body: {
+          type:       'object',
+          required:   ['amount_usd', 'success_url', 'cancel_url'],
+          properties: {
+            amount_usd:  { type: 'number', minimum: MIN_USD },
+            success_url: { type: 'string' },
+            cancel_url:  { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth service not configured' });
+      const payload = requireWallet(request.headers.authorization, env.JWT_SECRET);
+      if (!payload) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
+
+      const { amount_usd, success_url, cancel_url } = request.body;
+
+      const { data: wallet } = await fastify.supabase
+        .from('wallet_users')
+        .select('id, phone')
+        .eq('id', payload.wallet_id)
+        .maybeSingle();
+
+      if (!wallet) return reply.status(404).send({ error: 'wallet_not_found' });
+
+      const session = await stripe.checkout.sessions.create({
+        mode:                 'payment',
+        payment_method_types: ['card'],
+        line_items: [{
+          price_data: {
+            currency:     'usd',
+            unit_amount:  Math.round(amount_usd * 100),
+            product_data: {
+              name:        'Dépôt UnipayCongo',
+              description: `Dépôt de ${amount_usd.toFixed(2)} USD sur votre portefeuille`,
+            },
+          },
+          quantity: 1,
+        }],
+        payment_intent_data: {
+          metadata: { wallet_user_id: wallet.id, phone: wallet.phone ?? '' },
+        },
+        metadata:    { wallet_user_id: wallet.id, phone: wallet.phone ?? '' },
+        success_url,
+        cancel_url,
+      });
+
+      fastify.log.info(
+        { walletId: wallet.id, amountUsd: amount_usd, sessionId: session.id },
+        '[stripe] checkout session created',
+      );
+
+      return reply.status(201).send({ url: session.url });
+    },
+  );
+
+  /* ─────────────────────────────────────────────────────────────
    * POST /v1/wallet/deposit/stripe/webhook
    * Stripe event webhook — public, signature-verified.
    * On payment_intent.succeeded → credit usd_balance (idempotent).
