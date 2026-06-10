@@ -1,8 +1,3 @@
--- BSC crypto deposits tables
--- user_deposit_addresses: one unique BSC address per user (HD wallet derived)
--- crypto_deposits:        idempotent record of every inbound BEP-20 transfer
--- system_config:          key/value store for cron state (last processed block, etc.)
-
 /* ── 1. User deposit addresses ──────────────────────────────────────────── */
 CREATE TABLE IF NOT EXISTS public.user_deposit_addresses (
   id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
