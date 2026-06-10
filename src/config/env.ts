@@ -53,6 +53,14 @@ const envSchema = z.object({
   BREVO_API_KEY:      z.string().min(1).optional(),
   BREVO_SENDER_EMAIL: z.string().email().default('contact@unipaycongo.com'),
   BREVO_SENDER_NAME:  z.string().default('UniPay Congo'),
+
+  // Transak fiat→USDT (all optional — routes disabled when API key absent)
+  TRANSAK_API_KEY:     z.string().min(1).optional(),
+  TRANSAK_SECRET:      z.string().min(1).optional(), // webhook HMAC secret
+  TRANSAK_ENVIRONMENT: z.enum(['STAGING', 'PRODUCTION']).default('STAGING'),
+
+  // Public app URL (used to build Transak redirectURL)
+  APP_URL: z.string().url().default('https://app.unipaycongo.com'),
 });
 
 const result = envSchema.safeParse(process.env);
