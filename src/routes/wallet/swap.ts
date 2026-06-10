@@ -2,17 +2,18 @@ import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
-import { getSwapRate, executeSwap, mintCGLT, burnCGLT } from '../../services/blockchain';
-import type { SwapDirection } from '../../services/blockchain';
+import { mintCGLT } from '../../services/blockchain';
 
-const getFiatRate = () => Number(env.FIAT_USD_CDF_RATE ?? '2850') || 2850;
+const getFiatRate    = () => Number(env.FIAT_USD_CDF_RATE ?? '2850') || 2850;
+const CGLT_PER_USDT  = Number(process.env.CGLT_PER_USDT ?? '500') || 500;
+const CGLT_SWAP_FEE  = 0.005; // 0.5 %
 
 // AMM swaps (CGLT <-> USDT), internal conversions (CDF <-> CGLT), and fiat/stablecoin (USD <-> CDF/USDT).
 type SwapRouteDirection =
-  | SwapDirection
-  | 'cdf_to_cglt' | 'cglt_to_cdf'
-  | 'usd_to_cdf'  | 'cdf_to_usd'
-  | 'usd_to_usdt' | 'usdt_to_usd';
+  | 'cglt_to_usdt' | 'usdt_to_cglt'
+  | 'cdf_to_cglt'  | 'cglt_to_cdf'
+  | 'usd_to_cdf'   | 'cdf_to_usd'
+  | 'usd_to_usdt'  | 'usdt_to_usd';
 
 interface SwapBody {
   direction: SwapRouteDirection;
@@ -23,13 +24,13 @@ const walletSwapRoute: FastifyPluginAsync = async (fastify) => {
 
   /* ── GET /v1/wallet/swap/rate ───────────────────────────── */
   fastify.get('/wallet/swap/rate', async (_request, reply) => {
-    try {
-      const rate = await getSwapRate();
-      return rate;
-    } catch (err) {
-      fastify.log.error({ err }, '[swap] rate fetch failed');
-      return reply.status(503).send({ error: 'Swap service unavailable', statusCode: 503 });
-    }
+    return reply.send({
+      rate:      CGLT_PER_USDT,
+      fee:       CGLT_SWAP_FEE,
+      paused:    false,
+      pool_usdt: 0,
+      pool_cglt: 0,
+    });
   });
 
   /* ── POST /v1/wallet/swap ───────────────────────────────── */
@@ -280,26 +281,25 @@ const walletSwapRoute: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      // ── Execute the on-chain swap (treasury-mediated) ──────
-      let result;
-      try {
-        result = await executeSwap(direction, amount);
-      } catch (err) {
-        fastify.log.error({ err, walletId: wallet.id, direction, amount }, '[swap] on-chain swap failed');
-        return reply.status(502).send({ error: 'Swap execution failed', statusCode: 502 });
-      }
-
-      // ── Update CGLT + USDT ledger balances ─────────────────
+      // ── Internal ledger swap (no blockchain required) ───────
+      let amountOut: number;
+      let feeAmt:    number;
       let newCgltBalance: number;
       let newUsdtBalance: number;
+
       if (direction === 'cglt_to_usdt') {
-        // débite CGLT, crédite USDT
+        const gross = amount / CGLT_PER_USDT;
+        feeAmt      = Math.round(gross * CGLT_SWAP_FEE * 1e6) / 1e6;
+        amountOut   = Math.round((gross - feeAmt) * 1e6) / 1e6;
         newCgltBalance = Math.max(cgltBalance - amount, 0);
-        newUsdtBalance = usdtBalance + result.amountOut;
+        newUsdtBalance = usdtBalance + amountOut;
       } else {
-        // débite USDT, crédite CGLT
+        // usdt_to_cglt
+        feeAmt    = Math.round(amount * CGLT_SWAP_FEE * 1e6) / 1e6;
+        const net = amount - feeAmt;
+        amountOut = Math.round(net * CGLT_PER_USDT * 100) / 100;
         newUsdtBalance = Math.max(usdtBalance - amount, 0);
-        newCgltBalance = cgltBalance + result.amountOut;
+        newCgltBalance = cgltBalance + amountOut;
       }
 
       await fastify.supabase
@@ -307,42 +307,40 @@ const walletSwapRoute: FastifyPluginAsync = async (fastify) => {
         .update({ cglt_balance: newCgltBalance, usdt_balance: newUsdtBalance })
         .eq('id', wallet.id);
 
-      // ── Record transaction ─────────────────────────────────
       const txId      = crypto.randomUUID();
       const reference = `SW-${txId.slice(0, 8).toUpperCase()}`;
-      const cgltAmount = direction === 'cglt_to_usdt' ? amount : result.amountOut;
-      const usdtAmount = direction === 'cglt_to_usdt' ? result.amountOut : amount;
+      const cgltAmt   = direction === 'cglt_to_usdt' ? amount     : amountOut;
+      const usdtAmt   = direction === 'cglt_to_usdt' ? amountOut  : amount;
 
       await fastify.supabase.from('transactions').insert({
-        id:                 txId,
-        wallet_user_id:     wallet.id,
-        operator:           'cglt',
-        direction:          'swap',
+        id:             txId,
+        wallet_user_id: wallet.id,
+        operator:       'cglt',
+        direction:      'swap',
         amount,
-        fee:                result.fee,
-        net_amount:         result.amountOut,
-        currency:           'CGLT',
-        phone:              wallet.phone,
+        fee:            feeAmt,
+        net_amount:     amountOut,
+        currency:       'CGLT',
+        phone:          wallet.phone,
         reference,
-        swap_direction:     direction,
-        cglt_amount:        cgltAmount,
-        usdt_amount:        usdtAmount,
-        blockchain_tx_hash: result.txHash,
-        status:             'success',
-        metadata:           { source: 'wallet_swap', direction },
+        swap_direction: direction,
+        cglt_amount:    cgltAmt,
+        usdt_amount:    usdtAmt,
+        status:         'success',
+        metadata:       { source: 'wallet_swap', direction, rate: CGLT_PER_USDT },
       });
 
       fastify.log.info(
-        { walletId: wallet.id, direction, amountIn: result.amountIn, amountOut: result.amountOut, txHash: result.txHash },
-        '[swap] completed',
+        { walletId: wallet.id, direction, amountIn: amount, amountOut, feeAmt, rate: CGLT_PER_USDT },
+        '[swap] internal ledger swap completed',
       );
 
       return reply.status(201).send({
         success:    true,
-        amount_in:  result.amountIn,
-        amount_out: result.amountOut,
-        fee:        result.fee,
-        tx_hash:    result.txHash,
+        amount_in:  amount,
+        amount_out: amountOut,
+        fee:        feeAmt,
+        rate:       CGLT_PER_USDT,
       });
     },
   );
