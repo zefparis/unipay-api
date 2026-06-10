@@ -6,6 +6,7 @@ import { getProviderService } from '../../services/index';
 import { sandboxCollection } from '../../services/avada';
 import type { Channel } from '../../types/payment';
 import { getLimits } from '../../utils/kyc-limits';
+import { notify } from '../../utils/push';
 
 // Wallet-supported MM operators (Vodacash pending due diligence, USDT not in wallet scope)
 const WALLET_OPERATORS: Channel[] = ['orange', 'airtel', 'afrimoney'];
@@ -139,6 +140,14 @@ const walletDepositRoute: FastifyPluginAsync = async (fastify) => {
 
         fastify.log.info({ txId, walletId, isSandbox: true }, 'Wallet deposit (sandbox)');
 
+        notify({
+          userId: walletId, type: 'deposit',
+          titleFr: '✅ Dépôt confirmé', titleEn: '✅ Deposit confirmed',
+          bodyFr: `+${netAmount} ${currency} crédité sur votre wallet`,
+          bodyEn: `+${netAmount} ${currency} credited to your wallet`,
+          data: { amount: netAmount, currency, method: operator },
+        }).catch(() => {});
+
         return reply.status(201).send({
           transaction_id: txId,
           status:         'success',
@@ -191,7 +200,13 @@ const walletDepositRoute: FastifyPluginAsync = async (fastify) => {
           .update({ status: 'processing', avada_transaction_id: providerRes.provider_ref })
           .eq('id', txId);
 
-        // TODO Phase 2: credit wallet balance via /v1/payment/callback on status='success'
+        notify({
+          userId: walletId, type: 'deposit',
+          titleFr: '⏳ Dépôt en cours', titleEn: '⏳ Deposit in progress',
+          bodyFr: `${amount} ${currency} — en attente de confirmation`,
+          bodyEn: `${amount} ${currency} — awaiting confirmation`,
+          data: { amount, currency, method: operator },
+        }).catch(() => {});
 
         fastify.log.info({ txId, walletId, operator }, 'Wallet deposit initiated');
 

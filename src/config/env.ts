@@ -65,6 +65,11 @@ const envSchema = z.object({
 
   // Public app URL (used to build Transak redirectURL)
   APP_URL: z.string().url().default('https://app.unipaycongo.com'),
+
+  // Web Push (VAPID) — generate with: npx web-push generate-vapid-keys
+  VAPID_PUBLIC_KEY:  z.string().min(1).optional(),
+  VAPID_PRIVATE_KEY: z.string().min(1).optional(),
+  VAPID_SUBJECT:     z.string().default('mailto:support@unipaycongo.com'),
 });
 
 const result = envSchema.safeParse(process.env);

@@ -4,6 +4,7 @@ import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
 import { getProviderService } from '../../services/index';
 import { sendWalletWithdrawalEmail } from '../../services/email';
+import { notify } from '../../utils/push';
 import { sandboxPayout } from '../../services/avada';
 import { burnCGLT } from '../../services/blockchain';
 import type { Channel } from '../../types/payment';
@@ -175,6 +176,14 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
 
         fastify.log.info({ txId, walletId, isSandbox: true }, 'Wallet withdraw (sandbox)');
 
+        notify({
+          userId: walletId, type: 'withdrawal',
+          titleFr: '💸 Retrait effectué', titleEn: '💸 Withdrawal completed',
+          bodyFr: `${amount} ${currency} envoyé vers ${normalizedPhone}`,
+          bodyEn: `${amount} ${currency} sent to ${normalizedPhone}`,
+          data: { amount, currency, phone: normalizedPhone, operator },
+        }).catch(() => {});
+
         return reply.status(201).send({
           transaction_id: txId,
           status:         'success',
@@ -241,6 +250,15 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
         fastify.log.info({ txId, walletId, operator }, 'Wallet withdrawal initiated');
 
         const wUser = wallet as unknown as { email?: string; full_name?: string; lang?: string };
+
+        notify({
+          userId: walletId, type: 'withdrawal',
+          titleFr: '💸 Retrait en cours', titleEn: '💸 Withdrawal processing',
+          bodyFr: `${amount} ${currency} — envoyé vers ${normalizedPhone} (${operator})`,
+          bodyEn: `${amount} ${currency} — sent to ${normalizedPhone} (${operator})`,
+          data: { amount, currency, phone: normalizedPhone, operator },
+          lang: wUser?.lang,
+        }).catch(() => {});
         if (wUser?.email) {
           sendWalletWithdrawalEmail({
             to: wUser.email, name: wUser.full_name ?? '', amount: String(amount),

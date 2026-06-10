@@ -4,6 +4,7 @@ import { getLimits } from '../../utils/kyc-limits';
 import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
 import { sendWalletTransferEmail } from '../../services/email';
+import { notify } from '../../utils/push';
 
 interface SendBody {
   recipient_phone: string;
@@ -167,6 +168,23 @@ const walletP2PRoute: FastifyPluginAsync = async (fastify) => {
       fastify.log.info({ transferId, senderWalletId, recipientId: recipient.id, amount }, 'P2P transfer done');
 
       const snd = sender as unknown as { email?: string; full_name?: string; lang?: string };
+
+      notify({
+        userId: senderWalletId, type: 'transfer_sent',
+        titleFr: '↗️ Transfert envoyé', titleEn: '↗️ Transfer sent',
+        bodyFr: `${amount} CDF envoyé à ${recipient_phone}`,
+        bodyEn: `${amount} CDF sent to ${recipient_phone}`,
+        data: { amount, currency: 'CDF', recipient: recipient_phone },
+        lang: snd?.lang,
+      }).catch(() => {});
+
+      notify({
+        userId: recipient.id, type: 'transfer_received',
+        titleFr: '↘️ Transfert reçu', titleEn: '↘️ Transfer received',
+        bodyFr: `+${amount} CDF reçu de ${sender.phone}`,
+        bodyEn: `+${amount} CDF received from ${sender.phone}`,
+        data: { amount, currency: 'CDF', sender: sender.phone },
+      }).catch(() => {});
       if (snd?.email) {
         sendWalletTransferEmail({
           to: snd.email, name: snd.full_name ?? '',
