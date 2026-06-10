@@ -45,6 +45,10 @@ const envSchema = z.object({
   // Fiat USD↔CDF conversion rate (manual oracle; update on Render when rate changes)
   FIAT_USD_CDF_RATE: z.string().regex(/^\d+(\.\d+)?$/).default('2850'),
 
+  // Stripe — diaspora card deposits
+  STRIPE_SECRET_KEY:    z.string().min(1).optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().min(1).optional(),
+
   // Brevo transactional email
   BREVO_API_KEY:      z.string().min(1).optional(),
   BREVO_SENDER_EMAIL: z.string().email().default('contact@unipaycongo.com'),
