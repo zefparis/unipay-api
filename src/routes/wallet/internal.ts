@@ -75,7 +75,7 @@ const walletInternalRoute: FastifyPluginAsync = async (fastify) => {
       const { data: wallet } = await fastify.supabase
         .from('wallet_users')
         .select('id, cglt_balance')
-        .eq('blockchain_address', bsc_address)  // bsc_address already lowercased
+        .ilike('blockchain_address', bsc_address)  // case-insensitive match
         .maybeSingle();
 
       if (!wallet) {
