@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
-import { signWalletToken, requireWallet } from '../../utils/wallet-jwt';
+import { signWalletToken, signRefreshToken, verifyRefreshToken, requireWallet } from '../../utils/wallet-jwt';
 import { encryptPrivateKey, generateWallet } from '../../services/blockchain';
 
 interface RegisterBody {
@@ -17,8 +17,9 @@ interface LoginBody {
 
 function normalizePhone(raw: string): string {
   const digits = raw.replace(/\D/g, '');
-  if (digits.startsWith('243')) return `+${digits}`;
-  if (digits.startsWith('0')) return `+243${digits.slice(1)}`;
+  if (digits.startsWith('243') && digits.length === 12) return `+${digits}`;
+  if (digits.startsWith('0') && digits.length === 10) return `+243${digits.slice(1)}`;
+  if (raw.trimStart().startsWith('+')) return raw.replace(/\s/g, '');
   return `+${digits}`;
 }
 
@@ -54,7 +55,7 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
       const { phone, full_name, pin } = request.body;
       const normalizedPhone = normalizePhone(phone);
 
-      if (!/^\+243[0-9]{9}$/.test(normalizedPhone)) {
+      if (!/^\+[1-9][0-9]{7,14}$/.test(normalizedPhone)) {
         return reply.status(400).send({
           error: 'INVALID_PHONE',
           message: 'Numéro de téléphone invalide',
@@ -157,23 +158,68 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(401).send({ error: 'Invalid credentials', statusCode: 401 });
       }
 
-      const EXPIRES_IN = 86_400;
-      const token = signWalletToken(
+      const ACCESS_TTL  = 3_600;
+      const REFRESH_TTL = 2_592_000;
+      const accessToken = signWalletToken(
         { wallet_id: wallet.id as string, phone: wallet.phone as string, role: 'wallet' },
         env.JWT_SECRET,
-        EXPIRES_IN,
+        ACCESS_TTL,
+      );
+      const refreshToken = signRefreshToken(
+        { wallet_id: wallet.id as string },
+        env.JWT_SECRET,
+        REFRESH_TTL,
       );
 
       fastify.log.info({ walletId: wallet.id }, 'Wallet login');
 
       return {
-        access_token: token,
-        token_type:   'Bearer',
-        expires_in:   EXPIRES_IN,
-        wallet_id:    wallet.id,
-        phone:        wallet.phone,
-        full_name:    wallet.full_name ?? null,
+        access_token:  accessToken,
+        refresh_token: refreshToken,
+        token_type:    'Bearer',
+        expires_in:    ACCESS_TTL,
+        wallet_id:     wallet.id,
+        phone:         wallet.phone,
+        full_name:     wallet.full_name ?? null,
       };
+    },
+  );
+
+  /* ── POST /v1/wallet/auth/refresh ──────────────────────── */
+  fastify.post<{ Body: { refresh_token: string } }>(
+    '/wallet/auth/refresh',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['refresh_token'],
+          properties: { refresh_token: { type: 'string' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth service not configured' });
+
+      const payload = verifyRefreshToken(request.body.refresh_token, env.JWT_SECRET);
+      if (!payload) return reply.status(401).send({ error: 'Invalid or expired refresh token' });
+
+      const { data: wallet } = await fastify.supabase
+        .from('wallet_users')
+        .select('id, phone, is_active')
+        .eq('id', payload.wallet_id)
+        .maybeSingle();
+
+      if (!wallet || !wallet.is_active) {
+        return reply.status(401).send({ error: 'Account not found or suspended' });
+      }
+
+      const accessToken = signWalletToken(
+        { wallet_id: wallet.id as string, phone: wallet.phone as string, role: 'wallet' },
+        env.JWT_SECRET,
+        3_600,
+      );
+
+      return { access_token: accessToken, expires_in: 3_600 };
     },
   );
 
