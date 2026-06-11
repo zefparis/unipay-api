@@ -70,6 +70,9 @@ const envSchema = z.object({
   VAPID_PUBLIC_KEY:  z.string().min(1).optional(),
   VAPID_PRIVATE_KEY: z.string().min(1).optional(),
   VAPID_SUBJECT:     z.string().default('mailto:support@unipaycongo.com'),
+
+  // PredictStreet server-to-server limits API
+  PS_LIMITS_BEARER_TOKEN: z.string().min(1).optional(),
 });
 
 const result = envSchema.safeParse(process.env);
