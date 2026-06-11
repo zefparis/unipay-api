@@ -24,6 +24,8 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
     if (urlPath.startsWith('/v1/wallet/')) return;
     // Internal routes are authenticated via x-api-key (GAMING_API_KEY) only
     if (urlPath.startsWith('/v1/internal/')) return;
+    // PredictStreet routes use their own Bearer token auth
+    if (urlPath.startsWith('/api/predictstreet/')) return;
 
     // Admin secret bypass — avoids API key requirement for admin tooling
     const adminSecretHeader = request.headers['x-admin-secret'];
