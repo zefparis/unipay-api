@@ -6,7 +6,7 @@ import { env } from '../config/env';
 const corsPlugin: FastifyPluginAsync = async (fastify) => {
   const allowedOrigins =
     env.NODE_ENV === 'production'
-      ? ['https://unipaycongo.com', 'https://www.unipaycongo.com', 'https://app.unipaycongo.com']
+      ? ['https://unipaycongo.com', 'https://www.unipaycongo.com', 'https://app.unipaycongo.com', 'https://api.unipaycongo.com']
       : true;
 
   await fastify.register(cors, {

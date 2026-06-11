@@ -7,6 +7,7 @@ ALTER TABLE public.wallet_users
 
 -- Atomic swap function: debit one column, credit another, in one transaction.
 -- Raises INSUFFICIENT_BALANCE exception if debit column < debit_amount.
+-- NOTE: uses GET DIAGNOSTICS ROW_COUNT (reliable) instead of IF NOT FOUND (unreliable after EXECUTE).
 CREATE OR REPLACE FUNCTION public.swap_balances(
   p_user_id       UUID,
   p_debit_col     TEXT,
@@ -17,21 +18,26 @@ CREATE OR REPLACE FUNCTION public.swap_balances(
 ) RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
+DECLARE
+  v_rows INT := 0;
 BEGIN
-  -- Debit (including fee if any) — atomic check: only updates if balance >= amount
+  -- Debit (including fee if any) — atomic check: only updates if balance >= required
   EXECUTE format(
-    'UPDATE public.wallet_users SET %I = %I - $1 WHERE id = $2 AND %I >= $1',
+    'UPDATE wallet_users SET %I = %I - $1 WHERE id = $2 AND %I >= $1',
     p_debit_col, p_debit_col, p_debit_col
   ) USING (p_debit_amount + p_fee), p_user_id;
 
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'INSUFFICIENT_BALANCE: % < %', p_debit_col, p_debit_amount + p_fee;
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+
+  IF v_rows = 0 THEN
+    RAISE EXCEPTION 'INSUFFICIENT_BALANCE';
   END IF;
 
   -- Credit
   EXECUTE format(
-    'UPDATE public.wallet_users SET %I = %I + $1 WHERE id = $2',
+    'UPDATE wallet_users SET %I = %I + $1 WHERE id = $2',
     p_credit_col, p_credit_col
   ) USING p_credit_amount, p_user_id;
 END;
