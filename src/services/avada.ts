@@ -127,6 +127,21 @@ function toNumber(value: unknown): number | null {
   return null;
 }
 
+function formatPhoneForOperator(phone: string, operator: string): string {
+  // Nettoie : retire espaces, +, préfixe 243
+  let p = phone.replace(/\s+/g, '').replace(/^\+/, '');
+  if (p.startsWith('243')) p = p.slice(3);
+  if (p.startsWith('0')) p = p.slice(1);
+  // p est maintenant le numéro nu sans 0 ni préfixe (ex: 997174834)
+
+  const op = operator.toLowerCase();
+  if (op === 'airtel') {
+    return p;            // Airtel : numéro nu, ex 997174834
+  }
+  // Orange et Africell : avec le 0 initial, ex 0997174834
+  return '0' + p;
+}
+
 function findBalanceValue(data: unknown): number | null {
   if (!data || typeof data !== 'object') return null;
   const obj = data as Record<string, unknown>;
@@ -157,7 +172,7 @@ export async function initiateCollection(
 
   const payload: Record<string, unknown> = {
     merchant_id:  merchantId,
-    customer_id:  phone,
+    customer_id:  formatPhoneForOperator(phone, operator),
     order_id:     reference,
     amount,
     currency,
@@ -192,7 +207,7 @@ export async function initiatePayout(
 
   const payload: Record<string, unknown> = {
     merchant_id:  merchantId,
-    customer_id:  phone,
+    customer_id:  formatPhoneForOperator(phone, operator),
     order_id:     reference,
     amount,
     currency,
