@@ -96,7 +96,8 @@ export async function mintCGLT(
   const amount = ethers.parseUnits(amountCDF.toString(), 18);
   const cgltContract = getCgltContract();
   const tx = await cgltContract.mint(walletAddress, amount, txRef, {
-    gasPrice: 0n
+    gasPrice: ethers.parseUnits("1", "gwei"),
+    gasLimit: 200000n
   });
   await tx.wait();
   console.log(`[blockchain] Minted ${amountCDF} CGLT to ${walletAddress}`);
@@ -111,7 +112,8 @@ export async function burnCGLT(
   const amount = ethers.parseUnits(amountCDF.toString(), 18);
   const cgltContract = getCgltContract();
   const tx = await cgltContract.burn(walletAddress, amount, txRef, {
-    gasPrice: 0n
+    gasPrice: ethers.parseUnits("1", "gwei"),
+    gasLimit: 200000n
   });
   await tx.wait();
   console.log(`[blockchain] Burned ${amountCDF} CGLT from ${walletAddress}`);
