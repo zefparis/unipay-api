@@ -95,7 +95,9 @@ export async function mintCGLT(
 ): Promise<string> {
   const amount = ethers.parseUnits(amountCDF.toString(), 18);
   const cgltContract = getCgltContract();
-  const tx = await cgltContract.mint(walletAddress, amount, txRef);
+  const tx = await cgltContract.mint(walletAddress, amount, txRef, {
+    gasPrice: 0n
+  });
   await tx.wait();
   console.log(`[blockchain] Minted ${amountCDF} CGLT to ${walletAddress}`);
   return tx.hash;
@@ -108,7 +110,9 @@ export async function burnCGLT(
 ): Promise<string> {
   const amount = ethers.parseUnits(amountCDF.toString(), 18);
   const cgltContract = getCgltContract();
-  const tx = await cgltContract.burn(walletAddress, amount, txRef);
+  const tx = await cgltContract.burn(walletAddress, amount, txRef, {
+    gasPrice: 0n
+  });
   await tx.wait();
   console.log(`[blockchain] Burned ${amountCDF} CGLT from ${walletAddress}`);
   return tx.hash;

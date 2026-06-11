@@ -33,6 +33,7 @@
   },
   "devDependencies": {
     "pino-pretty": "^11.2.1",
+    "solc": "^0.8.20",
     "tsx": "^4.15.7"
   }
 }
