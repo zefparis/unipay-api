@@ -72,7 +72,7 @@ const envSchema = z.object({
   VAPID_SUBJECT:     z.string().default('mailto:support@unipaycongo.com'),
 
   // PredictStreet server-to-server limits API
-  PS_LIMITS_BEARER_TOKEN: z.string().min(1).optional(),
+  PREDICTSTREET_BEARER_TOKEN: z.string().min(1).optional(),
 });
 
 const result = envSchema.safeParse(process.env);

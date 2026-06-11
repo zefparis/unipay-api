@@ -171,7 +171,7 @@ export async function buildServer() {
   server.get<{ Params: { provider_user_id: string } }>(
     '/api/predictstreet/users/:provider_user_id/limits',
     async (req, reply) => {
-      const token = env.PS_LIMITS_BEARER_TOKEN;
+      const token = env.PREDICTSTREET_BEARER_TOKEN;
       if (!token) return reply.code(503).send({ error: 'Limits API not configured' });
 
       // Constant-time bearer token comparison
