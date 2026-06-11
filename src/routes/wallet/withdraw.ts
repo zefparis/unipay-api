@@ -6,7 +6,6 @@ import { getProviderService } from '../../services/index';
 import { sendWalletWithdrawalEmail } from '../../services/email';
 import { notify } from '../../utils/push';
 import { sandboxPayout } from '../../services/avada';
-import { burnCGLT } from '../../services/blockchain';
 import type { Channel } from '../../types/payment';
 import { getLimits } from '../../utils/kyc-limits';
 
@@ -76,7 +75,7 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
       // Fetch wallet with current balance
       const { data: wallet } = await fastify.supabase
         .from('wallet_users')
-        .select('id, is_active, balance_cdf, kyc_level, blockchain_address, cglt_balance, email, full_name, lang')
+        .select('id, is_active, balance_cdf, kyc_level, blockchain_address, email, full_name, lang')
         .eq('id', walletId)
         .maybeSingle();
 
@@ -124,16 +123,6 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
 
       const txId      = crypto.randomUUID();
       const reference = `WW-${txId.slice(0, 8).toUpperCase()}`;
-      let blockchainTxHash: string | null = null;
-
-      if (wallet.blockchain_address) {
-        try {
-          blockchainTxHash = await burnCGLT(wallet.blockchain_address as string, amount, reference);
-        } catch (err) {
-          fastify.log.error({ err, txId, walletId }, 'CGLT burn failed');
-          return reply.status(502).send({ error: 'Blockchain burn failed', statusCode: 502 });
-        }
-      }
 
       // ── Deduct balance atomically via RPC ────────────────────
       const { error: debitError } = await fastify.supabase
@@ -163,16 +152,10 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
           phone:                normalizedPhone,
           reference,
           avada_transaction_id: mockRef,
-          blockchain_tx_hash:   blockchainTxHash,
-          cglt_amount:          amount,
+          blockchain_tx_hash:   null,
           status:               'success',
           metadata:             { sandbox: true, source: 'wallet_withdraw' },
         });
-
-        await fastify.supabase
-          .from('wallet_users')
-          .update({ cglt_balance: Math.max(Number(wallet.cglt_balance ?? 0) - amount, 0) })
-          .eq('id', walletId);
 
         fastify.log.info({ txId, walletId, isSandbox: true }, 'Wallet withdraw (sandbox)');
 
@@ -209,8 +192,7 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
           currency,
           phone:          normalizedPhone,
           reference,
-          blockchain_tx_hash: blockchainTxHash,
-          cglt_amount:        amount,
+          blockchain_tx_hash: null,
           status:         'pending',
           metadata:       { source: 'wallet_withdraw' },
         });
@@ -219,7 +201,7 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
         // Compensate — refund deducted balance
         await fastify.supabase
           .from('wallet_users')
-          .update({ balance_cdf: currentBalance, cglt_balance: Number(wallet.cglt_balance ?? 0) })
+          .update({ balance_cdf: currentBalance })
           .eq('id', walletId);
         fastify.log.error({ err: insertError, txId }, 'Wallet withdraw insert failed — balance refunded');
         return reply.status(500).send({ error: 'Failed to create withdrawal', statusCode: 500 });
@@ -241,11 +223,6 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
           .from('transactions')
           .update({ status: 'processing', avada_transaction_id: providerRes.provider_ref })
           .eq('id', txId);
-
-        await fastify.supabase
-          .from('wallet_users')
-          .update({ cglt_balance: Math.max(Number(wallet.cglt_balance ?? 0) - amount, 0) })
-          .eq('id', walletId);
 
         fastify.log.info({ txId, walletId, operator }, 'Wallet withdrawal initiated');
 
@@ -281,7 +258,7 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
         fastify.log.error({ err, txId, operator }, 'Wallet withdraw provider error — refunding');
         await fastify.supabase
           .from('wallet_users')
-          .update({ balance_cdf: currentBalance, cglt_balance: Number(wallet.cglt_balance ?? 0) })
+          .update({ balance_cdf: currentBalance })
           .eq('id', walletId);
         await fastify.supabase
           .from('transactions')
