@@ -77,6 +77,9 @@ const envSchema = z.object({
   // Binance — USDT crypto withdrawals
   BINANCE_MAIN_API_KEY:    z.string().min(1).optional(),
   BINANCE_MAIN_SECRET_KEY: z.string().min(1).optional(),
+
+  // Admin access — comma-separated list of allowed emails for admin routes
+  ADMIN_EMAILS: z.string().default('b.barrere@congogaming.com'),
 });
 
 const result = envSchema.safeParse(process.env);

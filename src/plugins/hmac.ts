@@ -88,6 +88,18 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
     request.operatorId = matched.operator_id;
     request.isAdmin = matched.operators.is_admin;
 
+    // If admin via API key, verify email is in allowed list
+    if (request.isAdmin && matched.operators.email) {
+      const allowedEmails = env.ADMIN_EMAILS.split(',').map(e => e.trim().toLowerCase());
+      if (!allowedEmails.includes(matched.operators.email.toLowerCase())) {
+        fastify.log.warn(
+          { email: matched.operators.email, operatorId: matched.operator_id },
+          'Admin access denied: email not in ADMIN_EMAILS list',
+        );
+        request.isAdmin = false;
+      }
+    }
+
     // Update last_used_at — non-blocking
     void Promise.resolve(
       fastify.supabase
