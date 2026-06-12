@@ -4,7 +4,7 @@ import { getProviderService } from '../../services/index';
 import { sandboxCollection, sandboxPayout } from '../../services/avada';
 import type { Channel, Direction } from '../../types/payment';
 
-const FEE_RATE = 0.03; // 3% per signed contract with Avada Group RDC
+const FEE_RATE = 0.04; // 4% per signed contract with Avada Group RDC
 
 interface InitiateBody {
   operator: Channel;
