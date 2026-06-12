@@ -45,6 +45,7 @@ import walletTransakRoute from './routes/wallet/transak';
 import walletCryptoDepositRoute from './routes/wallet/crypto-deposit';
 import walletCryptoWithdrawRoute from './routes/wallet/crypto-withdraw';
 import adminBinanceRoute from './routes/admin/binance';
+import adminHotwalletRoute from './routes/admin/hotwallet';
 import walletNotificationsRoute from './routes/wallet/notifications';
 
 export async function buildServer() {
@@ -162,6 +163,7 @@ export async function buildServer() {
       v1.register(walletCryptoDepositRoute);
       v1.register(walletCryptoWithdrawRoute);
       v1.register(adminBinanceRoute);
+      v1.register(adminHotwalletRoute);
       v1.register(walletNotificationsRoute);
     },
     { prefix: '/v1' },

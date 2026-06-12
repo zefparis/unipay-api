@@ -8,30 +8,24 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
-import { withdrawUsdt, type WithdrawNetwork } from '../../lib/binance-withdrawal';
+import { sendUsdt } from '../../lib/bsc-withdrawal';
 
-/* ── Network fees (USDT) ──────────────────────────────────────────────── */
-const NETWORK_FEE: Record<WithdrawNetwork, number> = {
-  BSC:   0.5,
-  TRC20: 1,
-  ERC20: 5,
-};
+/* ── BSC only — TRC20/ERC20 not yet available ────────────────────────── */
+const SUPPORTED_NETWORKS = ['BSC'] as const;
+type SupportedNetwork = typeof SUPPORTED_NETWORKS[number];
 
-/* ── Address regex validators ─────────────────────────────────────────── */
-const EVM_ADDR   = /^0x[a-fA-F0-9]{40}$/;
-const TRON_ADDR  = /^T[a-zA-Z0-9]{33}$/;
+/* ── Network fee (USDT) ───────────────────────────────────────────────── */
+const NETWORK_FEE: Record<SupportedNetwork, number> = { BSC: 0.5 };
 
-function isValidAddress(address: string, network: WithdrawNetwork): boolean {
-  if (network === 'TRC20') return TRON_ADDR.test(address);
-  return EVM_ADDR.test(address);
-}
+/* ── Address regex (BSC = EVM) ─────────────────────────────────────────── */
+const EVM_ADDR = /^0x[a-fA-F0-9]{40}$/;
 
-/* ── Minimum net withdrawal (USDT) ───────────────────────────────────── */
+/* ── Minimum net withdrawal (USDT) ────────────────────────────────────── */
 const MIN_NET = 5;
 
 interface CryptoWithdrawBody {
   amount:              number;
-  network:             'BSC' | 'TRC20' | 'ERC20';
+  network:             SupportedNetwork;
   destination_address: string;
 }
 
@@ -47,7 +41,7 @@ const walletCryptoWithdrawRoute: FastifyPluginAsync = async (fastify) => {
           required:   ['amount', 'network', 'destination_address'],
           properties: {
             amount:              { type: 'number', exclusiveMinimum: 0 },
-            network:             { type: 'string', enum: ['BSC', 'TRC20', 'ERC20'] },
+            network:             { type: 'string', enum: ['BSC'] },
             destination_address: { type: 'string', minLength: 10, maxLength: 100 },
           },
         },
@@ -61,23 +55,28 @@ const walletCryptoWithdrawRoute: FastifyPluginAsync = async (fastify) => {
       const wp = requireWallet(request.headers.authorization, env.JWT_SECRET);
       if (!wp) return reply.status(401).send({ error: 'Unauthorized' });
 
-      const apiKey    = env.BINANCE_MAIN_API_KEY;
-      const secretKey = env.BINANCE_MAIN_SECRET_KEY;
-      if (!apiKey || !secretKey) {
-        return reply.status(503).send({ error: 'Crypto withdrawal not configured' });
-      }
-
       const { amount, network, destination_address } = request.body;
       const walletId = wp.wallet_id;
 
-      /* ── 1. Validate address format ─────────────────────────────────── */
-      if (!isValidAddress(destination_address, network)) {
+      /* ── 1. Network guard ────────────────────────────────────────────── */
+      if (!SUPPORTED_NETWORKS.includes(network)) {
+        return reply.status(400).send({
+          error:   'NETWORK_NOT_SUPPORTED',
+          message: 'Seul le réseau BSC est disponible actuellement',
+        });
+      }
+
+      /* ── 2. Validate BSC address format ─────────────────────────────── */
+      if (!EVM_ADDR.test(destination_address)) {
         return reply.status(400).send({
           error:   'INVALID_ADDRESS',
-          message: network === 'TRC20'
-            ? 'TRC20 address must start with T and be 34 characters'
-            : 'EVM address must be a valid 0x hex address (42 chars)',
+          message: 'EVM address must be a valid 0x hex address (42 chars)',
         });
+      }
+
+      /* ── Check hot wallet is configured ────────────────────────────── */
+      if (!env.HOT_WALLET_USDT_PRIVATE_KEY) {
+        return reply.status(503).send({ error: 'Crypto withdrawal not configured' });
       }
 
       /* ── 2. Fee + net amount ─────────────────────────────────────────── */
@@ -155,43 +154,41 @@ const walletCryptoWithdrawRoute: FastifyPluginAsync = async (fastify) => {
 
       fastify.log.info(
         { withdrawalId, walletId, network, amount, fee, netAmount, addrMasked },
-        'USDT withdrawal — calling Binance',
+        'USDT withdrawal — sending on-chain (BSC hot wallet)',
       );
 
-      /* ── 6. Call Binance ─────────────────────────────────────────────── */
+      /* ── 6. Send on-chain via hot wallet ─────────────────────────────── */
       try {
-        const result = await withdrawUsdt({
+        const { txHash } = await sendUsdt({
+          to:     destination_address,
           amount: netAmount,
-          network,
-          address: destination_address,
-          apiKey,
-          secretKey,
         });
 
         await fastify.supabase
           .from('withdrawal_requests')
           .update({
-            binance_withdraw_id: result.id,
-            status:              'processing',
-            updated_at:          new Date().toISOString(),
+            tx_hash:    txHash,
+            status:     'processing',
+            updated_at: new Date().toISOString(),
           })
           .eq('id', withdrawalId);
 
         fastify.log.info(
-          { withdrawalId, binanceId: result.id, walletId, network, netAmount, addrMasked },
-          'USDT withdrawal submitted to Binance',
+          { withdrawalId, txHash, walletId, network, netAmount, addrMasked },
+          'USDT withdrawal sent on-chain (BSC hot wallet)',
         );
 
         return reply.status(201).send({
           withdrawal_id: withdrawalId,
           status:        'processing',
           net_amount:    netAmount,
+          tx_hash:       txHash,
           fee,
           network,
         });
       } catch (err) {
-        const reason = (err as Error)?.message ?? 'Binance error';
-        fastify.log.error({ err, withdrawalId, walletId }, 'Binance withdrawal failed — refunding');
+        const reason = (err as Error)?.message ?? 'On-chain error';
+        fastify.log.error({ err, withdrawalId, walletId }, 'BSC hot-wallet withdrawal failed — refunding');
 
         // Compensate — refund balance
         await fastify.supabase
@@ -209,7 +206,10 @@ const walletCryptoWithdrawRoute: FastifyPluginAsync = async (fastify) => {
           })
           .eq('id', withdrawalId);
 
-        return reply.status(502).send({ error: 'Withdrawal provider unavailable', detail: reason });
+        const status = reason === 'INSUFFICIENT_HOT_WALLET_BALANCE' ? 503
+                     : reason === 'INSUFFICIENT_GAS'                 ? 503
+                     : 502;
+        return reply.status(status).send({ error: reason });
       }
     },
   );
