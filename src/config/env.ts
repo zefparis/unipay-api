@@ -74,9 +74,11 @@ const envSchema = z.object({
   // PredictStreet server-to-server limits API
   PREDICTSTREET_BEARER_TOKEN: z.string().min(1).optional(),
 
-  // Binance — USDT crypto withdrawals
-  BINANCE_MAIN_API_KEY:    z.string().min(1).optional(),
-  BINANCE_MAIN_SECRET_KEY: z.string().min(1).optional(),
+  // Binance — USDT crypto withdrawals + admin management
+  BINANCE_MAIN_API_KEY:          z.string().min(1).optional(),
+  BINANCE_MAIN_SECRET_KEY:       z.string().min(1).optional(),
+  BINANCE_SUBACCOUNT_API_KEY:    z.string().min(1).optional(),
+  BINANCE_SUBACCOUNT_SECRET_KEY: z.string().min(1).optional(),
 
   // Admin access — comma-separated list of allowed emails for admin routes
   ADMIN_EMAILS: z.string().default('b.barrere@congogaming.com'),
