@@ -10,11 +10,30 @@
  */
 
 import crypto from 'node:crypto';
+import { fetch as undiciFetch, ProxyAgent } from 'undici';
+import { env } from '../config/env.js';
 import { withdrawUsdt } from './binance-withdrawal.js';
 
 export { withdrawUsdt };
 
 const BINANCE_BASE = 'https://api.binance.com';
+
+/* ── Fixie proxy ──────────────────────────────────────────────────────── */
+
+let _proxyAgent: ProxyAgent | undefined;
+function getProxyAgent(): ProxyAgent | undefined {
+  if (!env.FIXIE_URL) return undefined;
+  if (!_proxyAgent) _proxyAgent = new ProxyAgent(env.FIXIE_URL);
+  return _proxyAgent;
+}
+
+async function binanceFetch(url: string, opts: Record<string, unknown> = {}): Promise<Response> {
+  const dispatcher = getProxyAgent();
+  return undiciFetch(url, {
+    ...opts,
+    ...(dispatcher ? { dispatcher } : {}),
+  } as Parameters<typeof undiciFetch>[1]) as unknown as Response;
+}
 
 /* ── HMAC helpers ─────────────────────────────────────────────────────── */
 
@@ -60,7 +79,7 @@ export async function getAccountBalance(
   secretKey: string,
 ): Promise<AssetBalance[]> {
   const qs  = buildSignedQS({}, secretKey);
-  const res = await fetch(`${BINANCE_BASE}/api/v3/account?${qs}`, {
+  const res = await binanceFetch(`${BINANCE_BASE}/api/v3/account?${qs}`, {
     headers: { 'X-MBX-APIKEY': apiKey },
   });
 
@@ -85,7 +104,7 @@ export async function getSubAccountBalance(
   mainSecretKey:  string,
 ): Promise<AssetBalance[]> {
   const qs  = buildSignedQS({ email }, mainSecretKey);
-  const res = await fetch(`${BINANCE_BASE}/sapi/v1/sub-account/assets?${qs}`, {
+  const res = await binanceFetch(`${BINANCE_BASE}/sapi/v1/sub-account/assets?${qs}`, {
     headers: { 'X-MBX-APIKEY': mainApiKey },
   });
 
@@ -110,7 +129,7 @@ export async function getWithdrawHistory(
   limit      = 50,
 ): Promise<WithdrawRecord[]> {
   const qs  = buildSignedQS({ coin: 'USDT', limit }, secretKey);
-  const res = await fetch(`${BINANCE_BASE}/sapi/v1/capital/withdraw/history?${qs}`, {
+  const res = await binanceFetch(`${BINANCE_BASE}/sapi/v1/capital/withdraw/history?${qs}`, {
     headers: { 'X-MBX-APIKEY': apiKey },
   });
 

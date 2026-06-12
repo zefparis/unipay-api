@@ -8,8 +8,25 @@
  */
 
 import crypto from 'node:crypto';
+import { fetch as undiciFetch, ProxyAgent } from 'undici';
+import { env } from '../config/env.js';
 
 const BINANCE_BASE = 'https://api.binance.com';
+
+let _proxyAgent: ProxyAgent | undefined;
+function getProxyAgent(): ProxyAgent | undefined {
+  if (!env.FIXIE_URL) return undefined;
+  if (!_proxyAgent) _proxyAgent = new ProxyAgent(env.FIXIE_URL);
+  return _proxyAgent;
+}
+
+async function binanceFetch(url: string, opts: Record<string, unknown> = {}): Promise<Response> {
+  const dispatcher = getProxyAgent();
+  return undiciFetch(url, {
+    ...opts,
+    ...(dispatcher ? { dispatcher } : {}),
+  } as Parameters<typeof undiciFetch>[1]) as unknown as Response;
+}
 
 /** Network names expected by Binance for each chain. */
 const NETWORK_MAP: Record<'BSC' | 'TRC20' | 'ERC20', string> = {
@@ -70,7 +87,7 @@ export async function withdrawUsdt(opts: WithdrawUsdtOptions): Promise<WithdrawU
     secretKey,
   );
 
-  const res = await fetch(`${BINANCE_BASE}/sapi/v1/capital/withdraw/apply`, {
+  const res = await binanceFetch(`${BINANCE_BASE}/sapi/v1/capital/withdraw/apply`, {
     method:  'POST',
     headers: {
       'X-MBX-APIKEY': apiKey,
@@ -125,7 +142,7 @@ export async function getWithdrawStatus(
   secretKey:  string,
 ): Promise<WithdrawStatusResult> {
   const qs  = buildSignedQS({ withdrawOrderId: withdrawId, limit: 10 }, secretKey);
-  const res = await fetch(`${BINANCE_BASE}/sapi/v1/capital/withdraw/history?${qs}`, {
+  const res = await binanceFetch(`${BINANCE_BASE}/sapi/v1/capital/withdraw/history?${qs}`, {
     headers: { 'X-MBX-APIKEY': apiKey },
   });
 
