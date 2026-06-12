@@ -73,6 +73,10 @@ const envSchema = z.object({
 
   // PredictStreet server-to-server limits API
   PREDICTSTREET_BEARER_TOKEN: z.string().min(1).optional(),
+
+  // Binance — USDT crypto withdrawals
+  BINANCE_MAIN_API_KEY:    z.string().min(1).optional(),
+  BINANCE_MAIN_SECRET_KEY: z.string().min(1).optional(),
 });
 
 const result = envSchema.safeParse(process.env);
