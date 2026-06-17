@@ -12,6 +12,7 @@
  */
 
 import type { FastifyPluginAsync } from 'fastify';
+import type { SupabaseClient }     from '@supabase/supabase-js';
 
 /* ── Supported token contracts on BSC (other networks: on-chain verify not supported) ── */
 const BSC_TOKENS: Record<string, { contract: string; decimals: number }> = {
@@ -24,6 +25,31 @@ const SUPPORTED_NETWORKS = ['BSC', 'ERC20', 'TRC20', 'Polygon', 'Base', 'Arbitru
 
 /* ── ERC-20 balanceOf(address) function selector ────────────────────────── */
 const BALANCE_OF_SELECTOR = '0x70a08231';
+
+/* ── Audit log helper for wallet lifecycle events ───────────────────────── */
+async function auditWalletLog(
+  supabase:      SupabaseClient,
+  action:        string,
+  wallet:        Record<string, unknown>,
+  receiptsCount: number,
+): Promise<void> {
+  await supabase.from('treasury_audit_log').insert({
+    action,
+    entity_type: 'treasury_wallet',
+    entity_id:   wallet.id as string,
+    actor_label: null,
+    before:      wallet,
+    after:       null,
+    metadata: {
+      wallet_id:              wallet.id,
+      label:                  wallet.label,
+      asset:                  wallet.asset,
+      network:                wallet.network,
+      address:                wallet.address,
+      used_by_receipts_count: receiptsCount,
+    },
+  });
+}
 
 /* ── Resolve token contract + decimals from asset/network ─────────────── */
 function resolveToken(asset: string, network: string): { contract: string; decimals: number } | null {
@@ -167,13 +193,19 @@ const adminTreasuryCryptoAssetsRoute: FastifyPluginAsync = async (fastify) => {
    * GET /admin/treasury/crypto-wallets
    * List all treasury wallets (without on-chain fetch) — for UI forms.
    * ════════════════════════════════════════════════════════════════════ */
-  fastify.get('/admin/treasury/crypto-wallets', async (request, reply) => {
+  fastify.get<{ Querystring: { active_only?: string } }>('/admin/treasury/crypto-wallets', async (request, reply) => {
     if (!request.isAdmin) return reply.status(403).send({ error: 'Admin access required' });
 
-    const { data, error } = await fastify.supabase
+    let query = fastify.supabase
       .from('treasury_wallets')
       .select('*')
       .order('created_at', { ascending: true });
+
+    if (request.query.active_only === 'true') {
+      query = query.eq('is_active', true) as typeof query;
+    }
+
+    const { data, error } = await query;
 
     if (error) return reply.status(500).send({ error: error.message });
     return reply.send({ data: data ?? [] });
@@ -263,6 +295,76 @@ const adminTreasuryCryptoAssetsRoute: FastifyPluginAsync = async (fastify) => {
 
       fastify.log.info({ id: created.id, label, asset, network }, '[treasury-assets] wallet created');
       return reply.status(201).send({ success: true, data: created });
+    },
+  );
+
+  /* ════════════════════════════════════════════════════════════════════
+   * DELETE /admin/treasury/crypto-wallets/:id
+   * If wallet address is unused by any receipt → hard delete.
+   * If used by receipts → soft deactivate (is_active = false).
+   * If already inactive → idempotent success.
+   * ════════════════════════════════════════════════════════════════════ */
+  fastify.delete<{ Params: { id: string } }>(
+    '/admin/treasury/crypto-wallets/:id',
+    async (request, reply) => {
+      if (!request.isAdmin) return reply.status(403).send({ error: 'Admin access required' });
+
+      const { data: wallet, error: fetchErr } = await fastify.supabase
+        .from('treasury_wallets')
+        .select('*')
+        .eq('id', request.params.id)
+        .maybeSingle();
+
+      if (fetchErr) return reply.status(500).send({ error: fetchErr.message });
+      if (!wallet)  return reply.status(404).send({ error: 'Wallet not found' });
+
+      if (!wallet.is_active) {
+        return reply.send({ deleted: false, deactivated: false, already_inactive: true });
+      }
+
+      /* ── Count linked receipts ───────────────────────────────────── */
+      const { count } = await fastify.supabase
+        .from('treasury_crypto_receipts')
+        .select('id', { count: 'exact', head: true })
+        .ilike('receiving_address', wallet.address);
+
+      const usedCount = count ?? 0;
+
+      if (usedCount === 0) {
+        /* ── Hard delete ────────────────────────────────────────── */
+        const { error: delErr } = await fastify.supabase
+          .from('treasury_wallets')
+          .delete()
+          .eq('id', request.params.id);
+
+        if (delErr) return reply.status(500).send({ error: delErr.message });
+
+        await auditWalletLog(fastify.supabase, 'treasury_wallet_deleted',
+          wallet as Record<string, unknown>, usedCount);
+
+        fastify.log.info(
+          { id: wallet.id, label: wallet.label, asset: wallet.asset, network: wallet.network },
+          '[treasury-assets] wallet hard-deleted',
+        );
+        return reply.send({ deleted: true, deactivated: false, used_by_receipts_count: 0 });
+      }
+
+      /* ── Soft deactivate ──────────────────────────────────────── */
+      const { error: updErr } = await fastify.supabase
+        .from('treasury_wallets')
+        .update({ is_active: false, updated_at: new Date().toISOString() })
+        .eq('id', request.params.id);
+
+      if (updErr) return reply.status(500).send({ error: updErr.message });
+
+      await auditWalletLog(fastify.supabase, 'treasury_wallet_deactivated',
+        wallet as Record<string, unknown>, usedCount);
+
+      fastify.log.info(
+        { id: wallet.id, label: wallet.label, receipts: usedCount },
+        '[treasury-assets] wallet deactivated',
+      );
+      return reply.send({ deleted: false, deactivated: true, used_by_receipts_count: usedCount });
     },
   );
 
