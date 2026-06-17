@@ -163,7 +163,7 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
             expected_amount:   { type: 'number', exclusiveMinimum: 0 },
             receiving_address: { type: 'string', minLength: 5, maxLength: 200 },
             received_amount:   { type: 'number', exclusiveMinimum: 0 },
-            tx_hash:           { type: 'string', minLength: 5, maxLength: 100 },
+            tx_hash:           { type: 'string', maxLength: 100 },
             notes:             { type: 'string', maxLength: 1000 },
             created_by:        { type: 'string', maxLength: 200 },
             status:            { type: 'string', enum: [...VALID_STATUSES] },
@@ -409,7 +409,7 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
             invoice_reference: { type: 'string', minLength: 1, maxLength: 200 },
             payer_name:        { type: 'string', minLength: 1, maxLength: 200 },
             receiving_address: { type: 'string', minLength: 5, maxLength: 200 },
-            tx_hash:           { type: 'string', minLength: 5, maxLength: 100 },
+            tx_hash:           { type: 'string', maxLength: 100 },
             expected_amount:   { type: 'number', exclusiveMinimum: 0 },
             received_amount:   { type: 'number', exclusiveMinimum: 0 },
             status:            { type: 'string', enum: [...VALID_STATUSES] },
@@ -459,7 +459,7 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
       const effectiveStatus = (updates.status as Status | undefined) ?? currentStatus;
 
       /* ── tx_hash ─────────────────────────────────────────────────── */
-      if (tx_hash !== undefined) {
+      if (tx_hash !== undefined && tx_hash.trim() !== '') {
         const cleanHash = tx_hash.trim();
         const hashErr   = validateTxHash(cleanHash, current.network as Network);
         if (hashErr) {
