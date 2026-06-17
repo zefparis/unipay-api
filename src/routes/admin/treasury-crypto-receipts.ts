@@ -602,78 +602,110 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
         });
       }
 
-      /* ── API key: prefer ETHERSCAN_API_KEY (V2), fall back to BSCSCAN_API_KEY ─ */
+      /* ── Resolve verification source ─────────────────────────────────
+       * Primary:  direct BSC JSON-RPC via BSC_RPC_URL  (no rate limits)
+       * Fallback: explorer API (ETHERSCAN_API_KEY ?? BSCSCAN_API_KEY)
+       * API keys are NEVER logged.
+       * ─────────────────────────────────────────────────────────────── */
+      const bscRpcUrl     = process.env.BSC_RPC_URL;
       const explorerApiKey = process.env.ETHERSCAN_API_KEY ?? process.env.BSCSCAN_API_KEY;
-      if (!explorerApiKey) {
+
+      if (!bscRpcUrl && !explorerApiKey) {
         return reply.status(503).send({
-          error:   'EXPLORER_API_KEY_NOT_CONFIGURED',
-          message: 'Set ETHERSCAN_API_KEY (or BSCSCAN_API_KEY) to enable on-chain verification',
+          error:   'EXPLORER_OR_RPC_NOT_CONFIGURED',
+          message: 'Set BSC_RPC_URL (preferred) or ETHERSCAN_API_KEY / BSCSCAN_API_KEY to enable BSC verification',
         });
       }
 
       try {
-        /* ── Etherscan API V2 — BSC mainnet chainid=56 ─────────────── */
-        /* Key intentionally excluded from logs to avoid secret leakage. */
-        const rpcUrl = `https://api.etherscan.io/v2/api?chainid=56&module=proxy&action=eth_getTransactionReceipt&txhash=${receipt.tx_hash}&apikey=${explorerApiKey}`;
-        const rpcRes  = await fetch(rpcUrl);
-        const rawJson = await rpcRes.json() as Record<string, unknown>;
+        /* ── Fetch the EVM transaction receipt ────────────────────── */
+        let rawJson: Record<string, unknown>;
+        let verificationSource: 'bsc_rpc' | 'explorer';
 
-        /* ── Debug: always log the raw response shape ─────────────── */
+        if (bscRpcUrl) {
+          /* ── Primary: direct JSON-RPC POST to BSC node ─────────── */
+          verificationSource = 'bsc_rpc';
+          const rpcRes = await fetch(bscRpcUrl, {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({
+              jsonrpc: '2.0',
+              method:  'eth_getTransactionReceipt',
+              params:  [receipt.tx_hash],
+              id:      1,
+            }),
+          });
+          rawJson = await rpcRes.json() as Record<string, unknown>;
+        } else {
+          /* ── Fallback: Etherscan V2 / BSCScan explorer ──────────── */
+          verificationSource = 'explorer';
+          const explorerUrl =
+            `https://api.etherscan.io/v2/api?chainid=56&module=proxy` +
+            `&action=eth_getTransactionReceipt&txhash=${receipt.tx_hash}` +
+            `&apikey=${explorerApiKey}`;
+          const rpcRes = await fetch(explorerUrl);
+          rawJson = await rpcRes.json() as Record<string, unknown>;
+        }
+
+        /* ── Debug log (no secrets) ───────────────────────────────── */
         fastify.log.info({
-          id:             request.params.id,
-          tx_hash:        receipt.tx_hash,
-          outer_status:   rawJson.status,
-          outer_message:  rawJson.message,
-          result_exists:  rawJson.result !== null && rawJson.result !== undefined,
-          result_type:    typeof rawJson.result,
-          result_status:  typeof rawJson.result === 'object' && rawJson.result !== null
-                            ? (rawJson.result as Record<string, unknown>).status
-                            : '(no object)',
-          logs_count:     typeof rawJson.result === 'object' && rawJson.result !== null &&
-                          Array.isArray((rawJson.result as Record<string, unknown>).logs)
-                            ? ((rawJson.result as Record<string, unknown>).logs as unknown[]).length
-                            : -1,
-        }, '[treasury-crypto] BSCScan raw response');
+          id:                  request.params.id,
+          tx_hash:             receipt.tx_hash,
+          verification_source: verificationSource,
+          outer_status:        rawJson.status,
+          outer_message:       rawJson.message,
+          rpc_result_exists:   rawJson.result !== null && rawJson.result !== undefined,
+          result_type:         typeof rawJson.result,
+          receipt_status:      typeof rawJson.result === 'object' && rawJson.result !== null
+                                 ? (rawJson.result as Record<string, unknown>).status
+                                 : '(no object)',
+          logs_count:          typeof rawJson.result === 'object' && rawJson.result !== null &&
+                               Array.isArray((rawJson.result as Record<string, unknown>).logs)
+                                 ? ((rawJson.result as Record<string, unknown>).logs as unknown[]).length
+                                 : -1,
+        }, '[treasury-crypto] raw receipt response');
 
-        /* ── Case A: BSCScan API-level error (non-RPC format) ─────── */
+        /* ── Case A: explorer API-level error (non-RPC wrapper) ───── */
         /* Shape: { status: "0", message: "NOTOK", result: "<string>" } */
+        /* This only occurs for the explorer path; RPC never has it.    */
         if (typeof rawJson.status === 'string' && rawJson.status === '0') {
           const errDetail = typeof rawJson.result === 'string'
             ? rawJson.result
-            : String(rawJson.message ?? 'BSCScan API error');
+            : String(rawJson.message ?? 'Explorer API error');
           fastify.log.error(
-            { id: request.params.id, tx_hash: receipt.tx_hash, detail: errDetail },
-            '[treasury-crypto] BSCScan API-level error',
+            { id: request.params.id, tx_hash: receipt.tx_hash, source: verificationSource, detail: errDetail },
+            '[treasury-crypto] explorer API-level error',
           );
           return reply.send({
-            verified:         false,
-            blocking_reasons: ['BSCSCAN_ERROR'],
-            reason:           `BSCScan API error: ${errDetail}`,
+            verified:            false,
+            verification_source: verificationSource,
+            blocking_reasons:    ['BSCSCAN_ERROR'],
+            reason:              `Explorer API error: ${errDetail}`,
           });
         }
 
-        /* ── Case B: result is null / missing (tx not yet indexed) ── */
-        /* JSON-RPC format: { jsonrpc, id, result: null }             */
+        /* ── Case B: result null / not-object (tx not yet indexed) ── */
         if (rawJson.result === null || rawJson.result === undefined || typeof rawJson.result !== 'object') {
           const rpcErr = rawJson.error as { message?: string } | undefined;
           fastify.log.warn(
-            { id: request.params.id, tx_hash: receipt.tx_hash, rpcErr },
+            { id: request.params.id, tx_hash: receipt.tx_hash, source: verificationSource, rpcErr },
             '[treasury-crypto] tx not indexed or result missing',
           );
           return reply.send({
-            verified:         false,
-            blocking_reasons: ['TX_NOT_INDEXED'],
-            reason:           rpcErr?.message ?? 'Transaction not found or not yet indexed on BSCScan',
+            verified:            false,
+            verification_source: verificationSource,
+            blocking_reasons:    ['TX_NOT_INDEXED'],
+            reason:              rpcErr?.message ?? 'Transaction not found or not yet indexed',
           });
         }
 
-        /* ── Case C: valid JSON-RPC receipt object ───────────────── */
+        /* ── Case C: valid receipt object ────────────────────────── */
         const rpcResult = rawJson.result as {
           logs:   Array<{ address: string; topics: string[]; data: string }>;
           status: string | number;
         };
 
-        /* ── Use received_amount when present, else expected_amount ─ */
+        /* ── Use received_amount when set, else fall back to expected ─ */
         const expectedAmount =
           receipt.received_amount !== null && receipt.received_amount !== undefined
             ? Number(receipt.received_amount)
@@ -681,25 +713,26 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
 
         const result = verifyBscTransfer(
           rpcResult,
-          receipt.asset            as string,
+          receipt.asset             as string,
           receipt.receiving_address as string,
           expectedAmount,
         );
 
-        /* ── Debug: blocking summary ─────────────────────────────── */
+        /* ── Debug: verification outcome ────────────────────────── */
         fastify.log.info(
           {
-            id:              request.params.id,
-            tx_hash:         receipt.tx_hash,
-            verified:        result.verified,
-            blocking:        result.blocking_reasons,
-            transferred_amt: result.transferred_amount,
-            expected_amt:    result.expected_amount,
+            id:                  request.params.id,
+            tx_hash:             receipt.tx_hash,
+            verification_source: verificationSource,
+            verified:            result.verified,
+            blocking_reasons:    result.blocking_reasons,
+            transferred_amt:     result.transferred_amount,
+            expected_amt:        result.expected_amount,
           },
           '[treasury-crypto] verification completed',
         );
 
-        /* ── Persist in audit log ────────────────────────────────── */
+        /* ── Persist in audit log ─────────────────────────────────── */
         await auditLog(
           fastify.supabase,
           result.verified ? 'verify_ok' : 'verify_failed',
@@ -707,10 +740,10 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
           null,
           null,
           undefined,
-          { verify_result: result },
+          { verify_result: result, verification_source: verificationSource },
         );
 
-        return reply.send(result);
+        return reply.send({ ...result, verification_source: verificationSource });
 
       } catch (err) {
         fastify.log.error({ err }, '[treasury-crypto] verify tx failed');
