@@ -28,11 +28,13 @@ import { verifyBscTransfer }        from '../../lib/bsc-verify';
 /* ── Allowed enum values ─────────────────────────────────────────────── */
 const VALID_ASSETS   = ['USDC', 'USDT']                                          as const;
 const VALID_NETWORKS = ['BSC', 'ERC20', 'TRC20', 'Polygon', 'Base', 'Arbitrum'] as const;
-const VALID_STATUSES = ['pending', 'received', 'confirmed', 'converted', 'rejected', 'cancelled'] as const;
+const VALID_STATUSES      = ['pending', 'received', 'confirmed', 'converted', 'rejected', 'cancelled'] as const;
+const VALID_RECEIPT_KINDS = ['invoice_payment', 'test_payment', 'internal_regularization'] as const;
 
-type Asset   = typeof VALID_ASSETS[number];
-type Network = typeof VALID_NETWORKS[number];
-type Status  = typeof VALID_STATUSES[number];
+type Asset       = typeof VALID_ASSETS[number];
+type Network     = typeof VALID_NETWORKS[number];
+type Status      = typeof VALID_STATUSES[number];
+type ReceiptKind = typeof VALID_RECEIPT_KINDS[number];
 
 /* ── Terminal statuses: no further transitions allowed ───────────────── */
 const TERMINAL_STATUSES: ReadonlySet<Status> = new Set(['confirmed', 'cancelled']);
@@ -141,6 +143,7 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
       notes?:             string;
       created_by?:        string;
       status?:            Status;
+      receipt_kind?:      ReceiptKind;
     };
   }>(
     '/admin/treasury/crypto-receipts',
@@ -164,6 +167,7 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
             notes:             { type: 'string', maxLength: 1000 },
             created_by:        { type: 'string', maxLength: 200 },
             status:            { type: 'string', enum: [...VALID_STATUSES] },
+            receipt_kind:      { type: 'string', enum: [...VALID_RECEIPT_KINDS] },
           },
         },
       },
@@ -178,6 +182,7 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
         asset, network, expected_amount, receiving_address,
         received_amount, tx_hash, notes, created_by,
         status = 'pending',
+        receipt_kind = 'invoice_payment',
       } = request.body;
 
       /* ── Receiving address validation ──────────────────────────────── */
@@ -196,12 +201,28 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
         }
       }
 
-      /* ── tx_hash required for received/confirmed ───────────────────── */
-      if (REQUIRES_TX_HASH.has(status) && !cleanHash) {
+      /* ── tx_hash required for received/confirmed (not for internal_regularization) */
+      if (REQUIRES_TX_HASH.has(status) && !cleanHash && receipt_kind !== 'internal_regularization') {
         return reply.status(400).send({
           error:   'TX_HASH_REQUIRED',
           message: `tx_hash is required when status is '${status}'`,
         });
+      }
+
+      /* ── internal_regularization extra validation ─────────────────────── */
+      if (receipt_kind === 'internal_regularization') {
+        if (!notes || notes.trim().length < 20) {
+          return reply.status(400).send({
+            error:   'NOTES_REQUIRED',
+            message: 'internal_regularization requires notes with at least 20 characters',
+          });
+        }
+        if (!received_amount || received_amount <= 0) {
+          return reply.status(400).send({
+            error:   'RECEIVED_AMOUNT_REQUIRED',
+            message: 'internal_regularization requires received_amount > 0',
+          });
+        }
       }
 
       /* ── Uniqueness check ──────────────────────────────────────────── */
@@ -231,6 +252,7 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
           receiving_address,
           wallet_address:    null,
           tx_hash:           cleanHash,
+          receipt_kind,
           status,
           received_at:       REQUIRES_TX_HASH.has(status) ? now : null,
           confirmed_at:      status === 'confirmed'        ? now : null,
@@ -248,7 +270,17 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
         return reply.status(500).send({ error: 'Failed to save receipt' });
       }
 
-      await auditLog(fastify.supabase, 'receipt_created', row.id as string, null, row as Record<string, unknown>, created_by);
+      await auditLog(
+        fastify.supabase,
+        receipt_kind === 'internal_regularization' ? 'internal_regularization_created' : 'receipt_created',
+        row.id as string,
+        null,
+        row as Record<string, unknown>,
+        created_by,
+        receipt_kind === 'internal_regularization'
+          ? { asset, network, amount: received_amount, receiving_address, notes, receipt_kind }
+          : undefined,
+      );
 
       fastify.log.info({ id: row.id, asset, network, expected_amount, invoice_reference }, '[treasury-crypto] receipt created');
       return reply.status(201).send({ success: true, data: row });
@@ -450,7 +482,7 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
 
       /* ── tx_hash required check for target status ────────────────── */
       const finalTxHash = (updates.tx_hash as string | undefined) ?? current.tx_hash;
-      if (REQUIRES_TX_HASH.has(effectiveStatus) && !finalTxHash) {
+      if (REQUIRES_TX_HASH.has(effectiveStatus) && !finalTxHash && current.receipt_kind !== 'internal_regularization') {
         return reply.status(400).send({
           error:   'TX_HASH_REQUIRED',
           message: `tx_hash is required when status is '${effectiveStatus}'`,
