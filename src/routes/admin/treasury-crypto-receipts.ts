@@ -596,17 +596,25 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
       if (!receipt)         return reply.status(404).send({ error: 'Receipt not found' });
       if (!receipt.tx_hash) return reply.status(400).send({ error: 'NO_TX_HASH', message: 'Receipt has no tx_hash to verify' });
       if (receipt.network !== 'BSC') {
-        return reply.status(400).send({ error: 'UNSUPPORTED_NETWORK', message: 'On-chain verification is only supported for BSC' });
+        return reply.status(400).send({
+          error:   'UNSUPPORTED_NETWORK_VERIFICATION',
+          message: 'On-chain verification is currently supported only for BSC/BEP20 receipts',
+        });
       }
 
-      const bscApiKey = process.env.BSCSCAN_API_KEY;
-      if (!bscApiKey) {
-        return reply.status(503).send({ error: 'BSCSCAN_NOT_CONFIGURED', message: 'BSCSCAN_API_KEY env var is not set' });
+      /* ── API key: prefer ETHERSCAN_API_KEY (V2), fall back to BSCSCAN_API_KEY ─ */
+      const explorerApiKey = process.env.ETHERSCAN_API_KEY ?? process.env.BSCSCAN_API_KEY;
+      if (!explorerApiKey) {
+        return reply.status(503).send({
+          error:   'EXPLORER_API_KEY_NOT_CONFIGURED',
+          message: 'Set ETHERSCAN_API_KEY (or BSCSCAN_API_KEY) to enable on-chain verification',
+        });
       }
 
       try {
-        /* ── Fetch raw JSON \u2500 keep as unknown until we know the shape ── */
-        const rpcUrl = `https://api.bscscan.com/api?module=proxy&action=eth_getTransactionReceipt&txhash=${receipt.tx_hash}&apikey=${bscApiKey}`;
+        /* ── Etherscan API V2 — BSC mainnet chainid=56 ─────────────── */
+        /* Key intentionally excluded from logs to avoid secret leakage. */
+        const rpcUrl = `https://api.etherscan.io/v2/api?chainid=56&module=proxy&action=eth_getTransactionReceipt&txhash=${receipt.tx_hash}&apikey=${explorerApiKey}`;
         const rpcRes  = await fetch(rpcUrl);
         const rawJson = await rpcRes.json() as Record<string, unknown>;
 

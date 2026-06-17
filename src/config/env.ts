@@ -56,6 +56,9 @@ const envSchema = z.object({
 
   // BSC crypto deposits (Option B — one address per user)
   BSCSCAN_API_KEY:          z.string().min(1).optional(),
+  // Etherscan API V2 unified key — preferred for treasury on-chain verification
+  // Falls back to BSCSCAN_API_KEY when absent.
+  ETHERSCAN_API_KEY:        z.string().min(1).optional(),
   UNIPAY_HD_WALLET_MNEMONIC: z.string().min(1).optional(), // 12-word BIP-39 phrase — keep in Render Secrets
 
   // Transak fiat→USDT (all optional — routes disabled when API key absent)
