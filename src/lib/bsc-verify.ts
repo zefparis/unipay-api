@@ -39,7 +39,23 @@ export interface EthTxLog {
 
 export interface EthTxReceipt {
   logs:   EthTxLog[];
-  status: string; // "0x1" = success, "0x0" = reverted
+  /**
+   * EVM receipt status — BSCScan proxy may return any of:
+   *   "0x1" | "0x0"  (standard JSON-RPC hex)
+   *   "1"   | "0"    (decimal string)
+   *    1    |  0     (number)
+   * Use isTxSuccess() / isTxFailed() instead of direct equality.
+   */
+  status: string | number;
+}
+
+/** Normalize any BSCScan status representation to boolean success. */
+export function isTxSuccess(status: string | number): boolean {
+  return status === '0x1' || status === 1 || status === '1';
+}
+
+export function isTxFailed(status: string | number): boolean {
+  return status === '0x0' || status === 0 || status === '0';
 }
 
 export type BlockingReason =
@@ -47,7 +63,9 @@ export type BlockingReason =
   | 'CONTRACT_MISMATCH'
   | 'NO_TRANSFER_LOG'
   | 'RECIPIENT_MISMATCH'
-  | 'AMOUNT_MISMATCH';
+  | 'AMOUNT_MISMATCH'
+  | 'TX_NOT_INDEXED'
+  | 'BSCSCAN_ERROR';
 
 export interface BscVerifyResult {
   verified:           boolean;
@@ -108,7 +126,7 @@ export function verifyBscTransfer(
   const blockingReasons: BlockingReason[] = [];
 
   /* ── 1. Transaction success ───────────────────────────────────────── */
-  const txSuccess = receipt.status === '0x1';
+  const txSuccess = isTxSuccess(receipt.status);
   if (!txSuccess) {
     blockingReasons.push('TX_FAILED');
     return {
@@ -122,7 +140,7 @@ export function verifyBscTransfer(
       expected_amount:    expectedAmount,
       asset,
       blocking_reasons:   blockingReasons,
-      reason:             'Transaction reverted on-chain (status 0x0)',
+      reason:             `Transaction reverted on-chain (status=${String(receipt.status)})`,
     };
   }
 

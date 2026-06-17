@@ -21,6 +21,8 @@ import {
   verifyBscTransfer,
   decodeAddress,
   decodeUint256,
+  isTxSuccess,
+  isTxFailed,
   TRANSFER_TOPIC,
   BSC_TOKEN_CONTRACTS,
 } from '../bsc-verify.js';
@@ -79,6 +81,42 @@ function successReceipt(
 /* ══════════════════════════════════════════════════════════════════════
  * Helper unit tests
  * ══════════════════════════════════════════════════════════════════════ */
+
+/* ══════════════════════════════════════════════════════════════════════
+ * isTxSuccess / isTxFailed normalizer tests
+ * ══════════════════════════════════════════════════════════════════════ */
+
+describe('isTxSuccess / isTxFailed', () => {
+  it('recognizes "0x1" as success', () => {
+    assert.equal(isTxSuccess('0x1'), true);
+    assert.equal(isTxFailed('0x1'),  false);
+  });
+
+  it('recognizes numeric 1 as success', () => {
+    assert.equal(isTxSuccess(1),  true);
+    assert.equal(isTxFailed(1),   false);
+  });
+
+  it('recognizes string "1" as success', () => {
+    assert.equal(isTxSuccess('1'), true);
+    assert.equal(isTxFailed('1'),  false);
+  });
+
+  it('recognizes "0x0" as failure', () => {
+    assert.equal(isTxSuccess('0x0'), false);
+    assert.equal(isTxFailed('0x0'),  true);
+  });
+
+  it('recognizes numeric 0 as failure', () => {
+    assert.equal(isTxSuccess(0),  false);
+    assert.equal(isTxFailed(0),   true);
+  });
+
+  it('recognizes string "0" as failure', () => {
+    assert.equal(isTxSuccess('0'), false);
+    assert.equal(isTxFailed('0'),  true);
+  });
+});
 
 describe('decodeAddress', () => {
   it('strips left-padding from a 32-byte padded topic', () => {
@@ -167,18 +205,41 @@ describe('verifyBscTransfer', () => {
     assert.ok(result.reason.toLowerCase().includes('usdc'));
   });
 
-  /* ── Case 5: failed tx (status 0x0) ───────────────────────────────── */
-  it('Case 5 — failed transaction is blocked', () => {
-    const receipt = {
-      status: '0x0' as const,
-      logs:   [makeTransferLog(USDC_CONTRACT, OTHER_ADDR, TREASURY_ADDR, 116000)],
-    };
-    const result = verifyBscTransfer(receipt, 'USDC', TREASURY_ADDR, 116000);
-
-    assert.equal(result.verified,   false, 'should NOT be verified');
+  /* ── Case 5a: failed tx (status "0x0") ────────────────────────────── */
+  it('Case 5a — status "0x0" is blocked', () => {
+    const receipt = { status: '0x0', logs: [makeTransferLog(USDC_CONTRACT, OTHER_ADDR, TREASURY_ADDR, 116000)] };
+    const result  = verifyBscTransfer(receipt, 'USDC', TREASURY_ADDR, 116000);
+    assert.equal(result.verified,   false);
     assert.equal(result.tx_success, false);
     assert.ok(result.blocking_reasons.includes('TX_FAILED'));
-    assert.ok(result.reason.toLowerCase().includes('revert'));
+    assert.ok(result.reason.includes('0x0'));
+  });
+
+  /* ── Case 5b: failed tx (numeric status 0) ─────────────────────────── */
+  it('Case 5b — numeric status 0 is blocked', () => {
+    const receipt = { status: 0, logs: [makeTransferLog(USDC_CONTRACT, OTHER_ADDR, TREASURY_ADDR, 116000)] };
+    const result  = verifyBscTransfer(receipt, 'USDC', TREASURY_ADDR, 116000);
+    assert.equal(result.verified,   false);
+    assert.equal(result.tx_success, false);
+    assert.ok(result.blocking_reasons.includes('TX_FAILED'));
+  });
+
+  /* ── Case 5c: successful tx with numeric status 1 (not "0x1") ──────── */
+  it('Case 5c — numeric status 1 is treated as success (not TX_FAILED)', () => {
+    const receipt = { status: 1, logs: [makeTransferLog(USDC_CONTRACT, OTHER_ADDR, TREASURY_ADDR, 116000)] };
+    const result  = verifyBscTransfer(receipt, 'USDC', TREASURY_ADDR, 116000);
+    assert.equal(result.tx_success, true,  'numeric 1 must be recognized as success');
+    assert.equal(result.verified,   true);
+    assert.ok(!result.blocking_reasons.includes('TX_FAILED'), 'should NOT have TX_FAILED');
+  });
+
+  /* ── Case 5d: successful tx with string status "1" (regression) ─────── */
+  it('Case 5d — string "1" is treated as success (original bug regression)', () => {
+    const receipt = { status: '1', logs: [makeTransferLog(USDC_CONTRACT, OTHER_ADDR, TREASURY_ADDR, 116000)] };
+    const result  = verifyBscTransfer(receipt, 'USDC', TREASURY_ADDR, 116000);
+    assert.equal(result.tx_success, true,  'string "1" must be recognized as success');
+    assert.equal(result.verified,   true);
+    assert.ok(!result.blocking_reasons.includes('TX_FAILED'));
   });
 
   /* ── Case 6: amount within tolerance passes ────────────────────────── */

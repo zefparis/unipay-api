@@ -605,40 +605,93 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
       }
 
       try {
-        /* ── Fetch transaction receipt (EVM logs) ──────────────────── */
+        /* ── Fetch raw JSON \u2500 keep as unknown until we know the shape ── */
         const rpcUrl = `https://api.bscscan.com/api?module=proxy&action=eth_getTransactionReceipt&txhash=${receipt.tx_hash}&apikey=${bscApiKey}`;
-        const rpcRes = await fetch(rpcUrl);
-        const rpcJson = await rpcRes.json() as {
-          jsonrpc: string;
-          result: {
-            logs:   Array<{ address: string; topics: string[]; data: string }>;
-            status: string;
-          } | null;
-          error?:  { message: string };
-        };
+        const rpcRes  = await fetch(rpcUrl);
+        const rawJson = await rpcRes.json() as Record<string, unknown>;
 
-        if (!rpcJson.result) {
+        /* ── Debug: always log the raw response shape ─────────────── */
+        fastify.log.info({
+          id:             request.params.id,
+          tx_hash:        receipt.tx_hash,
+          outer_status:   rawJson.status,
+          outer_message:  rawJson.message,
+          result_exists:  rawJson.result !== null && rawJson.result !== undefined,
+          result_type:    typeof rawJson.result,
+          result_status:  typeof rawJson.result === 'object' && rawJson.result !== null
+                            ? (rawJson.result as Record<string, unknown>).status
+                            : '(no object)',
+          logs_count:     typeof rawJson.result === 'object' && rawJson.result !== null &&
+                          Array.isArray((rawJson.result as Record<string, unknown>).logs)
+                            ? ((rawJson.result as Record<string, unknown>).logs as unknown[]).length
+                            : -1,
+        }, '[treasury-crypto] BSCScan raw response');
+
+        /* ── Case A: BSCScan API-level error (non-RPC format) ─────── */
+        /* Shape: { status: "0", message: "NOTOK", result: "<string>" } */
+        if (typeof rawJson.status === 'string' && rawJson.status === '0') {
+          const errDetail = typeof rawJson.result === 'string'
+            ? rawJson.result
+            : String(rawJson.message ?? 'BSCScan API error');
+          fastify.log.error(
+            { id: request.params.id, tx_hash: receipt.tx_hash, detail: errDetail },
+            '[treasury-crypto] BSCScan API-level error',
+          );
           return reply.send({
-            verified:        false,
-            blocking_reasons: ['NO_TX_RECEIPT'],
-            reason:          rpcJson.error?.message ?? 'Transaction not found or not yet indexed on BSCScan',
+            verified:         false,
+            blocking_reasons: ['BSCSCAN_ERROR'],
+            reason:           `BSCScan API error: ${errDetail}`,
           });
         }
 
-        /* ── Use expected_amount; prefer received_amount when present ─ */
+        /* ── Case B: result is null / missing (tx not yet indexed) ── */
+        /* JSON-RPC format: { jsonrpc, id, result: null }             */
+        if (rawJson.result === null || rawJson.result === undefined || typeof rawJson.result !== 'object') {
+          const rpcErr = rawJson.error as { message?: string } | undefined;
+          fastify.log.warn(
+            { id: request.params.id, tx_hash: receipt.tx_hash, rpcErr },
+            '[treasury-crypto] tx not indexed or result missing',
+          );
+          return reply.send({
+            verified:         false,
+            blocking_reasons: ['TX_NOT_INDEXED'],
+            reason:           rpcErr?.message ?? 'Transaction not found or not yet indexed on BSCScan',
+          });
+        }
+
+        /* ── Case C: valid JSON-RPC receipt object ───────────────── */
+        const rpcResult = rawJson.result as {
+          logs:   Array<{ address: string; topics: string[]; data: string }>;
+          status: string | number;
+        };
+
+        /* ── Use received_amount when present, else expected_amount ─ */
         const expectedAmount =
           receipt.received_amount !== null && receipt.received_amount !== undefined
             ? Number(receipt.received_amount)
             : Number(receipt.expected_amount ?? 0);
 
         const result = verifyBscTransfer(
-          rpcJson.result,
-          receipt.asset   as string,
+          rpcResult,
+          receipt.asset            as string,
           receipt.receiving_address as string,
           expectedAmount,
         );
 
-        /* ── Persist verification result in audit log ──────────────── */
+        /* ── Debug: blocking summary ─────────────────────────────── */
+        fastify.log.info(
+          {
+            id:              request.params.id,
+            tx_hash:         receipt.tx_hash,
+            verified:        result.verified,
+            blocking:        result.blocking_reasons,
+            transferred_amt: result.transferred_amount,
+            expected_amt:    result.expected_amount,
+          },
+          '[treasury-crypto] verification completed',
+        );
+
+        /* ── Persist in audit log ────────────────────────────────── */
         await auditLog(
           fastify.supabase,
           result.verified ? 'verify_ok' : 'verify_failed',
@@ -647,11 +700,6 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
           null,
           undefined,
           { verify_result: result },
-        );
-
-        fastify.log.info(
-          { id: request.params.id, verified: result.verified, blocking: result.blocking_reasons },
-          '[treasury-crypto] verification completed',
         );
 
         return reply.send(result);
