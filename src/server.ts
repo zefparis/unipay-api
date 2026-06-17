@@ -47,6 +47,7 @@ import walletCryptoWithdrawRoute from './routes/wallet/crypto-withdraw';
 import adminBinanceRoute from './routes/admin/binance';
 import adminHotwalletRoute from './routes/admin/hotwallet';
 import adminTreasuryCryptoReceiptsRoute from './routes/admin/treasury-crypto-receipts';
+import adminTreasuryCryptoAssetsRoute    from './routes/admin/treasury-crypto-assets';
 import walletNotificationsRoute from './routes/wallet/notifications';
 
 export async function buildServer() {
@@ -166,6 +167,7 @@ export async function buildServer() {
       v1.register(adminBinanceRoute);
       v1.register(adminHotwalletRoute);
       v1.register(adminTreasuryCryptoReceiptsRoute);
+      v1.register(adminTreasuryCryptoAssetsRoute);
       v1.register(walletNotificationsRoute);
     },
     { prefix: '/v1' },
