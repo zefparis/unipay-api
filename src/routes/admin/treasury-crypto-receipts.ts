@@ -23,6 +23,7 @@
 
 import type { FastifyPluginAsync } from 'fastify';
 import type { SupabaseClient }     from '@supabase/supabase-js';
+import { verifyBscTransfer }        from '../../lib/bsc-verify';
 
 /* ── Allowed enum values ─────────────────────────────────────────────── */
 const VALID_ASSETS   = ['USDC', 'USDT']                                          as const;
@@ -362,6 +363,7 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
       status?:            Status;
       notes?:             string;
       updated_by?:        string;
+      override_reason?:   string;
     };
   }>(
     '/admin/treasury/crypto-receipts/:id',
@@ -381,6 +383,7 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
             status:            { type: 'string', enum: [...VALID_STATUSES] },
             notes:             { type: 'string', maxLength: 1000 },
             updated_by:        { type: 'string', maxLength: 200 },
+            override_reason:   { type: 'string', minLength: 5, maxLength: 500 },
           },
         },
       },
@@ -402,7 +405,7 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
       const {
         invoice_id, invoice_reference, payer_name, receiving_address,
         tx_hash, expected_amount, received_amount, status: newStatus,
-        notes, updated_by,
+        notes, updated_by, override_reason,
       } = request.body;
 
       const updates: Record<string, unknown> = {};
@@ -494,10 +497,15 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
       for (const action of auditActions.length ? auditActions : ['receipt_updated']) {
         await auditLog(
           fastify.supabase, action, id,
-          current as Record<string, unknown>,
+          current  as Record<string, unknown>,
           updated  as Record<string, unknown>,
           updated_by,
+          override_reason ? { override_reason } : undefined,
         );
+      }
+
+      if (updates.status === 'confirmed' && override_reason) {
+        fastify.log.warn({ id, override_reason, actor: updated_by }, '[treasury-crypto] forced confirm with override reason');
       }
 
       fastify.log.info({ id, fields: Object.keys(updates), actor: updated_by }, '[treasury-crypto] receipt updated');
@@ -570,8 +578,9 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
 
   /* ════════════════════════════════════════════════════════════════════
    * POST /v1/admin/treasury/crypto-receipts/:id/verify
-   * Optional BSC-only on-chain verification via BSCScan.
-   * Does NOT broadcast any transaction.
+   * On-chain BSC verification via BSCScan eth_getTransactionReceipt.
+   * Parses ERC-20 Transfer logs directly — does NOT use tokentx.
+   * Does NOT broadcast any transaction or store private keys.
    * ════════════════════════════════════════════════════════════════════ */
   fastify.post<{ Params: { id: string } }>(
     '/admin/treasury/crypto-receipts/:id/verify',
@@ -584,72 +593,69 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
         .eq('id', request.params.id)
         .maybeSingle();
 
-      if (!receipt)           return reply.status(404).send({ error: 'Receipt not found' });
-      if (!receipt.tx_hash)   return reply.status(400).send({ error: 'NO_TX_HASH', message: 'Receipt has no tx_hash' });
+      if (!receipt)         return reply.status(404).send({ error: 'Receipt not found' });
+      if (!receipt.tx_hash) return reply.status(400).send({ error: 'NO_TX_HASH', message: 'Receipt has no tx_hash to verify' });
       if (receipt.network !== 'BSC') {
-        return reply.status(400).send({ error: 'UNSUPPORTED_NETWORK', message: 'Verification only supported for BSC' });
+        return reply.status(400).send({ error: 'UNSUPPORTED_NETWORK', message: 'On-chain verification is only supported for BSC' });
       }
 
       const bscApiKey = process.env.BSCSCAN_API_KEY;
       if (!bscApiKey) {
-        return reply.status(503).send({ error: 'BSCSCAN_NOT_CONFIGURED', message: 'BSCSCAN_API_KEY not set' });
-      }
-
-      const TOKEN_CONTRACTS: Record<string, string> = {
-        USDT: '0x55d398326f99059fF775485246999027B3197955',
-        USDC: '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d',
-      };
-      const contractAddress = TOKEN_CONTRACTS[receipt.asset as string];
-      if (!contractAddress) {
-        return reply.status(400).send({ error: 'UNSUPPORTED_ASSET' });
+        return reply.status(503).send({ error: 'BSCSCAN_NOT_CONFIGURED', message: 'BSCSCAN_API_KEY env var is not set' });
       }
 
       try {
-        const ttUrl =
-          `https://api.bscscan.com/api?module=account&action=tokentx` +
-          `&txhash=${receipt.tx_hash}&apikey=${bscApiKey}`;
-        const ttRes  = await fetch(ttUrl);
-        const ttData = await ttRes.json() as {
-          status: string;
-          result?: Array<{ to: string; contractAddress: string; value: string; tokenDecimal: string; blockNumber: string }>;
+        /* ── Fetch transaction receipt (EVM logs) ──────────────────── */
+        const rpcUrl = `https://api.bscscan.com/api?module=proxy&action=eth_getTransactionReceipt&txhash=${receipt.tx_hash}&apikey=${bscApiKey}`;
+        const rpcRes = await fetch(rpcUrl);
+        const rpcJson = await rpcRes.json() as {
+          jsonrpc: string;
+          result: {
+            logs:   Array<{ address: string; topics: string[]; data: string }>;
+            status: string;
+          } | null;
+          error?:  { message: string };
         };
 
-        if (ttData.status !== '1' || !Array.isArray(ttData.result)) {
-          return reply.send({ verified: false, reason: 'Transaction not found or not yet indexed on BSCScan' });
-        }
-
-        const targetAddr     = (receipt.receiving_address as string ?? '').toLowerCase();
-        const targetContract = contractAddress.toLowerCase();
-
-        const match = ttData.result.find((t) =>
-          t.to.toLowerCase() === targetAddr &&
-          t.contractAddress.toLowerCase() === targetContract,
-        );
-
-        if (!match) {
+        if (!rpcJson.result) {
           return reply.send({
-            verified:  false,
-            reason:    `No ${receipt.asset} transfer to ${receipt.receiving_address} found in this tx`,
+            verified:        false,
+            blocking_reasons: ['NO_TX_RECEIPT'],
+            reason:          rpcJson.error?.message ?? 'Transaction not found or not yet indexed on BSCScan',
           });
         }
 
-        const decimals   = parseInt(match.tokenDecimal, 10) || 18;
-        const transferred = Number(BigInt(match.value)) / Math.pow(10, decimals);
-        const expected    = Number(receipt.expected_amount ?? 0);
-        const received    = Number(receipt.received_amount ?? expected);
-        const amountOk    = Math.abs(transferred - received) < 0.01 || Math.abs(transferred - expected) < 0.01;
-        const confirmed   = match.blockNumber !== '0' && match.blockNumber !== '';
+        /* ── Use expected_amount; prefer received_amount when present ─ */
+        const expectedAmount =
+          receipt.received_amount !== null && receipt.received_amount !== undefined
+            ? Number(receipt.received_amount)
+            : Number(receipt.expected_amount ?? 0);
 
-        return reply.send({
-          verified:           amountOk,
-          is_on_chain:        confirmed,
-          asset:              receipt.asset,
-          recipient_match:    true,
-          transferred_amount: transferred,
-          expected_amount:    expected,
-          amount_match:       amountOk,
-          reason:             amountOk ? 'OK' : `Amount mismatch: transferred ${transferred}, expected ${expected}`,
-        });
+        const result = verifyBscTransfer(
+          rpcJson.result,
+          receipt.asset   as string,
+          receipt.receiving_address as string,
+          expectedAmount,
+        );
+
+        /* ── Persist verification result in audit log ──────────────── */
+        await auditLog(
+          fastify.supabase,
+          result.verified ? 'verify_ok' : 'verify_failed',
+          request.params.id,
+          null,
+          null,
+          undefined,
+          { verify_result: result },
+        );
+
+        fastify.log.info(
+          { id: request.params.id, verified: result.verified, blocking: result.blocking_reasons },
+          '[treasury-crypto] verification completed',
+        );
+
+        return reply.send(result);
+
       } catch (err) {
         fastify.log.error({ err }, '[treasury-crypto] verify tx failed');
         return reply.status(500).send({ error: 'Verification failed', message: (err as Error).message });
