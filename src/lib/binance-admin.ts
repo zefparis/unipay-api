@@ -4,7 +4,7 @@
  *
  * Docs:
  *   GET  /api/v3/account                    — main account balances
- *   GET  /sapi/v1/sub-account/assets        — sub-account balances
+ *   GET  /sapi/v3/sub-account/assets        — sub-account balances
  *   POST /sapi/v1/capital/withdraw/apply    — withdrawal (reused from binance-withdrawal.ts)
  *   GET  /sapi/v1/capital/withdraw/history  — withdrawal history
  */
@@ -95,7 +95,7 @@ export async function getAccountBalance(
 /* ── 2. Sub-account balances ──────────────────────────────────────────── */
 
 /**
- * GET /sapi/v1/sub-account/assets
+ * GET /sapi/v3/sub-account/assets
  * Returns balances for the given sub-account email.
  */
 export async function getSubAccountBalance(
@@ -103,14 +103,43 @@ export async function getSubAccountBalance(
   mainApiKey:     string,
   mainSecretKey:  string,
 ): Promise<AssetBalance[]> {
-  const qs  = buildSignedQS({ email }, mainSecretKey);
-  const res = await binanceFetch(`${BINANCE_BASE}/sapi/v1/sub-account/assets?${qs}`, {
+  // v3 endpoint with recvWindow for better tolerance
+  const qs  = buildSignedQS({ email, recvWindow: 60000 }, mainSecretKey);
+  const endpointPath = '/sapi/v3/sub-account/assets';
+  const res = await binanceFetch(`${BINANCE_BASE}${endpointPath}?${qs}`, {
     headers: { 'X-MBX-APIKEY': mainApiKey },
   });
 
   if (!res.ok) {
-    const err = (await res.json()) as { msg?: string };
-    throw new Error(`Binance sub-account [${res.status}]: ${err.msg ?? res.statusText}`);
+    // Safe logging: do not log secrets or signature. Do not include full query string.
+    let bodyText = '';
+    let bodyJson: unknown = null;
+    try {
+      bodyJson = await res.json();
+    } catch {
+      try {
+        bodyText = await res.text();
+      } catch {
+        bodyText = '';
+      }
+    }
+
+    // Temporary diagnostic log
+    console.error('[binance-admin] sub-account balances error', {
+      url: endpointPath, // avoid leaking signature
+      status: res.status,
+      body: bodyJson ?? bodyText,
+    });
+
+    // Build informative error string for upstream propagation
+    if (bodyJson && typeof bodyJson === 'object' && bodyJson !== null) {
+      const obj = bodyJson as { code?: string | number; msg?: string };
+      const code = obj.code !== undefined ? String(obj.code) : 'unknown';
+      const msg  = obj.msg ?? res.statusText;
+      throw new Error(`Binance sub-account error [${res.status}] code=${code} msg=${msg}`);
+    }
+    const raw = bodyText ? ` raw=${String(bodyText).slice(0, 500)}` : '';
+    throw new Error(`Binance sub-account error [${res.status}]${raw}`);
   }
 
   const json = (await res.json()) as { balances: AssetBalance[] };
