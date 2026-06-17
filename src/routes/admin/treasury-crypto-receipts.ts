@@ -6,12 +6,15 @@
  *   pending / received → rejected | cancelled
  *   rejected → cancelled
  *
- * POST   /v1/admin/treasury/crypto-receipts           — create pending receipt
- * GET    /v1/admin/treasury/crypto-receipts           — list (filterable)
- * GET    /v1/admin/treasury/crypto-receipts/:id       — get single + audit log
- * PATCH  /v1/admin/treasury/crypto-receipts/:id       — update receipt
- * POST   /v1/admin/treasury/crypto-receipts/:id/cancel  — cancel receipt
- * POST   /v1/admin/treasury/crypto-receipts/:id/verify  — optional BSC tx check
+ * POST   /v1/admin/treasury/crypto-receipts                  — create pending receipt
+ * GET    /v1/admin/treasury/crypto-receipts                  — list (filterable, ?include_archived)
+ * GET    /v1/admin/treasury/crypto-receipts/:id             — get single + audit log
+ * PATCH  /v1/admin/treasury/crypto-receipts/:id             — update receipt
+ * POST   /v1/admin/treasury/crypto-receipts/:id/cancel      — cancel receipt
+ * POST   /v1/admin/treasury/crypto-receipts/:id/archive     — archive receipt (hide from default view)
+ * POST   /v1/admin/treasury/crypto-receipts/:id/restore     — restore archived receipt
+ * DELETE /v1/admin/treasury/crypto-receipts/:id             — hard delete (safe drafts/tests only)
+ * POST   /v1/admin/treasury/crypto-receipts/:id/verify      — optional BSC tx check
  *
  * Auth: x-admin-secret header (hmac plugin → request.isAdmin).
  *
@@ -296,9 +299,11 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
       asset?:             string;
       network?:           string;
       status?:            string;
+      receipt_kind?:      string;
       invoice_id?:        string;
       invoice_reference?: string;
       payer_name?:        string;
+      include_archived?:  string;
       limit?:             number;
       offset?:            number;
     };
@@ -313,9 +318,11 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
             asset:             { type: 'string', enum: [...VALID_ASSETS] },
             network:           { type: 'string', enum: [...VALID_NETWORKS] },
             status:            { type: 'string', enum: [...VALID_STATUSES] },
+            receipt_kind:      { type: 'string', enum: [...VALID_RECEIPT_KINDS] },
             invoice_id:        { type: 'string', maxLength: 100 },
             invoice_reference: { type: 'string', maxLength: 200 },
             payer_name:        { type: 'string', maxLength: 200 },
+            include_archived:  { type: 'string', enum: ['true', 'false'], default: 'false' },
             limit:             { type: 'integer', minimum: 1, maximum: 200, default: 50 },
             offset:            { type: 'integer', minimum: 0, default: 0 },
           },
@@ -325,7 +332,7 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
     async (request, reply) => {
       if (!request.isAdmin) return reply.status(403).send({ error: 'Admin access required' });
 
-      const { asset, network, status, invoice_id, invoice_reference, payer_name, limit = 50, offset = 0 } = request.query;
+      const { asset, network, status, receipt_kind, invoice_id, invoice_reference, payer_name, include_archived, limit = 50, offset = 0 } = request.query;
 
       let q = fastify.supabase
         .from('treasury_crypto_receipts')
@@ -333,9 +340,12 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
         .order('created_at', { ascending: false })
         .range(offset, offset + limit - 1);
 
+      if (include_archived !== 'true') q = q.eq('is_archived', false);
+
       if (asset)             q = q.eq('asset', asset);
       if (network)           q = q.eq('network', network);
       if (status)            q = q.eq('status', status);
+      if (receipt_kind)      q = q.eq('receipt_kind', receipt_kind);
       if (invoice_id)        q = q.eq('invoice_id', invoice_id);
       if (invoice_reference) q = q.ilike('invoice_reference', `%${invoice_reference}%`);
       if (payer_name)        q = q.ilike('payer_name', `%${payer_name}%`);
@@ -605,6 +615,230 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
 
       fastify.log.info({ id, actor: updated_by }, '[treasury-crypto] receipt cancelled');
       return reply.send({ success: true, data: updated });
+    },
+  );
+
+  /* ════════════════════════════════════════════════════════════════════
+   * POST /v1/admin/treasury/crypto-receipts/:id/archive
+   * Soft-hides a receipt from the default operational view.
+   * Requires archive_reason (min 5 chars). Preserves full audit history.
+   * ════════════════════════════════════════════════════════════════════ */
+  fastify.post<{
+    Params: { id: string };
+    Body:   { reason: string; archived_by?: string };
+  }>(
+    '/admin/treasury/crypto-receipts/:id/archive',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['reason'],
+          additionalProperties: false,
+          properties: {
+            reason:      { type: 'string', minLength: 5, maxLength: 500 },
+            archived_by: { type: 'string', maxLength: 200 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!request.isAdmin) return reply.status(403).send({ error: 'Admin access required' });
+
+      const { id } = request.params;
+      const { reason, archived_by } = request.body;
+
+      const { data: current, error: fetchErr } = await fastify.supabase
+        .from('treasury_crypto_receipts')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (fetchErr) return reply.status(500).send({ error: fetchErr.message });
+      if (!current)  return reply.status(404).send({ error: 'Receipt not found' });
+      if (current.is_archived) {
+        return reply.status(400).send({ error: 'ALREADY_ARCHIVED', message: 'Receipt is already archived' });
+      }
+
+      const now = new Date().toISOString();
+      const { data: updated, error: updateErr } = await fastify.supabase
+        .from('treasury_crypto_receipts')
+        .update({ is_archived: true, archived_at: now, archived_by: archived_by ?? null, archive_reason: reason })
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (updateErr) return reply.status(500).send({ error: updateErr.message });
+
+      await auditLog(
+        fastify.supabase, 'treasury_receipt_archived', id,
+        current as Record<string, unknown>,
+        updated as Record<string, unknown>,
+        archived_by,
+        {
+          invoice_reference: current.invoice_reference,
+          payer_name:        current.payer_name,
+          asset:             current.asset,
+          network:           current.network,
+          amount:            current.expected_amount ?? current.amount,
+          status:            current.status,
+          receipt_kind:      current.receipt_kind,
+          tx_hash_present:   !!current.tx_hash,
+          archive_reason:    reason,
+        },
+      );
+
+      fastify.log.info({ id, actor: archived_by, reason }, '[treasury-crypto] receipt archived');
+      return reply.send({ success: true, data: updated });
+    },
+  );
+
+  /* ════════════════════════════════════════════════════════════════════
+   * POST /v1/admin/treasury/crypto-receipts/:id/restore
+   * Restores a previously archived receipt back to the operational view.
+   * ════════════════════════════════════════════════════════════════════ */
+  fastify.post<{
+    Params: { id: string };
+    Body:   { restored_by?: string };
+  }>(
+    '/admin/treasury/crypto-receipts/:id/restore',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            restored_by: { type: 'string', maxLength: 200 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!request.isAdmin) return reply.status(403).send({ error: 'Admin access required' });
+
+      const { id } = request.params;
+      const { restored_by } = request.body ?? {};
+
+      const { data: current, error: fetchErr } = await fastify.supabase
+        .from('treasury_crypto_receipts')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (fetchErr) return reply.status(500).send({ error: fetchErr.message });
+      if (!current)  return reply.status(404).send({ error: 'Receipt not found' });
+      if (!current.is_archived) {
+        return reply.status(400).send({ error: 'NOT_ARCHIVED', message: 'Receipt is not archived' });
+      }
+
+      const { data: updated, error: updateErr } = await fastify.supabase
+        .from('treasury_crypto_receipts')
+        .update({ is_archived: false, archived_at: null, archived_by: null, archive_reason: null })
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (updateErr) return reply.status(500).send({ error: updateErr.message });
+
+      await auditLog(
+        fastify.supabase, 'treasury_receipt_restored', id,
+        current as Record<string, unknown>,
+        updated as Record<string, unknown>,
+        restored_by,
+        {
+          invoice_reference: current.invoice_reference,
+          payer_name:        current.payer_name,
+          asset:             current.asset,
+          network:           current.network,
+          amount:            current.expected_amount ?? current.amount,
+          status:            current.status,
+          receipt_kind:      current.receipt_kind,
+          tx_hash_present:   !!current.tx_hash,
+        },
+      );
+
+      fastify.log.info({ id, actor: restored_by }, '[treasury-crypto] receipt restored');
+      return reply.send({ success: true, data: updated });
+    },
+  );
+
+  /* ════════════════════════════════════════════════════════════════════
+   * DELETE /v1/admin/treasury/crypto-receipts/:id
+   * Hard delete — allowed only for safe drafts/tests:
+   *   (tx_hash IS NULL AND status IN pending|rejected|cancelled)
+   *   OR (receipt_kind = test_payment AND status != confirmed)
+   * All other receipts must be archived instead.
+   * ════════════════════════════════════════════════════════════════════ */
+  const SAFE_DELETE_STATUSES: ReadonlySet<string> = new Set(['pending', 'rejected', 'cancelled']);
+
+  fastify.delete<{
+    Params:      { id: string };
+    Querystring: { deleted_by?: string };
+  }>(
+    '/admin/treasury/crypto-receipts/:id',
+    async (request, reply) => {
+      if (!request.isAdmin) return reply.status(403).send({ error: 'Admin access required' });
+
+      const { id }         = request.params;
+      const { deleted_by } = request.query;
+
+      const { data: receipt, error: fetchErr } = await fastify.supabase
+        .from('treasury_crypto_receipts')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (fetchErr) return reply.status(500).send({ error: fetchErr.message });
+      if (!receipt)  return reply.status(404).send({ error: 'Receipt not found' });
+
+      const isSafe =
+        (!receipt.tx_hash && SAFE_DELETE_STATUSES.has(receipt.status as string)) ||
+        (receipt.receipt_kind === 'test_payment' && receipt.status !== 'confirmed');
+
+      if (!isSafe) {
+        await auditLog(
+          fastify.supabase, 'treasury_receipt_delete_denied', id,
+          receipt as Record<string, unknown>, null, deleted_by,
+          {
+            invoice_reference: receipt.invoice_reference,
+            payer_name:        receipt.payer_name,
+            asset:             receipt.asset,
+            network:           receipt.network,
+            amount:            receipt.expected_amount ?? receipt.amount,
+            status:            receipt.status,
+            receipt_kind:      receipt.receipt_kind,
+            tx_hash_present:   !!receipt.tx_hash,
+          },
+        );
+        return reply.status(409).send({
+          error:   'RECEIPT_NOT_DELETABLE_ARCHIVE_INSTEAD',
+          message: 'This receipt contains payment/audit evidence and can only be archived.',
+        });
+      }
+
+      const { error: delErr } = await fastify.supabase
+        .from('treasury_crypto_receipts')
+        .delete()
+        .eq('id', id);
+
+      if (delErr) return reply.status(500).send({ error: delErr.message });
+
+      await auditLog(
+        fastify.supabase, 'treasury_receipt_deleted', id,
+        receipt as Record<string, unknown>, null, deleted_by,
+        {
+          invoice_reference: receipt.invoice_reference,
+          payer_name:        receipt.payer_name,
+          asset:             receipt.asset,
+          network:           receipt.network,
+          amount:            receipt.expected_amount ?? receipt.amount,
+          status:            receipt.status,
+          receipt_kind:      receipt.receipt_kind,
+          tx_hash_present:   !!receipt.tx_hash,
+        },
+      );
+
+      fastify.log.info({ id, actor: deleted_by, status: receipt.status }, '[treasury-crypto] receipt hard-deleted');
+      return reply.send({ success: true });
     },
   );
 
