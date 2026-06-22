@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
+import { createUserWallet } from '../../services/cdp';
 
 interface CreditBody {
   phone:        string;
@@ -109,6 +110,53 @@ const walletInternalRoute: FastifyPluginAsync = async (fastify) => {
       fastify.log.info({ walletId: wallet.id, phone, cglt_amount, tx_hash }, '[internal] CGLT credited from incoming wCGLT');
 
       return reply.send({ success: true, new_balance: newBalance });
+    },
+  );
+  /* ── POST /v1/internal/backfill-cdp-wallets ────────────── */
+  fastify.post(
+    '/internal/backfill-cdp-wallets',
+    { config: { rateLimit: { max: 3, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      const adminSecret = process.env.ADMIN_SECRET ?? '';
+      if (!adminSecret || request.headers['x-admin-secret'] !== adminSecret) {
+        return reply.status(403).send({ error: 'Forbidden' });
+      }
+
+      const { data: users, error } = await fastify.supabase
+        .from('wallet_users')
+        .select('id')
+        .is('cdp_wallet_address', null)
+        .limit(50);
+
+      if (error) {
+        fastify.log.error({ err: error }, '[backfill] query failed');
+        return reply.status(500).send({ error: 'Database error' });
+      }
+
+      let processed = 0;
+      let errors = 0;
+
+      for (const user of users ?? []) {
+        try {
+          const address = await createUserWallet(user.id);
+          await fastify.supabase
+            .from('wallet_users')
+            .update({ cdp_wallet_address: address })
+            .eq('id', user.id);
+          processed++;
+          fastify.log.info({ userId: user.id, address }, '[backfill] CDP wallet created');
+        } catch (err) {
+          errors++;
+          fastify.log.error({ err, userId: user.id }, '[backfill] CDP wallet creation failed');
+        }
+      }
+
+      return reply.send({
+        ok: true,
+        processed,
+        errors,
+        remaining: (users?.length ?? 0) === 50 ? 'more' : 'none',
+      });
     },
   );
 };

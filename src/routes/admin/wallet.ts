@@ -655,6 +655,63 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
     },
   );
 
+  /* ── GET /v1/admin/cdp-wallets-stats ───────────────────── */
+  fastify.get<{ Querystring: { page?: number; limit?: number } }>(
+    '/admin/cdp-wallets-stats',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            page:  { type: 'integer', minimum: 1, default: 1 },
+            limit: { type: 'integer', minimum: 1, maximum: 100, default: 50 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required' });
+      }
+
+      const page  = request.query.page  ?? 1;
+      const limit = request.query.limit ?? 50;
+      const offset = (page - 1) * limit;
+
+      const [totalRes, withCdpRes, usersRes] = await Promise.all([
+        fastify.supabase.from('wallet_users').select('id', { count: 'exact', head: true }),
+        fastify.supabase.from('wallet_users').select('id', { count: 'exact', head: true }).not('cdp_wallet_address', 'is', null),
+        fastify.supabase
+          .from('wallet_users')
+          .select('id, phone, created_at, cdp_wallet_address', { count: 'exact' })
+          .order('created_at', { ascending: false })
+          .range(offset, offset + limit - 1),
+      ]);
+
+      const totalUsers  = totalRes.count  ?? 0;
+      const withCdp     = withCdpRes.count ?? 0;
+      const withoutCdp  = totalUsers - withCdp;
+
+      if (usersRes.error) {
+        fastify.log.error({ err: usersRes.error }, '[admin] cdp-wallets-stats users query failed');
+        return reply.status(500).send({ error: 'Internal Server Error' });
+      }
+
+      return reply.send({
+        total_users: totalUsers,
+        with_cdp:    withCdp,
+        without_cdp: withoutCdp,
+        users: usersRes.data ?? [],
+        pagination: {
+          page,
+          limit,
+          total: usersRes.count ?? 0,
+          pages: Math.ceil((usersRes.count ?? 0) / limit),
+        },
+      });
+    },
+  );
+
   /* ── POST /v1/admin/merchants/:id/kyc/reject ────────────── */
   fastify.post<{ Params: { id: string }; Body: { notes?: string } }>('/admin/merchants/:id/kyc/reject',
     {
