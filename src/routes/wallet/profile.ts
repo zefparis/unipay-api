@@ -22,7 +22,8 @@ const walletProfileRoute: FastifyPluginAsync = async (fastify) => {
               kyc_level:   { type: 'number' },
               is_verified: { type: 'boolean' },
               balance_cdf:        { type: 'number' },
-              blockchain_address: { type: ['string', 'null'] },
+              blockchain_address:  { type: ['string', 'null'] },
+              cdp_wallet_address: { type: ['string', 'null'] },
               created_at:         { type: 'string' },
             },
           },
@@ -36,7 +37,7 @@ const walletProfileRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data, error } = await fastify.supabase
         .from('wallet_users')
-        .select('id, phone, full_name, kyc_level, is_verified, balance_cdf, blockchain_address, created_at')
+        .select('id, phone, full_name, kyc_level, is_verified, balance_cdf, blockchain_address, cdp_wallet_address, created_at')
         .eq('id', wp.wallet_id)
         .maybeSingle();
 
@@ -69,7 +70,8 @@ const walletProfileRoute: FastifyPluginAsync = async (fastify) => {
         kyc_level:   Number(data.kyc_level ?? 0),
         is_verified: Boolean(data.is_verified),
         balance_cdf:        Number(data.balance_cdf ?? 0),
-        blockchain_address: blockchainAddress,
+        blockchain_address:  blockchainAddress,
+        cdp_wallet_address: (data.cdp_wallet_address as string | null) ?? null,
         created_at:         data.created_at,
       });
     },
