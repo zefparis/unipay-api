@@ -18,7 +18,7 @@ function getClient(): CdpClient {
 }
 
 function accountName(userId: string): string {
-  return `user-${userId}`;
+  return 'u-' + userId.replace(/-/g, '').slice(0, 30);
 }
 
 export async function createUserWallet(userId: string): Promise<string> {
