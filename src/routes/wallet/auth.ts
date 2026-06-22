@@ -3,6 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { signWalletToken, signRefreshToken, verifyRefreshToken, requireWallet } from '../../utils/wallet-jwt';
 import { encryptPrivateKey, generateWallet } from '../../services/blockchain';
+import { createUserWallet } from '../../services/cdp';
 import { sendWalletWelcomeEmail, sendWalletPinChangedEmail } from '../../services/email';
 
 interface RegisterBody {
@@ -105,6 +106,23 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
 
       if (wallet && email) {
         sendWalletWelcomeEmail(email, full_name ?? '', normalizedPhone, lang ?? 'fr');
+      }
+
+      if (process.env.CDP_API_KEY_ID) {
+        createUserWallet(wallet.id)
+          .then((cdpAddress) => {
+            return fastify.supabase
+              .from('wallet_users')
+              .update({ cdp_wallet_address: cdpAddress })
+              .eq('id', wallet.id);
+          })
+          .then(({ error: cdpErr }) => {
+            if (cdpErr) fastify.log.error({ err: cdpErr, walletId: wallet.id }, 'CDP wallet address save failed');
+            else fastify.log.info({ walletId: wallet.id }, 'CDP wallet address saved');
+          })
+          .catch((err: unknown) => {
+            fastify.log.error({ err, walletId: wallet.id }, 'CDP wallet creation failed');
+          });
       }
 
       return reply.status(201).send({

@@ -90,6 +90,11 @@ const envSchema = z.object({
 
   // Admin access — comma-separated list of allowed emails for admin routes
   ADMIN_EMAILS: z.string().default('b.barrere@congogaming.com'),
+
+  // Coinbase CDP — EVM server accounts (one per wallet user, Base network)
+  CDP_API_KEY_ID:     z.string().min(1).optional(),
+  CDP_API_KEY_SECRET: z.string().min(1).optional(),
+  CDP_WALLET_SECRET:  z.string().min(1).optional(),
 });
 
 const result = envSchema.safeParse(process.env);
