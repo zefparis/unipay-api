@@ -109,6 +109,7 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       if (process.env.CDP_API_KEY_ID) {
+        fastify.log.info({ walletId: wallet.id }, 'CDP wallet creation starting for userId: ' + wallet.id);
         createUserWallet(wallet.id)
           .then((cdpAddress) => {
             return fastify.supabase
@@ -121,7 +122,8 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
             else fastify.log.info({ walletId: wallet.id }, 'CDP wallet address saved');
           })
           .catch((err: unknown) => {
-            fastify.log.error({ err, walletId: wallet.id }, 'CDP wallet creation failed');
+            const msg = err instanceof Error ? err.message : String(err);
+            fastify.log.error({ err, walletId: wallet.id }, 'CDP wallet creation failed: ' + msg);
           });
       }
 
