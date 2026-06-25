@@ -77,7 +77,7 @@ const adminKycRoute: FastifyPluginAsync = async (fastify) => {
 
       const { error } = await fastify.supabase
         .from('merchants')
-        .update({ kyc_status: 'approved', kyc_reviewed_at: new Date().toISOString(), kyc_notes: null })
+        .update({ kyc_status: 'approved', mode: 'live', kyc_reviewed_at: new Date().toISOString(), kyc_notes: null })
         .eq('id', merchant_id);
 
       if (error) {

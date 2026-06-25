@@ -74,7 +74,8 @@ export async function buildServer() {
   // Body size limit — 64KB max
   server.addContentTypeParser('application/json', { parseAs: 'string', bodyLimit: 65536 }, (req, body, done) => {
     try {
-      done(null, JSON.parse(body as string));
+      const str = (body as string).trim();
+      done(null, str ? JSON.parse(str) : {});
     } catch (err) {
       done(err as Error, undefined);
     }
