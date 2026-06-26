@@ -88,6 +88,15 @@ const envSchema = z.object({
   BSC_RPC_URL:      z.string().url().default('https://bsc-dataseed.binance.org'),
   USDT_BSC_CONTRACT: z.string().regex(/^0x[0-9a-fA-F]{40}$/).default('0x55d398326f99059fF775485246999027B3197955'),
 
+  // ADI Chain hot wallet — direct USDC on-chain withdrawals (Chain ID 36900)
+  ADI_SETTLEMENT_PRIVATE_KEY: z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional(),
+  ADI_RPC_URL:           z.string().url().default('https://rpc.adifoundation.ai'),
+  ADI_USDC_CONTRACT:     z.string().regex(/^0x[0-9a-fA-F]{40}$/).default('0x9cb8142aEBBcdc60AF7c97Af897A67A8f3CA71C2'),
+  ADI_SETTLEMENT_ADDRESS: z.string().regex(/^0x[0-9a-fA-F]{40}$/).default('0x7851E44d4A8B0939CF10EDE3922a762722437eA5'),
+
+  // PredictStreet server-to-server HMAC secret (deposit-notify webhook)
+  PREDICTSTREET_SERVER_SECRET: z.string().min(16).optional(),
+
   // Admin access — comma-separated list of allowed emails for admin routes
   ADMIN_EMAILS: z.string().default('b.barrere@congogaming.com'),
 
