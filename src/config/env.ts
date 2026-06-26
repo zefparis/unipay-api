@@ -11,36 +11,36 @@ const envSchema = z.object({
   OPERATOR_WEBHOOK_SECRET: z.string().optional(),
 
   // Unipesa aggregator (Orange, Airtel, Afrimoney)
-  UNIPESA_API_URL: z.string().url().optional(),
+  UNIPESA_API_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
   UNIPESA_PUBLIC_ID: z.string().optional(),
   UNIPESA_MERCHANT_ID: z.string().optional(),
   UNIPESA_SECRET_KEY: z.string().optional(),
-  UNIPESA_CALLBACK_URL: z.string().url().optional(),
+  UNIPESA_CALLBACK_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
 
   // Fixie proxy — whitelisted IP for Unipesa API calls
-  FIXIE_URL: z.string().url().optional(),
+  FIXIE_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
 
   // Vodacash — direct integration (coming soon)
-  VODACASH_API_URL: z.string().url().optional(),
+  VODACASH_API_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
   VODACASH_API_KEY: z.string().optional(),
 
   // USDT on-chain
   USDT_WALLET_ADDRESS: z.string().optional(),
-  CGLT_NODE_URL: z.string().url().optional(),
+  CGLT_NODE_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
   CGLT_CONTRACT_ADDRESS: z.string().optional(),
   CGLT_RESERVE_ADDRESS: z.string().optional(),
   CGLT_MINTER_KEY: z.string().optional(),
   USDT_ADDRESS: z.string().optional(),
-  ENCRYPTION_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/).optional(),
+  ENCRYPTION_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().regex(/^[0-9a-fA-F]{64}$/).optional()),
 
   // Merchant JWT
-  JWT_SECRET: z.string().min(32).optional(),
+  JWT_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(32).optional()),
 
   // Admin secret (plain header — internal tooling only)
-  ADMIN_SECRET: z.string().min(16).optional(),
+  ADMIN_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(16).optional()),
 
   // Congo Gaming ↔ UniPay shared secret (CGLT betting integration)
-  GAMING_API_KEY: z.string().min(8).optional(),
+  GAMING_API_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(8).optional()),
 
   // Fiat USD↔CDF conversion rate (manual oracle; update on Render when rate changes)
   FIAT_USD_CDF_RATE: z.string().regex(/^\d+(\.\d+)?$/).default('2850'),
@@ -51,7 +51,7 @@ const envSchema = z.object({
 
   // Brevo transactional email
   BREVO_API_KEY:      z.string().min(1).optional(),
-  BREVO_SENDER_EMAIL: z.string().email().default('contact@unipaycongo.com'),
+  BREVO_SENDER_EMAIL: z.preprocess((v) => (v === '' ? undefined : v), z.string().email().optional()).default('contact@unipaycongo.com'),
   BREVO_SENDER_NAME:  z.string().default('UniPay Congo'),
 
   // BSC crypto deposits (Option B — one address per user)
@@ -84,20 +84,20 @@ const envSchema = z.object({
   BINANCE_SUBACCOUNT_SECRET_KEY: z.string().min(1).optional(),
 
   // BSC hot wallet — direct USDT on-chain withdrawals
-  HOT_WALLET_USDT_PRIVATE_KEY: z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional(),
+  HOT_WALLET_USDT_PRIVATE_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional()),
   BSC_RPC_URL:      z.string().url().default('https://bsc-dataseed.binance.org'),
   USDT_BSC_CONTRACT: z.string().regex(/^0x[0-9a-fA-F]{40}$/).default('0x55d398326f99059fF775485246999027B3197955'),
 
   // ADI Chain hot wallet — direct USDC on-chain withdrawals (Chain ID 36900)
-  ADI_SETTLEMENT_PRIVATE_KEY: z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional(),
+  ADI_SETTLEMENT_PRIVATE_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional()),
   ADI_RPC_URL:           z.string().url().default('https://rpc.adifoundation.ai'),
   ADI_USDC_CONTRACT:     z.string().regex(/^0x[0-9a-fA-F]{40}$/).default('0x9cb8142aEBBcdc60AF7c97Af897A67A8f3CA71C2'),
   ADI_SETTLEMENT_ADDRESS: z.string().regex(/^0x[0-9a-fA-F]{40}$/).default('0x7851E44d4A8B0939CF10EDE3922a762722437eA5'),
 
   // PredictStreet server-to-server HMAC secret (deposit-notify webhook)
-  PREDICTSTREET_SERVER_SECRET: z.string().min(16).optional(),
+  PREDICTSTREET_SERVER_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(16).optional()),
   // PredictStreet payout webhook — we POST here to request a USDC payout
-  PREDICTSTREET_PAYOUT_URL: z.string().url().optional(),
+  PREDICTSTREET_PAYOUT_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
 
   // Admin access — comma-separated list of allowed emails for admin routes
   ADMIN_EMAILS: z.string().default('b.barrere@congogaming.com'),
