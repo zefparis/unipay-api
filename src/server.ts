@@ -50,6 +50,7 @@ import adminTreasuryCryptoReceiptsRoute from './routes/admin/treasury-crypto-rec
 import adminTreasuryCryptoAssetsRoute    from './routes/admin/treasury-crypto-assets';
 import walletNotificationsRoute from './routes/wallet/notifications';
 import adiDepositRoute from './routes/wallet/adi-deposit';
+import adiPayoutRoute from './routes/wallet/adi-payout';
 
 export async function buildServer() {
   const server = Fastify({
@@ -172,6 +173,7 @@ export async function buildServer() {
       v1.register(adminTreasuryCryptoAssetsRoute);
       v1.register(walletNotificationsRoute);
       v1.register(adiDepositRoute);
+      v1.register(adiPayoutRoute);
     },
     { prefix: '/v1' },
   );

@@ -96,6 +96,8 @@ const envSchema = z.object({
 
   // PredictStreet server-to-server HMAC secret (deposit-notify webhook)
   PREDICTSTREET_SERVER_SECRET: z.string().min(16).optional(),
+  // PredictStreet payout webhook — we POST here to request a USDC payout
+  PREDICTSTREET_PAYOUT_URL: z.string().url().optional(),
 
   // Admin access — comma-separated list of allowed emails for admin routes
   ADMIN_EMAILS: z.string().default('b.barrere@congogaming.com'),
