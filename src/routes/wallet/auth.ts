@@ -144,7 +144,7 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
           type: 'object',
           required: ['phone', 'pin'],
           properties: {
-            phone: { type: 'string', pattern: '^\\+?[0-9]{8,15}$' },
+            phone: { type: 'string', pattern: '^\\+?[0-9\\s\\-]{8,20}$' },
             pin:   { type: 'string', minLength: 4, maxLength: 8, pattern: '^[0-9]+$' },
           },
         },
@@ -168,7 +168,8 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(500).send({ error: 'Auth service not configured', statusCode: 500 });
       }
 
-      const { phone, pin } = request.body;
+      const { phone: rawPhone, pin } = request.body;
+      const phone = rawPhone.replace(/[\s\-]/g, '');
 
       const { data: wallet, error } = await fastify.supabase
         .from('wallet_users')
