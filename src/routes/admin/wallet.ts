@@ -133,6 +133,56 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
     });
   });
 
+  /* ── GET /v1/admin/wallet/revenue ───────────────────────── */
+  fastify.get('/admin/wallet/revenue', async (request, reply) => {
+    if (!requireAdmin(request.isAdmin)) {
+      return reply.status(403).send({ error: 'Admin access required' });
+    }
+
+    const now = new Date();
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    function computeMetrics(rows: { amount: unknown; fee: unknown }[]) {
+      const volume     = rows.reduce((s, r) => s + Number(r.amount ?? 0), 0);
+      const fraisAvada = rows.reduce((s, r) => s + Number(r.fee    ?? 0), 0);
+      return {
+        volume,
+        frais_avada:  fraisAvada,
+        frais_client: volume * 0.04,
+        marge_nette:  volume * 0.01,
+        nb_tx:        rows.length,
+      };
+    }
+
+    const base = () =>
+      fastify.supabase
+        .from('transactions')
+        .select('amount, fee')
+        .eq('status', 'success')
+        .in('direction', ['collect', 'payout'])
+        .limit(100000);
+
+    const [todayRes, monthRes, allRes] = await Promise.all([
+      base().gte('created_at', todayStart.toISOString()),
+      base().gte('created_at', monthStart.toISOString()),
+      base(),
+    ]);
+
+    if (todayRes.error || monthRes.error || allRes.error) {
+      const err = todayRes.error ?? monthRes.error ?? allRes.error;
+      fastify.log.error({ err }, '[admin] revenue query failed');
+      return reply.status(500).send({ error: 'Internal Server Error' });
+    }
+
+    return reply.send({
+      today: computeMetrics(todayRes.data ?? []),
+      month: computeMetrics(monthRes.data ?? []),
+      all:   computeMetrics(allRes.data   ?? []),
+    });
+  });
+
   /* ── GET /v1/admin/wallet/users ──────────────────────────── */
   fastify.get<{ Querystring: UsersQuery }>('/admin/wallet/users', {
     schema: {
