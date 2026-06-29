@@ -107,7 +107,7 @@ const envSchema = z.object({
   ),
   ADI_RPC_URL:           z.string().url().default('https://rpc.adifoundation.ai'),
   ADI_USDC_CONTRACT:     z.string().regex(/^0x[0-9a-fA-F]{40}$/).default('0x9cb8142aEBBcdc60AF7c97Af897A67A8f3CA71C2'),
-  ADI_SETTLEMENT_ADDRESS: z.string().regex(/^0x[0-9a-fA-F]{40}$/).default('0x7851E44d4A8B0939CF10EDE3922a762722437eA5'),
+  ADI_SETTLEMENT_ADDRESS: z.string().regex(/^0x[0-9a-fA-F]{40}$/).default('0x2b8a431b540C41D2Af83301287E5B18dd1F221CB'),
 
   // PredictStreet server-to-server HMAC secret (deposit-notify webhook)
   PREDICTSTREET_SERVER_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(16).optional()),
