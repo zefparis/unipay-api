@@ -7,8 +7,8 @@ import { mintWCGLT } from '../../services/bridge';
 const CGLT_PER_WCGLT = parseInt(process.env.CGLT_PER_WCGLT ?? '500', 10);
 
 interface SwapBody {
-  amount_cglt: number;
-  bsc_address: string;
+  cglt_amount: number;
+  bsc_recipient: string;
 }
 
 const wcgltSwapRoute: FastifyPluginAsync = async (fastify) => {
@@ -18,10 +18,10 @@ const wcgltSwapRoute: FastifyPluginAsync = async (fastify) => {
       schema: {
         body: {
           type: 'object',
-          required: ['amount_cglt', 'bsc_address'],
+          required: ['cglt_amount', 'bsc_recipient'],
           properties: {
-            amount_cglt: { type: 'number', minimum: 1 },
-            bsc_address: { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$' },
+            cglt_amount:   { type: 'number', minimum: 1 },
+            bsc_recipient: { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$' },
           },
         },
       },
@@ -36,7 +36,7 @@ const wcgltSwapRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
       }
 
-      const amountCglt = Math.trunc(Number(request.body.amount_cglt));
+      const amountCglt = Math.trunc(Number(request.body.cglt_amount));
       if (!Number.isFinite(amountCglt) || amountCglt < CGLT_PER_WCGLT) {
         return reply.status(400).send({ error: 'invalid_amount', min: CGLT_PER_WCGLT });
       }
@@ -44,7 +44,7 @@ const wcgltSwapRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(400).send({ error: 'amount_not_multiple', multiple: CGLT_PER_WCGLT });
       }
 
-      const bscAddress = request.body.bsc_address.trim();
+      const bscAddress = request.body.bsc_recipient.trim();
 
       const { data: wallet } = await fastify.supabase
         .from('wallet_users')
@@ -98,7 +98,7 @@ const wcgltSwapRoute: FastifyPluginAsync = async (fastify) => {
         cglt_amount:        amountCglt,
         blockchain_tx_hash: txHash,
         status:             'success',
-        metadata:           { wcglt_received: wcgltReceived, bsc_address: bscAddress },
+        metadata:           { wcglt_received: wcgltReceived, bsc_recipient: bscAddress },
       });
 
       fastify.log.info(
@@ -107,11 +107,12 @@ const wcgltSwapRoute: FastifyPluginAsync = async (fastify) => {
       );
 
       return reply.status(201).send({
-        success:        true,
-        cglt_spent:     amountCglt,
-        wcglt_received: wcgltReceived,
-        tx_hash:        txHash,
-        bsc_address:    bscAddress,
+        success:       true,
+        cglt_spent:    amountCglt,
+        wcglt_swapped: wcgltReceived,
+        usdt_received: wcgltReceived,
+        bsc_tx_hash:   txHash,
+        bsc_recipient: bscAddress,
       });
     },
   );
