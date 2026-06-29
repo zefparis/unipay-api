@@ -20,3 +20,7 @@ services:
         generateValue: true
       - key: OPERATOR_WEBHOOK_SECRET
         generateValue: true
+      - key: BRIDGE_API_URL
+        sync: false
+      - key: BRIDGE_API_KEY
+        sync: false
