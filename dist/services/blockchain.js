@@ -1,0 +1,219 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.encryptPrivateKey = encryptPrivateKey;
+exports.mintCGLT = mintCGLT;
+exports.burnCGLT = burnCGLT;
+exports.getCGLTBalance = getCGLTBalance;
+exports.generateWallet = generateWallet;
+exports.getSwapRate = getSwapRate;
+exports.mintWCGLTonBSC = mintWCGLTonBSC;
+exports.swapWCGLTtoUSDT = swapWCGLTtoUSDT;
+exports.executeSwap = executeSwap;
+const node_crypto_1 = __importDefault(require("node:crypto"));
+const ethers_1 = require("ethers");
+const CGLT_ABI = [
+    'function mint(address to, uint256 amount, string txRef) external',
+    'function burn(address from, uint256 amount, string txRef) external',
+    'function balanceOf(address) view returns (uint256)',
+];
+const ERC20_ABI = [
+    'function approve(address spender, uint256 amount) returns (bool)',
+    'function allowance(address owner, address spender) view returns (uint256)',
+    'function balanceOf(address) view returns (uint256)',
+];
+const PANCAKE_ROUTER = '0x10ED43C718714eb63d5aA57B78B54704E256024E';
+const WCGLT_BSC = '0xfE4Ce029A1CB84Aa0D3906C7eC409f1496d13A3B';
+const USDT_BSC = '0x55d398326f99059fF775485246999027B3197955';
+const WBNB = '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c';
+const PANCAKE_ABI = [
+    'function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) returns (uint[] memory amounts)',
+    'function getAmountsOut(uint amountIn, address[] calldata path) view returns (uint[] memory amounts)',
+];
+const RESERVE_ABI = [
+    'function cgltPerUsdt() view returns (uint256)',
+    'function feePercent() view returns (uint256)',
+    'function paused() view returns (bool)',
+    'function swapCGLTtoUSDT(uint256 cgltAmount) external',
+    'function swapUSDTtoCGLT(uint256 usdtAmount6) external',
+];
+function getBscProvider() {
+    return new ethers_1.ethers.JsonRpcProvider(process.env.BSC_RPC_URL ?? 'https://bsc-dataseed.binance.org');
+}
+function getBscSigner() {
+    const key = process.env.BSC_OWNER_KEY;
+    if (!key)
+        throw new Error('BSC_OWNER_KEY not configured');
+    return new ethers_1.ethers.Wallet(key, getBscProvider());
+}
+function getProvider() {
+    const nodeUrl = process.env.CGLT_NODE_URL;
+    if (!nodeUrl) {
+        throw new Error('CGLT_NODE_URL is not configured');
+    }
+    return new ethers_1.ethers.JsonRpcProvider(nodeUrl);
+}
+function getSigner() {
+    const minterKey = process.env.CGLT_MINTER_KEY;
+    if (!minterKey) {
+        throw new Error('CGLT_MINTER_KEY is not configured');
+    }
+    return new ethers_1.ethers.Wallet(minterKey, getProvider());
+}
+function getCgltContract() {
+    const contractAddress = process.env.CGLT_CONTRACT_ADDRESS;
+    if (!contractAddress) {
+        throw new Error('CGLT_CONTRACT_ADDRESS is not configured');
+    }
+    return new ethers_1.ethers.Contract(contractAddress, CGLT_ABI, getSigner());
+}
+function getReserveAddress() {
+    const reserveAddress = process.env.CGLT_RESERVE_ADDRESS;
+    if (!reserveAddress) {
+        throw new Error('CGLT_RESERVE_ADDRESS is not configured');
+    }
+    return reserveAddress;
+}
+function encryptPrivateKey(privateKey) {
+    const encryptionKey = process.env.ENCRYPTION_KEY;
+    if (!encryptionKey || !/^[0-9a-fA-F]{64}$/.test(encryptionKey)) {
+        throw new Error('ENCRYPTION_KEY must be a 32 bytes hex string');
+    }
+    const iv = node_crypto_1.default.randomBytes(12);
+    const key = Buffer.from(encryptionKey, 'hex');
+    const cipher = node_crypto_1.default.createCipheriv('aes-256-gcm', key, iv);
+    const encrypted = Buffer.concat([cipher.update(privateKey, 'utf8'), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+    return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted.toString('hex')}`;
+}
+async function mintCGLT(walletAddress, amountCDF, txRef) {
+    const amount = ethers_1.ethers.parseUnits(amountCDF.toString(), 18);
+    const cgltContract = getCgltContract();
+    const tx = await cgltContract.mint(walletAddress, amount, txRef, {
+        gasPrice: ethers_1.ethers.parseUnits("1", "gwei"),
+        gasLimit: 200000n
+    });
+    await tx.wait();
+    console.log(`[blockchain] Minted ${amountCDF} CGLT to ${walletAddress}`);
+    return tx.hash;
+}
+async function burnCGLT(walletAddress, amountCDF, txRef) {
+    const amount = ethers_1.ethers.parseUnits(amountCDF.toString(), 18);
+    const cgltContract = getCgltContract();
+    const tx = await cgltContract.burn(walletAddress, amount, txRef, {
+        gasPrice: ethers_1.ethers.parseUnits("1", "gwei"),
+        gasLimit: 200000n
+    });
+    await tx.wait();
+    console.log(`[blockchain] Burned ${amountCDF} CGLT from ${walletAddress}`);
+    return tx.hash;
+}
+async function getCGLTBalance(walletAddress) {
+    const cgltContract = getCgltContract();
+    const balance = await cgltContract.balanceOf(walletAddress);
+    return Number(ethers_1.ethers.formatUnits(balance, 18));
+}
+function generateWallet() {
+    const wallet = ethers_1.ethers.Wallet.createRandom();
+    return {
+        address: wallet.address,
+        privateKey: wallet.privateKey,
+    };
+}
+async function getSwapRate() {
+    const provider = getProvider();
+    const reserveAddress = getReserveAddress();
+    const reserve = new ethers_1.ethers.Contract(reserveAddress, RESERVE_ABI, provider);
+    const [rate, feePercent, paused] = await Promise.all([
+        reserve.cgltPerUsdt(),
+        reserve.feePercent(),
+        reserve.paused(),
+    ]);
+    // Best-effort: read the pool balances held by the reserve contract.
+    // USDT uses 6 decimals, CGLT uses 18.
+    let poolUsdt = 0;
+    let poolCglt = 0;
+    try {
+        const usdtAddress = process.env.USDT_ADDRESS;
+        const cgltAddress = process.env.CGLT_CONTRACT_ADDRESS;
+        if (usdtAddress) {
+            const usdt = new ethers_1.ethers.Contract(usdtAddress, ERC20_ABI, provider);
+            poolUsdt = Number(ethers_1.ethers.formatUnits(await usdt.balanceOf(reserveAddress), 6));
+        }
+        if (cgltAddress) {
+            const cglt = new ethers_1.ethers.Contract(cgltAddress, ERC20_ABI, provider);
+            poolCglt = Number(ethers_1.ethers.formatUnits(await cglt.balanceOf(reserveAddress), 18));
+        }
+    }
+    catch {
+        /* pool balances are best-effort; keep zeros on failure */
+    }
+    return {
+        rate: Number(rate),
+        fee: Number(feePercent) / 100, // basis points -> percent (50 -> 0.5)
+        paused: Boolean(paused),
+        pool_usdt: poolUsdt,
+        pool_cglt: poolCglt,
+    };
+}
+async function ensureAllowance(tokenAddress, signer, spender, required) {
+    const token = new ethers_1.ethers.Contract(tokenAddress, ERC20_ABI, signer);
+    const current = await token.allowance(signer.address, spender);
+    if (current < required) {
+        const tx = await token.approve(spender, ethers_1.ethers.MaxUint256);
+        await tx.wait();
+    }
+}
+async function mintWCGLTonBSC(bscAddress, amount) {
+    const bridgeUrl = process.env.BRIDGE_API_URL ?? 'http://104.248.166.144:3099';
+    const bridgeKey = process.env.BRIDGE_API_KEY;
+    if (!bridgeKey)
+        throw new Error('BRIDGE_API_KEY is not configured');
+    const res = await fetch(`${bridgeUrl}/bridge/mint`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${bridgeKey}`,
+        },
+        body: JSON.stringify({ to: bscAddress, amount }),
+    });
+    const data = await res.json();
+    if (!data.success)
+        throw new Error(data.error ?? 'bridge_failed');
+    return data.hash ?? '';
+}
+async function swapWCGLTtoUSDT(wcgltAmount, recipientAddress) {
+    const txHash = await mintWCGLTonBSC(recipientAddress, wcgltAmount);
+    return { usdtReceived: wcgltAmount, txHash };
+}
+async function executeSwap(direction, amount) {
+    const signer = getSigner();
+    const reserveAddress = getReserveAddress();
+    const reserve = new ethers_1.ethers.Contract(reserveAddress, RESERVE_ABI, signer);
+    const [rateRaw, feePercentRaw] = await Promise.all([
+        reserve.cgltPerUsdt(),
+        reserve.feePercent(),
+    ]);
+    const rate = Number(rateRaw);
+    const feeRatio = Number(feePercentRaw) / 10000; // 50 -> 0.005
+    if (direction === 'cglt_to_usdt') {
+        const cgltWei = ethers_1.ethers.parseUnits(amount.toString(), 18);
+        await ensureAllowance(process.env.CGLT_CONTRACT_ADDRESS, signer, reserveAddress, cgltWei);
+        const tx = await reserve.swapCGLTtoUSDT(cgltWei);
+        const receipt = await tx.wait();
+        const gross = amount / rate;
+        const fee = gross * feeRatio;
+        return { amountIn: amount, amountOut: gross - fee, fee, txHash: receipt.hash };
+    }
+    // usdt_to_cglt
+    const usdt6 = ethers_1.ethers.parseUnits(amount.toString(), 6);
+    await ensureAllowance(process.env.USDT_ADDRESS, signer, reserveAddress, usdt6);
+    const tx = await reserve.swapUSDTtoCGLT(usdt6);
+    const receipt = await tx.wait();
+    const feeUsdt = amount * feeRatio;
+    const netUsdt = amount - feeUsdt;
+    return { amountIn: amount, amountOut: netUsdt * rate, fee: feeUsdt, txHash: receipt.hash };
+}
+//# sourceMappingURL=blockchain.js.map
