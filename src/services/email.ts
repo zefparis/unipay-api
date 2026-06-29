@@ -445,3 +445,60 @@ export async function sendAdminNewMerchantEmail(
     to: [{ email: 'contact@unipaycongo.com', name: 'UniPay Admin' }],
   });
 }
+
+/* ── sendGasAlertEmail — BSC settlement wallet low on BNB ──── */
+export async function sendGasAlertEmail(
+  walletAddress: string,
+  currentBnb: number,
+  threshold: number,
+  adminEmails: string[],
+): Promise<void> {
+  const api = getClient();
+  if (!api) {
+    console.warn('[email] BREVO_API_KEY not set — gas alert email skipped');
+    return;
+  }
+
+  const addrShort = `${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}`;
+  const bscscanUrl = `https://bscscan.com/address/${walletAddress}`;
+
+  const body = `
+    <h2 style="color:#dc2626;margin:0 0 16px">⚠️ BSC Settlement Wallet — Low Gas</h2>
+    <p style="margin:0 0 20px;font-size:15px;color:#475569;line-height:1.6;">
+      The BSC hot wallet used for USDT withdrawals is running low on BNB (gas).
+      On-chain withdrawals will fail once BNB reaches zero.
+    </p>
+    <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;padding:20px;text-align:center;margin-bottom:20px;">
+      <p style="margin:0;font-size:36px;font-weight:800;color:#dc2626;">${currentBnb.toFixed(6)} BNB</p>
+      <p style="margin:6px 0 0;font-size:13px;color:#991b1b;">Threshold: ${threshold} BNB</p>
+    </div>
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;margin-bottom:20px;">
+      <tr>
+        <td style="padding:10px 16px;font-size:13px;font-weight:600;color:#64748b;width:40%">Wallet</td>
+        <td style="padding:10px 16px;font-size:13px;color:#0f172a;font-family:monospace;">${addrShort}</td>
+      </tr>
+      <tr>
+        <td style="padding:10px 16px;font-size:13px;font-weight:600;color:#64748b;border-top:1px solid #e2e8f0">Network</td>
+        <td style="padding:10px 16px;font-size:13px;color:#0f172a;border-top:1px solid #e2e8f0">BNB Smart Chain (BSC)</td>
+      </tr>
+    </table>
+    <p style="margin:0 0 20px;font-size:14px;color:#475569;line-height:1.6;">
+      <strong>Action required:</strong> Send BNB to the wallet above to restore withdrawal capability.
+    </p>
+    <a href="${bscscanUrl}"
+       style="display:inline-block;background:#1D9E75;color:#fff;text-decoration:none;
+              padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;">
+      View on BscScan →
+    </a>`;
+
+  const recipients = adminEmails.length > 0
+    ? adminEmails.map(email => ({ email, name: 'UniPay Admin' }))
+    : [{ email: 'contact@unipaycongo.com', name: 'UniPay Admin' }];
+
+  await api.transactionalEmails.sendTransacEmail({
+    subject: `[ALERT] BSC settlement wallet low on gas: ${currentBnb.toFixed(6)} BNB`,
+    htmlContent: layout(body),
+    sender: { name: env.BREVO_SENDER_NAME, email: env.BREVO_SENDER_EMAIL },
+    to: recipients,
+  });
+}
