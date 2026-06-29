@@ -31,7 +31,7 @@ export async function mintWCGLT(
 
   let res: Response;
   try {
-    res = await fetch(`${bridgeUrl}/bridge/mint`, {
+    res = await fetch(`${bridgeUrl}/bridge/mint-wcglt`, {
       method:  'POST',
       headers: {
         'Content-Type':  'application/json',
