@@ -92,6 +92,11 @@ const envSchema = z.object({
     (v) => (typeof v === 'string' && /^0x[0-9a-fA-F]{64}$/.test(v) ? v : undefined),
     z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional(),
   ),
+  // BSC owner wallet — signs wCGLT bridge transactions; monitored for gas
+  BSC_OWNER_KEY: z.preprocess(
+    (v) => (typeof v === 'string' && /^0x[0-9a-fA-F]{64}$/.test(v) ? v : undefined),
+    z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional(),
+  ),
   BSC_RPC_URL:      z.string().url().default('https://bsc-dataseed.binance.org'),
   USDT_BSC_CONTRACT: z.string().regex(/^0x[0-9a-fA-F]{40}$/).default('0x55d398326f99059fF775485246999027B3197955'),
 

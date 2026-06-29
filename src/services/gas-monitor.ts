@@ -19,8 +19,8 @@ function getProvider(): ethers.JsonRpcProvider {
 }
 
 function getHotWalletAddress(): string {
-  const key = env.HOT_WALLET_USDT_PRIVATE_KEY;
-  if (!key) throw new Error('HOT_WALLET_USDT_PRIVATE_KEY not configured');
+  const key = env.BSC_OWNER_KEY;
+  if (!key) throw new Error('BSC_OWNER_KEY not configured');
   return new ethers.Wallet(key).address;
 }
 
@@ -29,8 +29,8 @@ function getHotWalletAddress(): string {
 export function startGasMonitor(
   logger: { info: (msg: string, data?: unknown) => void; warn: (msg: string, data?: unknown) => void; error: (msg: string, data?: unknown) => void },
 ): void {
-  if (!env.HOT_WALLET_USDT_PRIVATE_KEY) {
-    logger.info('[gas-monitor] HOT_WALLET_USDT_PRIVATE_KEY not set — gas monitor disabled');
+  if (!env.BSC_OWNER_KEY) {
+    logger.info('[gas-monitor] BSC_OWNER_KEY not set — gas monitor disabled');
     return;
   }
 
