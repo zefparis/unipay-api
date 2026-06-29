@@ -6,7 +6,8 @@
  * only sends authenticated HTTP requests.
  */
 
-const CGLT_PER_WCGLT = 500;
+const CGLT_PER_WCGLT   = 500;
+const BRIDGE_TIMEOUT_MS = 8_000; // must be < upstreamFetch timeout (10s) + Vercel function timeout (10s)
 
 /**
  * Mints wCGLT on BSC to the given address.
@@ -25,14 +26,26 @@ export async function mintWCGLT(
 
   const wcgltAmount = amountCGLT / CGLT_PER_WCGLT;
 
-  const res = await fetch(`${bridgeUrl}/bridge/mint`, {
-    method:  'POST',
-    headers: {
-      'Content-Type':  'application/json',
-      'Authorization': `Bearer ${key}`,
-    },
-    body: JSON.stringify({ to: bscAddress, amount: wcgltAmount }),
-  });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), BRIDGE_TIMEOUT_MS);
+
+  let res: Response;
+  try {
+    res = await fetch(`${bridgeUrl}/bridge/mint`, {
+      method:  'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${key}`,
+      },
+      body:   JSON.stringify({ to: bscAddress, amount: wcgltAmount }),
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    const isTimeout = err instanceof Error && err.name === 'AbortError';
+    throw new Error(isTimeout ? 'bridge_timeout' : `bridge_unreachable: ${String(err)}`);
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!res.ok) {
     const text = await res.text();
