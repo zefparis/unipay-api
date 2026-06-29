@@ -33,6 +33,10 @@ const envSchema = z.object({
   USDT_ADDRESS: z.string().optional(),
   ENCRYPTION_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().regex(/^[0-9a-fA-F]{64}$/).optional()),
 
+  // CGLT Bridge API — required for wCGLT minting on BSC
+  BRIDGE_API_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
+  BRIDGE_API_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(16).optional()),
+
   // Merchant JWT
   JWT_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(32).optional()),
 

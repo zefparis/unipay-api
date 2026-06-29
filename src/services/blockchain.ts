@@ -210,9 +210,14 @@ export async function mintWCGLTonBSC(
   amount: number,
 ): Promise<string> {
   const bridgeUrl = process.env.BRIDGE_API_URL ?? 'http://104.248.166.144:3099';
+  const bridgeKey = process.env.BRIDGE_API_KEY;
+  if (!bridgeKey) throw new Error('BRIDGE_API_KEY is not configured');
   const res = await fetch(`${bridgeUrl}/bridge/mint`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${bridgeKey}`,
+    },
     body: JSON.stringify({ to: bscAddress, amount }),
   });
   const data = await res.json() as { success?: boolean; hash?: string; error?: string };
@@ -224,34 +229,8 @@ export async function swapWCGLTtoUSDT(
   wcgltAmount: number,
   recipientAddress: string,
 ): Promise<{ usdtReceived: number; txHash: string }> {
-  const signer    = getBscSigner();
-  const wcgltWei  = ethers.parseEther(wcgltAmount.toString());
-
-  const wcglt     = new ethers.Contract(WCGLT_BSC, ERC20_ABI, signer);
-  const allowance: bigint = await wcglt.allowance(signer.address, PANCAKE_ROUTER);
-  if (allowance < wcgltWei) {
-    const approveTx = await wcglt.approve(PANCAKE_ROUTER, ethers.MaxUint256);
-    await approveTx.wait();
-  }
-
-  const router    = new ethers.Contract(PANCAKE_ROUTER, PANCAKE_ABI, signer);
-  const path      = [WCGLT_BSC, WBNB, USDT_BSC];
-  const amounts: bigint[] = await router.getAmountsOut(wcgltWei, path);
-  const expectedUsdt = amounts[2];
-  const amountOutMin = expectedUsdt * 95n / 100n;
-
-  const deadline = Math.floor(Date.now() / 1000) + 300;
-  const tx = await router.swapExactTokensForTokens(
-    wcgltWei,
-    amountOutMin,
-    path,
-    recipientAddress,
-    deadline,
-  );
-  const receipt = await tx.wait();
-
-  const usdtReceived = Number(ethers.formatUnits(expectedUsdt, 18));
-  return { usdtReceived, txHash: receipt.hash };
+  const txHash = await mintWCGLTonBSC(recipientAddress, wcgltAmount);
+  return { usdtReceived: wcgltAmount, txHash };
 }
 
 export async function executeSwap(
