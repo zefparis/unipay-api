@@ -13,16 +13,6 @@ const ERC20_ABI = [
   'function balanceOf(address) view returns (uint256)',
 ];
 
-const PANCAKE_ROUTER = '0x10ED43C718714eb63d5aA57B78B54704E256024E';
-const WCGLT_BSC     = '0xfE4Ce029A1CB84Aa0D3906C7eC409f1496d13A3B';
-const USDT_BSC      = '0x55d398326f99059fF775485246999027B3197955';
-const WBNB          = '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c';
-
-const PANCAKE_ABI = [
-  'function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) returns (uint[] memory amounts)',
-  'function getAmountsOut(uint amountIn, address[] calldata path) view returns (uint[] memory amounts)',
-];
-
 const RESERVE_ABI = [
   'function cgltPerUsdt() view returns (uint256)',
   'function feePercent() view returns (uint256)',
@@ -30,16 +20,6 @@ const RESERVE_ABI = [
   'function swapCGLTtoUSDT(uint256 cgltAmount) external',
   'function swapUSDTtoCGLT(uint256 usdtAmount6) external',
 ];
-
-function getBscProvider() {
-  return new ethers.JsonRpcProvider(process.env.BSC_RPC_URL ?? 'https://bsc-dataseed.binance.org');
-}
-
-function getBscSigner() {
-  const key = process.env.BSC_OWNER_KEY;
-  if (!key) throw new Error('BSC_OWNER_KEY not configured');
-  return new ethers.Wallet(key, getBscProvider());
-}
 
 function getProvider() {
   const nodeUrl = process.env.CGLT_NODE_URL;
@@ -182,88 +162,4 @@ export async function getSwapRate(): Promise<SwapRate> {
   };
 }
 
-export type SwapDirection = 'cglt_to_usdt' | 'usdt_to_cglt';
 
-export interface SwapResult {
-  amountIn: number;
-  amountOut: number;
-  fee: number;
-  txHash: string;
-}
-
-async function ensureAllowance(
-  tokenAddress: string,
-  signer: ethers.Wallet,
-  spender: string,
-  required: bigint,
-): Promise<void> {
-  const token = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
-  const current: bigint = await token.allowance(signer.address, spender);
-  if (current < required) {
-    const tx = await token.approve(spender, ethers.MaxUint256);
-    await tx.wait();
-  }
-}
-
-export async function mintWCGLTonBSC(
-  bscAddress: string,
-  amount: number,
-): Promise<string> {
-  const bridgeUrl = process.env.BRIDGE_API_URL ?? 'http://104.248.166.144:3099';
-  const bridgeKey = process.env.BRIDGE_API_KEY;
-  if (!bridgeKey) throw new Error('BRIDGE_API_KEY is not configured');
-  const res = await fetch(`${bridgeUrl}/bridge/mint`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${bridgeKey}`,
-    },
-    body: JSON.stringify({ to: bscAddress, amount }),
-  });
-  const data = await res.json() as { success?: boolean; hash?: string; error?: string };
-  if (!data.success) throw new Error(data.error ?? 'bridge_failed');
-  return data.hash ?? '';
-}
-
-export async function swapWCGLTtoUSDT(
-  wcgltAmount: number,
-  recipientAddress: string,
-): Promise<{ usdtReceived: number; txHash: string }> {
-  const txHash = await mintWCGLTonBSC(recipientAddress, wcgltAmount);
-  return { usdtReceived: wcgltAmount, txHash };
-}
-
-export async function executeSwap(
-  direction: SwapDirection,
-  amount: number,
-): Promise<SwapResult> {
-  const signer = getSigner();
-  const reserveAddress = getReserveAddress();
-  const reserve = new ethers.Contract(reserveAddress, RESERVE_ABI, signer);
-
-  const [rateRaw, feePercentRaw] = await Promise.all([
-    reserve.cgltPerUsdt(),
-    reserve.feePercent(),
-  ]);
-  const rate = Number(rateRaw);
-  const feeRatio = Number(feePercentRaw) / 10000; // 50 -> 0.005
-
-  if (direction === 'cglt_to_usdt') {
-    const cgltWei = ethers.parseUnits(amount.toString(), 18);
-    await ensureAllowance(process.env.CGLT_CONTRACT_ADDRESS as string, signer, reserveAddress, cgltWei);
-    const tx = await reserve.swapCGLTtoUSDT(cgltWei);
-    const receipt = await tx.wait();
-    const gross = amount / rate;
-    const fee = gross * feeRatio;
-    return { amountIn: amount, amountOut: gross - fee, fee, txHash: receipt.hash };
-  }
-
-  // usdt_to_cglt
-  const usdt6 = ethers.parseUnits(amount.toString(), 6);
-  await ensureAllowance(process.env.USDT_ADDRESS as string, signer, reserveAddress, usdt6);
-  const tx = await reserve.swapUSDTtoCGLT(usdt6);
-  const receipt = await tx.wait();
-  const feeUsdt = amount * feeRatio;
-  const netUsdt = amount - feeUsdt;
-  return { amountIn: amount, amountOut: netUsdt * rate, fee: feeUsdt, txHash: receipt.hash };
-}

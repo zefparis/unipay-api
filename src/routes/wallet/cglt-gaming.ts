@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { env } from '../../config/env';
-import { mintCGLT, getSwapRate, mintWCGLTonBSC } from '../../services/blockchain';
+import { mintCGLT, getSwapRate } from '../../services/blockchain';
+import { mintWCGLT } from '../../services/bridge';
 import { requireWallet } from '../../utils/wallet-jwt';
 
 const CGLT_PER_WCGLT = parseInt(process.env.CGLT_PER_WCGLT ?? '500');
@@ -296,7 +297,7 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
       // Minter wCGLT sur BSC
       let bscTxHash: string | null = null;
       try {
-        bscTxHash = await mintWCGLTonBSC(bsc_address, wCGLTAmount);
+        bscTxHash = await mintWCGLT(bsc_address, amount);
       } catch (err) {
         // Rembourser si le bridge échoue
         await fastify.supabase
@@ -381,7 +382,7 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
 
       let bscTxHash: string | null = null;
       try {
-        bscTxHash = await mintWCGLTonBSC(bsc_address, wCGLTAmount);
+        bscTxHash = await mintWCGLT(bsc_address, amount);
       } catch (err) {
         await fastify.supabase.from('wallet_users').update({ cglt_balance: cgltBalance }).eq('id', wallet.id);
         fastify.log.error({ err, phone, bsc_address, amount }, '[cglt-user] BSC bridge failed (refunded)');

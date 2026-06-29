@@ -2,13 +2,13 @@ import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
-import { swapWCGLTtoUSDT } from '../../services/blockchain';
+import { mintWCGLT } from '../../services/bridge';
 
 const CGLT_PER_WCGLT = parseInt(process.env.CGLT_PER_WCGLT ?? '500', 10);
 
 interface SwapBody {
-  cglt_amount: number;
-  bsc_recipient: string;
+  amount_cglt: number;
+  bsc_address: string;
 }
 
 const wcgltSwapRoute: FastifyPluginAsync = async (fastify) => {
@@ -18,10 +18,10 @@ const wcgltSwapRoute: FastifyPluginAsync = async (fastify) => {
       schema: {
         body: {
           type: 'object',
-          required: ['cglt_amount', 'bsc_recipient'],
+          required: ['amount_cglt', 'bsc_address'],
           properties: {
-            cglt_amount:   { type: 'number', minimum: 1 },
-            bsc_recipient: { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$' },
+            amount_cglt: { type: 'number', minimum: 1 },
+            bsc_address: { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$' },
           },
         },
       },
@@ -36,15 +36,15 @@ const wcgltSwapRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
       }
 
-      const cgltAmount = Math.trunc(Number(request.body.cglt_amount));
-      if (!Number.isFinite(cgltAmount) || cgltAmount < CGLT_PER_WCGLT) {
+      const amountCglt = Math.trunc(Number(request.body.amount_cglt));
+      if (!Number.isFinite(amountCglt) || amountCglt < CGLT_PER_WCGLT) {
         return reply.status(400).send({ error: 'invalid_amount', min: CGLT_PER_WCGLT });
       }
-      if (cgltAmount % CGLT_PER_WCGLT !== 0) {
+      if (amountCglt % CGLT_PER_WCGLT !== 0) {
         return reply.status(400).send({ error: 'amount_not_multiple', multiple: CGLT_PER_WCGLT });
       }
 
-      const bscRecipient = request.body.bsc_recipient.trim();
+      const bscAddress = request.body.bsc_address.trim();
 
       const { data: wallet } = await fastify.supabase
         .from('wallet_users')
@@ -56,68 +56,62 @@ const wcgltSwapRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(404).send({ error: 'wallet_not_found' });
       }
 
-      const cgltBalance = Number(wallet.cglt_balance ?? 0);
-      if (cgltAmount > cgltBalance) {
+      const cgltBalance  = Number(wallet.cglt_balance ?? 0);
+      if (amountCglt > cgltBalance) {
         return reply.status(402).send({ error: 'insufficient_cglt', available: cgltBalance });
       }
 
-      const wcgltAmount = cgltAmount / CGLT_PER_WCGLT;
-      const orderId    = crypto.randomUUID();
-      const reference  = `WCS-${orderId.slice(0, 8).toUpperCase()}`;
+      const wcgltReceived = amountCglt / CGLT_PER_WCGLT;
+      const orderId       = crypto.randomUUID();
+      const reference     = `WCS-${orderId.slice(0, 8).toUpperCase()}`;
 
-      // Débiter CGLT avant le swap
+      // Debit CGLT before bridge call
       await fastify.supabase
         .from('wallet_users')
-        .update({ cglt_balance: cgltBalance - cgltAmount })
+        .update({ cglt_balance: cgltBalance - amountCglt })
         .eq('id', payload.wallet_id);
 
-      // Swap wCGLT → USDT sur BSC via PancakeSwap
-      let result: { usdtReceived: number; txHash: string };
+      // Bridge: mint wCGLT on BSC to user's address
+      let txHash: string;
       try {
-        result = await swapWCGLTtoUSDT(wcgltAmount, bscRecipient);
+        txHash = await mintWCGLT(bscAddress, amountCglt);
       } catch (e) {
-        // Rembourser si échec
+        // Refund on bridge failure
         await fastify.supabase
           .from('wallet_users')
           .update({ cglt_balance: cgltBalance })
           .eq('id', payload.wallet_id);
-        fastify.log.error({ err: e }, '[wcglt-swap] swap failed — CGLT refunded');
-        return reply.status(502).send({ error: 'swap_failed' });
+        fastify.log.error({ err: e }, '[wcglt-swap] bridge failed — CGLT refunded');
+        return reply.status(502).send({ error: 'bridge_failed' });
       }
 
-      // Enregistrer la transaction
       await fastify.supabase.from('transactions').insert({
         id:                 orderId,
         wallet_user_id:     wallet.id,
         operator:           'wcglt_swap',
         direction:          'swap',
-        amount:             cgltAmount,
+        amount:             amountCglt,
         fee:                0,
-        net_amount:         result.usdtReceived,
+        net_amount:         wcgltReceived,
         currency:           'CGLT',
         reference,
-        cglt_amount:        cgltAmount,
-        blockchain_tx_hash: result.txHash,
+        cglt_amount:        amountCglt,
+        blockchain_tx_hash: txHash,
         status:             'success',
-        metadata:           {
-          wcglt_amount:  wcgltAmount,
-          usdt_received: result.usdtReceived,
-          bsc_recipient: bscRecipient,
-        },
+        metadata:           { wcglt_received: wcgltReceived, bsc_address: bscAddress },
       });
 
       fastify.log.info(
-        { walletId: payload.wallet_id, cgltAmount, wcgltAmount, usdtReceived: result.usdtReceived, txHash: result.txHash },
+        { walletId: payload.wallet_id, amountCglt, wcgltReceived, txHash },
         '[wcglt-swap] completed',
       );
 
       return reply.status(201).send({
-        success:       true,
-        cglt_spent:    cgltAmount,
-        wcglt_swapped: wcgltAmount,
-        usdt_received: result.usdtReceived,
-        bsc_tx_hash:   result.txHash,
-        bsc_recipient: bscRecipient,
+        success:        true,
+        cglt_spent:     amountCglt,
+        wcglt_received: wcgltReceived,
+        tx_hash:        txHash,
+        bsc_address:    bscAddress,
       });
     },
   );
