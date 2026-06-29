@@ -130,14 +130,14 @@ async function checkDepositsForToken(
         continue;
       }
 
-      // 5. Credit usd_balance
+      // 5. Credit usdt_balance (BSC crypto deposit — not fiat usd_balance)
       const { error: creditErr } = await supabase
-        .rpc('wallet_credit_usd', { p_user_id: user_id, p_amount: amountUsd });
+        .rpc('wallet_credit_usdt', { p_user_id: user_id, p_amount: amountUsd });
 
       if (creditErr) {
-        log(`[bscscan] credit failed for ${user_id}: ${amountUsd} USD`, creditErr);
+        log(`[bscscan] credit failed for ${user_id}: ${amountUsd} USDT`, creditErr);
       } else {
-        log(`[bscscan] credited ${amountUsd.toFixed(6)} USD (${amount} ${symbol}) to user ${user_id} — tx ${tx.hash}`);
+        log(`[bscscan] credited ${amountUsd.toFixed(6)} USDT (${amount} ${symbol}) to user ${user_id} — tx ${tx.hash}`);
       }
     }
   }

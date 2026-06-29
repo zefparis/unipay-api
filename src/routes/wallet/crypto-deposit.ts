@@ -12,7 +12,7 @@ export const SUPPORTED_TOKENS = [
   },
   {
     symbol:   'wCGLT',
-    contract: '0xfE4Ce029A1CB84Aa0D3906C7eC409f1496d13A3B',
+    contract: '0xBf0535d21E59E4BB026f6848cc71Db971B120374',
     decimals: 18,
     name:     'Wrapped CGLT',
   },
