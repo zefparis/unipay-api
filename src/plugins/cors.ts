@@ -12,7 +12,7 @@ const corsPlugin: FastifyPluginAsync = async (fastify) => {
   await fastify.register(cors, {
     origin: allowedOrigins,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Admin-Secret', 'X-PredictStreet-Signature', 'X-UniPay-Signature'],
     credentials: true,
   });
 };
