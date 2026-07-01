@@ -25,7 +25,7 @@ import { env } from '../../config/env';
 interface AdiDepositNotifyBody {
   tx_hash:   string;  // ADI Chain transaction hash (0x...)
   log_index: number;  // ERC-20 Transfer log index (for uniqueness)
-  amount:    number;  // USDC amount in 6-decimal units (e.g. 1000000 = 1 USDC)
+  amount:    number;  // USDC amount as float (e.g. 2.6 = $2.60 USDC)
   from:      string;  // Sender wallet address
 }
 
@@ -105,7 +105,7 @@ const adiDepositRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       /* ── 3. Convert amounts ─────────────────────────────────────────── */
-      const amount_usdc = amount / 1_000_000;          // 6-decimal → float
+      const amount_usdc = amount;                        // already in USDC float
       const amount_cdf  = amount_usdc * 2600;           // our CDF rate
 
       /* ── 4. Insert deposit event ────────────────────────────────────── */
