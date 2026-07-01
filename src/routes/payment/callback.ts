@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
+import { env } from '../../config/env';
 import { verifyCallbackSignature, normalizeCallback } from '../../services/avada';
 import type { AvadaCallbackPayload } from '../../services/avada';
 import { sendWalletDepositEmail } from '../../services/email';
@@ -200,6 +201,31 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
         fetch(webhookUrl, { method: 'POST', headers, body: payload }).catch((err: unknown) => {
           fastify.log.warn({ err, webhookUrl }, 'Merchant webhook delivery failed');
         });
+      }
+
+      // Notify PredictStreet if this is a PredictStreet deposit
+      if (dbStatus === 'success' && reference?.startsWith('ps-dep-')) {
+        const psSecret = env.HMAC_SECRET;
+        const psUrl = env.PREDICTSTREET_PAYOUT_URL;
+        if (psSecret && psUrl) {
+          const psPayload = JSON.stringify({
+            payout_id: reference,
+            status: 'completed',
+            operator_ref: avada_transaction_id ?? tx.id,
+          });
+          const psSig = crypto.createHmac('sha256', psSecret).update(psPayload).digest('hex');
+          fetch(psUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-UniPay-Signature': `sha256=${psSig}`,
+            },
+            body: psPayload,
+          }).catch((err: unknown) => {
+            fastify.log.warn({ err, reference }, '[predictstreet] completion webhook delivery failed');
+          });
+          fastify.log.info({ reference, payout_id: reference }, '[predictstreet] completion webhook sent');
+        }
       }
 
       return reply.send({ ok: true, idempotent: false });
