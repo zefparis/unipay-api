@@ -407,9 +407,15 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       const psUrl = env.PREDICTSTREET_PAYOUT_URL;
       if (psSecret && psUrl) {
         const psPayload = JSON.stringify({
-          payout_id: order_id,
-          status: 'completed',
-          operator_ref: order_id,
+          event: 'payment.status_update',
+          data: {
+            transaction_id: tx.id,
+            status: 'success',
+            reference: order_id,
+            operator_ref: order_id,
+            amount: netCredited,
+            currency: txCurrency,
+          },
         });
         const psSig = crypto.createHmac('sha256', psSecret).update(psPayload).digest('hex');
         fetch(psUrl, {
