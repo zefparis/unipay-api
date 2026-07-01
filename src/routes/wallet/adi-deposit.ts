@@ -122,6 +122,11 @@ const adiDepositRoute: FastifyPluginAsync = async (fastify) => {
         });
 
       if (insertErr) {
+        // Duplicate key = concurrent request already inserted — treat as idempotent success
+        if ((insertErr as any).code === '23505') {
+          fastify.log.info({ payout_id }, '[adi-deposit] concurrent insert conflict — already processed');
+          return reply.send({ ok: true, status: 'already_processed' });
+        }
         fastify.log.error({ err: insertErr, payout_id }, '[adi-deposit] insert into adi_deposit_events failed');
         return reply.status(500).send({ ok: false, error: 'db_insert_failed' });
       }
