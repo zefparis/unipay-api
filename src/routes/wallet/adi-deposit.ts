@@ -70,7 +70,8 @@ const adiDepositRoute: FastifyPluginAsync = async (fastify) => {
       const secret = env.PREDICTSTREET_SERVER_SECRET!;
 
       /* ── 1. HMAC signature verification ─────────────────────────────── */
-      const signature = (request.headers['x-predictstreet-signature'] ?? '') as string;
+      const rawSig = (request.headers['x-unipay-signature'] ?? request.headers['x-predictstreet-signature'] ?? '') as string;
+      const signature = rawSig.startsWith('sha256=') ? rawSig.slice(7) : rawSig;
       if (!signature) {
         return reply.status(401).send({ ok: false, error: 'missing_signature' });
       }
