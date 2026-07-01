@@ -315,8 +315,8 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
 
     fastify.log.info({ order_id, status, currency, amount }, '[unipesa/callback] received');
 
-    // Unipesa status=1 → success
-    if (Number(status) !== 1) {
+    // Unipesa status=2 → success (confirmed)
+    if (Number(status) !== 2) {
       await fastify.supabase
         .from('transactions')
         .update({ status: 'failed', metadata: { unipesa_status: status } })
