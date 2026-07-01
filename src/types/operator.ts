@@ -14,7 +14,7 @@ export interface Operator {
 
 export interface ApiKey {
   id: string;
-  operator_id: string;
+  merchant_id: string;
   key_prefix: string;
   key_hash: string;
   label: string;
@@ -24,5 +24,5 @@ export interface ApiKey {
 }
 
 export interface ApiKeyWithOperator extends ApiKey {
-  operators: Pick<Operator, 'id' | 'name' | 'email' | 'status' | 'is_admin' | 'webhook_url'>;
+  merchants: Pick<Operator, 'id' | 'name' | 'email' | 'status' | 'is_admin' | 'webhook_url'>;
 }

@@ -21,7 +21,7 @@ import { verifyAdiTransfer } from '../../lib/adi-verify';
 
 /* ── Request body shape ─────────────────────────────────────────────────── */
 interface AdiDepositNotifyBody {
-  payout_id:   string;  // idempotency key
+  payout_id?:  string;  // idempotency key (optional — fallback to tx_hash)
   user_id:     string;  // UniPay user reference
   tx_hash:     string;  // ADI Chain transaction hash
   amount_usdc: number;  // USDC amount (human-readable)
@@ -68,7 +68,7 @@ const adiDepositRoute: FastifyPluginAsync = async (fastify) => {
       schema: {
         body: {
           type: 'object',
-          required: ['payout_id', 'user_id', 'tx_hash', 'amount_usdc', 'amount_cdf', 'timestamp'],
+          required: ['user_id', 'tx_hash', 'amount_usdc', 'amount_cdf', 'timestamp'],
           properties: {
             payout_id:   { type: 'string', minLength: 1 },
             user_id:     { type: 'string', minLength: 1 },
@@ -95,7 +95,8 @@ const adiDepositRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(401).send({ ok: false, error: 'invalid_signature' });
       }
 
-      const { payout_id, user_id, tx_hash, amount_usdc, amount_cdf } = request.body;
+      const { payout_id: rawPayoutId, user_id, tx_hash, amount_usdc, amount_cdf } = request.body;
+      const payout_id = rawPayoutId ?? tx_hash;
 
       /* ── 2. Idempotency check ────────────────────────────────────────── */
       const { data: existing } = await fastify.supabase

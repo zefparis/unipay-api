@@ -50,7 +50,7 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
 
     const { data: keys, error } = await fastify.supabase
       .from('api_keys')
-      .select('*, operators!inner(id, name, email, status, is_admin, webhook_url)')
+      .select('*, merchants!inner(id, name, email, status, is_admin, webhook_url)')
       .eq('key_prefix', prefix)
       .eq('is_active', true);
 
@@ -77,7 +77,7 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
       return reply.status(401).send({ error: 'Unauthorized', message: 'Invalid API key', statusCode: 401 });
     }
 
-    if (matched.operators.status !== 'active') {
+    if (matched.merchants.status !== 'active') {
       return reply.status(403).send({
         error: 'Forbidden',
         message: 'Operator account is not active',
@@ -86,15 +86,15 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
     }
 
     // Attach to request
-    request.operatorId = matched.operator_id;
-    request.isAdmin = matched.operators.is_admin;
+    request.operatorId = matched.merchant_id;
+    request.isAdmin = matched.merchants.is_admin ?? false;
 
     // If admin via API key, verify email is in allowed list
-    if (request.isAdmin && matched.operators.email) {
+    if (request.isAdmin && matched.merchants.email) {
       const allowedEmails = env.ADMIN_EMAILS.split(',').map(e => e.trim().toLowerCase());
-      if (!allowedEmails.includes(matched.operators.email.toLowerCase())) {
+      if (!allowedEmails.includes(matched.merchants.email.toLowerCase())) {
         fastify.log.warn(
-          { email: matched.operators.email, operatorId: matched.operator_id },
+          { email: matched.merchants.email, merchantId: matched.merchant_id },
           'Admin access denied: email not in ADMIN_EMAILS list',
         );
         request.isAdmin = false;
