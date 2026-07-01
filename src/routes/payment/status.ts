@@ -59,7 +59,7 @@ const statusRoute: FastifyPluginAsync = async (fastify) => {
 
       return {
         transaction_id: data.id,
-        status: data.status,
+        status: data.status === 'processing' ? 'pending' : data.status,
         operator: data.operator,
         direction: data.direction,
         amount: data.amount,
