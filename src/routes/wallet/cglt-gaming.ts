@@ -235,7 +235,7 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
         const { rate } = await getSwapRate();
         if (rate > 0) equivalentUsdt = cgltBalance / rate;
       } catch (err) {
-        fastify.log.warn({ err }, '[gaming] swap rate unavailable for equivalent_usdt');
+        fastify.log.debug('[gaming] swap rate unavailable for equivalent_usdt — reserve not configured');
       }
 
       return {
