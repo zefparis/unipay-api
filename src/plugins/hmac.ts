@@ -1,5 +1,5 @@
 import fp from 'fastify-plugin';
-import bcrypt from 'bcryptjs';
+import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import type { ApiKeyWithOperator } from '../types/operator';
 import { env } from '../config/env';
@@ -65,8 +65,9 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
 
     // Find the matching hash (usually 1 candidate)
     let matched: ApiKeyWithOperator | null = null;
+    const hash = crypto.createHash('sha256').update(apiKey).digest('hex');
     for (const k of keys as ApiKeyWithOperator[]) {
-      if (await bcrypt.compare(apiKey, k.key_hash)) {
+      if (hash === k.key_hash) {
         matched = k;
         break;
       }
