@@ -22,11 +22,11 @@ import { verifyAdiTransfer } from '../../lib/adi-verify';
 /* ── Request body shape ─────────────────────────────────────────────────── */
 interface AdiDepositNotifyBody {
   payout_id?:  string;  // idempotency key (optional — fallback to tx_hash)
-  user_id:     string;  // UniPay user reference
-  tx_hash:     string;  // ADI Chain transaction hash
-  amount_usdc: number;  // USDC amount (human-readable)
-  amount_cdf:  number;  // pre-computed CDF credit amount
-  timestamp:   number;  // Unix epoch seconds
+  user_id?:    string;  // UniPay user reference
+  tx_hash?:    string;  // ADI Chain transaction hash
+  amount_usdc?: number; // USDC amount (human-readable)
+  amount_cdf?:  number; // pre-computed CDF credit amount
+  timestamp?:   number; // Unix epoch seconds
 }
 
 /* ── HMAC verification ──────────────────────────────────────────────────── */
@@ -65,20 +65,6 @@ const adiDepositRoute: FastifyPluginAsync = async (fastify) => {
     '/adi/deposit-notify',
     {
       config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
-      schema: {
-        body: {
-          type: 'object',
-          required: ['user_id', 'tx_hash', 'amount_usdc', 'amount_cdf', 'timestamp'],
-          properties: {
-            payout_id:   { type: 'string', minLength: 1 },
-            user_id:     { type: 'string', minLength: 1 },
-            tx_hash:     { type: 'string', pattern: '^0x[0-9a-fA-F]{64}$' },
-            amount_usdc: { type: 'number', minimum: 0.000001 },
-            amount_cdf:  { type: 'number', minimum: 1 },
-            timestamp:   { type: 'number' },
-          },
-        },
-      },
     },
     async (request, reply) => {
       const secret = env.PREDICTSTREET_SERVER_SECRET!;
@@ -96,6 +82,13 @@ const adiDepositRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       const { payout_id: rawPayoutId, user_id, tx_hash, amount_usdc, amount_cdf } = request.body;
+
+      // Manual validation — schema removed because PredictStreet payload format may vary
+      if (!user_id)    return reply.status(400).send({ ok: false, error: 'missing_field', field: 'user_id' });
+      if (!tx_hash)    return reply.status(400).send({ ok: false, error: 'missing_field', field: 'tx_hash' });
+      if (!amount_usdc) return reply.status(400).send({ ok: false, error: 'missing_field', field: 'amount_usdc' });
+      if (!amount_cdf)  return reply.status(400).send({ ok: false, error: 'missing_field', field: 'amount_cdf' });
+
       const payout_id = rawPayoutId ?? tx_hash;
 
       /* ── 2. Idempotency check ────────────────────────────────────────── */

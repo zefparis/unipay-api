@@ -24,5 +24,5 @@ export interface ApiKey {
 }
 
 export interface ApiKeyWithOperator extends ApiKey {
-  merchants: Pick<Operator, 'id' | 'name' | 'email' | 'status' | 'is_admin' | 'webhook_url'>;
+  merchants: Pick<Operator, 'id' | 'name' | 'email' | 'status' | 'webhook_url'>;
 }

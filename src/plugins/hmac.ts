@@ -50,7 +50,7 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
 
     const { data: keys, error } = await fastify.supabase
       .from('api_keys')
-      .select('*, merchants!inner(id, name, email, status, is_admin, webhook_url)')
+      .select('*, merchants!inner(id, name, email, status, webhook_url)')
       .eq('key_prefix', prefix)
       .eq('is_active', true);
 
@@ -87,7 +87,7 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
 
     // Attach to request
     request.operatorId = matched.merchant_id;
-    request.isAdmin = matched.merchants.is_admin ?? false;
+    request.isAdmin = false; // merchants table has no is_admin column
 
     // If admin via API key, verify email is in allowed list
     if (request.isAdmin && matched.merchants.email) {
