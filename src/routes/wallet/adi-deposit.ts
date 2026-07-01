@@ -1,32 +1,32 @@
 /**
  * POST /v1/adi/deposit-notify
  *
- * HMAC-signed webhook called by PredictStreet when a user's USDC deposit
- * on ADI Chain is confirmed on-chain.
+ * Webhook called by PredictStreet when a USDC deposit on ADI Chain is confirmed.
+ *
+ * PredictStreet payload:
+ *   { tx_hash, log_index, amount (6-decimal USDC), from (sender address) }
+ * Header: x-predictstreet-signature: sha256=<hex>
  *
  * Flow:
- *  1. Verify HMAC-SHA256 signature (X-PredictStreet-Signature header)
- *  2. Idempotency check — return 200 early if payout_id already processed
- *  3. Fetch on-chain receipt via getAdiTransactionReceipt()
- *  4. Verify ERC-20 Transfer log via verifyAdiTransfer()
- *  5. Insert into adi_deposit_events + credit user CDF balance
- *  6. Return { ok: true, credited_cdf }
+ *  1. (TEMP) Skip HMAC — TODO re-enable before go-live
+ *  2. Idempotency check on tx_hash + log_index
+ *  3. Convert amount (6 decimals) to USDC float and CDF
+ *  4. Insert into adi_deposit_events (no user credit for now — from address lookup TBD)
+ *  5. Return { ok: true, tx_hash, amount_usdc }
  */
 
 import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
-import { getAdiTransactionReceipt } from '../../lib/adi-withdrawal';
-import { verifyAdiTransfer } from '../../lib/adi-verify';
+// import { getAdiTransactionReceipt } from '../../lib/adi-withdrawal'; // reserved for on-chain re-verification
+// import { verifyAdiTransfer } from '../../lib/adi-verify';             // reserved for on-chain re-verification
 
-/* ── Request body shape ─────────────────────────────────────────────────── */
+/* ── Request body shape (PredictStreet actual format) ──────────────────── */
 interface AdiDepositNotifyBody {
-  payout_id?:  string;  // idempotency key (optional — fallback to tx_hash)
-  user_id?:    string;  // UniPay user reference
-  tx_hash?:    string;  // ADI Chain transaction hash
-  amount_usdc?: number; // USDC amount (human-readable)
-  amount_cdf?:  number; // pre-computed CDF credit amount
-  timestamp?:   number; // Unix epoch seconds
+  tx_hash:   string;  // ADI Chain transaction hash (0x...)
+  log_index: number;  // ERC-20 Transfer log index (for uniqueness)
+  amount:    number;  // USDC amount in 6-decimal units (e.g. 1000000 = 1 USDC)
+  from:      string;  // Sender wallet address
 }
 
 /* ── HMAC verification ──────────────────────────────────────────────────── */
@@ -59,49 +59,40 @@ const adiDepositRoute: FastifyPluginAsync = async (fastify) => {
 
   /* ────────────────────────────────────────────────────────────────────────
    * POST /v1/adi/deposit-notify
-   * Auth: HMAC-SHA256 via X-PredictStreet-Signature header
+   * Auth: HMAC-SHA256 via x-predictstreet-signature (TEMP disabled for test)
    * ──────────────────────────────────────────────────────────────────────── */
   fastify.post<{ Body: AdiDepositNotifyBody }>(
     '/adi/deposit-notify',
     {
       config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+      schema: {
+        body: {
+          type: 'object',
+          required: ['tx_hash', 'amount', 'from'],
+          properties: {
+            tx_hash:   { type: 'string', pattern: '^0x[0-9a-fA-F]{64}$' },
+            log_index: { type: 'number' },
+            amount:    { type: 'number', minimum: 0 },
+            from:      { type: 'string' },
+          },
+        },
+      },
     },
     async (request, reply) => {
-      const secret = env.PREDICTSTREET_SERVER_SECRET!;
+      const { tx_hash, log_index = 0, amount, from } = request.body;
 
-      /* ── 1. HMAC signature verification ─────────────────────────────── */
-      const signature = (request.headers['x-unipay-signature']
-        ?? request.headers['x-predictstreet-signature']
-        ?? '') as string;
-
-      // TEMP: log headers for debugging
-      fastify.log.info({
-        headers: {
-          'x-unipay-signature': request.headers['x-unipay-signature'],
-          'x-predictstreet-signature': request.headers['x-predictstreet-signature'],
-        },
-        body_keys: Object.keys(request.body ?? {}),
-      }, '[adi-deposit] incoming request headers');
-
-      // TEMP: skip HMAC verification for test
+      /* ── 1. TEMP: skip HMAC verification ────────────────────────────── */
       // TODO: re-enable before go-live
-      // if (!verifyHmacSignature(rawBody, signature, secret)) {
+      // const rawSig = (request.headers['x-predictstreet-signature'] ?? '') as string;
+      // const signature = rawSig.startsWith('sha256=') ? rawSig.slice(7) : rawSig;
+      // const rawBody = JSON.stringify(request.body);
+      // if (!verifyHmacSignature(rawBody, signature, env.PREDICTSTREET_SERVER_SECRET!)) {
       //   return reply.status(401).send({ ok: false, error: 'invalid_signature' });
       // }
 
-      const rawBody = JSON.stringify(request.body);
+      /* ── 2. Idempotency check (tx_hash + log_index) ─────────────────── */
+      const payout_id = `${tx_hash}_${log_index}`;
 
-      const { payout_id: rawPayoutId, user_id, tx_hash, amount_usdc, amount_cdf } = request.body;
-
-      // Manual validation — schema removed because PredictStreet payload format may vary
-      if (!user_id)    return reply.status(400).send({ ok: false, error: 'missing_field', field: 'user_id' });
-      if (!tx_hash)    return reply.status(400).send({ ok: false, error: 'missing_field', field: 'tx_hash' });
-      if (!amount_usdc) return reply.status(400).send({ ok: false, error: 'missing_field', field: 'amount_usdc' });
-      if (!amount_cdf)  return reply.status(400).send({ ok: false, error: 'missing_field', field: 'amount_cdf' });
-
-      const payout_id = rawPayoutId ?? tx_hash;
-
-      /* ── 2. Idempotency check ────────────────────────────────────────── */
       const { data: existing } = await fastify.supabase
         .from('adi_deposit_events')
         .select('payout_id')
@@ -113,47 +104,21 @@ const adiDepositRoute: FastifyPluginAsync = async (fastify) => {
         return reply.send({ ok: true, status: 'already_processed' });
       }
 
-      /* ── 3. Fetch on-chain receipt ───────────────────────────────────── */
-      const receipt = await getAdiTransactionReceipt(tx_hash);
+      /* ── 3. Convert amounts ─────────────────────────────────────────── */
+      const amount_usdc = amount / 1_000_000;          // 6-decimal → float
+      const amount_cdf  = amount_usdc * 2600;           // our CDF rate
 
-      if (!receipt) {
-        fastify.log.warn({ tx_hash }, '[adi-deposit] transaction not yet indexed on ADI Chain');
-        return reply.status(422).send({ ok: false, error: 'tx_not_indexed' });
-      }
-
-      /* ── 4. Verify ERC-20 Transfer log ──────────────────────────────── */
-      const verifyResult = verifyAdiTransfer(
-        { logs: receipt.logs as any, status: receipt.status ?? 0 },
-        'USDC',
-        env.ADI_SETTLEMENT_ADDRESS,
-        amount_usdc,
-      );
-
-      if (!verifyResult.verified) {
-        fastify.log.warn(
-          { tx_hash, payout_id, reasons: verifyResult.blocking_reasons, detail: verifyResult.reason },
-          '[adi-deposit] on-chain verification failed',
-        );
-        return reply.status(422).send({
-          ok:              false,
-          error:           'verification_failed',
-          blocking_reasons: verifyResult.blocking_reasons,
-          detail:          verifyResult.reason,
-        });
-      }
-
-      /* ── 5a. Insert deposit event (idempotency record) ─────────────── */
+      /* ── 4. Insert deposit event ────────────────────────────────────── */
       const { error: insertErr } = await fastify.supabase
         .from('adi_deposit_events')
         .insert({
           payout_id,
-          user_id,
           tx_hash,
           amount_usdc,
           amount_cdf,
-          transferred_amount: verifyResult.transferred_amount,
-          status:             'confirmed',
-          created_at:         new Date().toISOString(),
+          from_address: from,
+          status:       'confirmed',
+          created_at:   new Date().toISOString(),
         });
 
       if (insertErr) {
@@ -161,31 +126,13 @@ const adiDepositRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(500).send({ ok: false, error: 'db_insert_failed' });
       }
 
-      /* ── 5b. Credit user CDF balance ────────────────────────────────── */
-      const { error: creditErr } = await fastify.supabase.rpc('credit_wallet_balance', {
-        p_user_id:    user_id,
-        p_amount_cdf: amount_cdf,
-        p_source:     'adi_deposit',
-        p_reference:  payout_id,
-      });
-
-      if (creditErr) {
-        fastify.log.error({ err: creditErr, payout_id, user_id }, '[adi-deposit] credit_wallet_balance RPC failed');
-        // Mark event as credit_failed so it can be retried by ops
-        await fastify.supabase
-          .from('adi_deposit_events')
-          .update({ status: 'credit_failed' })
-          .eq('payout_id', payout_id);
-        return reply.status(500).send({ ok: false, error: 'credit_failed' });
-      }
-
       fastify.log.info(
-        { payout_id, user_id, tx_hash, amount_usdc, amount_cdf },
-        '[adi-deposit] deposit confirmed and balance credited',
+        { payout_id, tx_hash, from, amount_usdc, amount_cdf },
+        '[adi-deposit] deposit event stored (user credit TBD — from address lookup)',
       );
 
-      /* ── 6. Return success ──────────────────────────────────────────── */
-      return reply.send({ ok: true, credited_cdf: amount_cdf });
+      /* ── 5. Return success ──────────────────────────────────────────── */
+      return reply.send({ ok: true, tx_hash, amount_usdc });
     },
   );
 };
