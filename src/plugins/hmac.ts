@@ -25,6 +25,8 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
     if (urlPath.startsWith('/api/wallet/')) return;
     // Internal routes are authenticated via x-api-key (GAMING_API_KEY) only
     if (urlPath.startsWith('/v1/internal/')) return;
+    // ADI/PredictStreet webhook routes use their own HMAC auth
+    if (urlPath.startsWith('/v1/adi/')) return;
     // PredictStreet routes use their own Bearer token auth
     if (urlPath.startsWith('/api/predictstreet/')) return;
 
