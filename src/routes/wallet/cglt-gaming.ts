@@ -4,6 +4,7 @@ import { env } from '../../config/env';
 import { mintCGLT, getSwapRate } from '../../services/blockchain';
 import { mintWCGLT } from '../../services/bridge';
 import { requireWallet } from '../../utils/wallet-jwt';
+import { findOrCreateWalletByPhone } from '../../utils/wallet-provision';
 
 const CGLT_PER_WCGLT = parseInt(process.env.CGLT_PER_WCGLT ?? '500');
 
@@ -62,14 +63,10 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
 
       const { phone, amount, game_ref } = request.body;
 
-      const { data: wallet } = await fastify.supabase
-        .from('wallet_users')
-        .select('id, phone, is_active, cglt_balance')
-        .eq('phone', phone)
-        .maybeSingle();
+      const wallet = await findOrCreateWalletByPhone(fastify.supabase, phone, fastify.log);
 
       if (!wallet) {
-        return reply.status(404).send({ error: 'WALLET_NOT_FOUND', statusCode: 404 });
+        return reply.status(500).send({ error: 'WALLET_LOOKUP_FAILED', statusCode: 500 });
       }
       if (!wallet.is_active) {
         return reply.status(403).send({ error: 'Account is suspended', statusCode: 403 });
@@ -143,14 +140,10 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
 
       const { phone, amount, game_ref, tx_ref } = request.body;
 
-      const { data: wallet } = await fastify.supabase
-        .from('wallet_users')
-        .select('id, phone, is_active, cglt_balance, blockchain_address')
-        .eq('phone', phone)
-        .maybeSingle();
+      const wallet = await findOrCreateWalletByPhone(fastify.supabase, phone, fastify.log);
 
       if (!wallet) {
-        return reply.status(404).send({ error: 'WALLET_NOT_FOUND', statusCode: 404 });
+        return reply.status(500).send({ error: 'WALLET_LOOKUP_FAILED', statusCode: 500 });
       }
       if (!wallet.is_active) {
         return reply.status(403).send({ error: 'Account is suspended', statusCode: 403 });
@@ -219,14 +212,10 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
 
       const { phone } = request.query;
 
-      const { data: wallet } = await fastify.supabase
-        .from('wallet_users')
-        .select('phone, cglt_balance')
-        .eq('phone', phone)
-        .maybeSingle();
+      const wallet = await findOrCreateWalletByPhone(fastify.supabase, phone, fastify.log);
 
       if (!wallet) {
-        return reply.status(404).send({ error: 'WALLET_NOT_FOUND', statusCode: 404 });
+        return reply.status(500).send({ error: 'WALLET_LOOKUP_FAILED', statusCode: 500 });
       }
 
       const cgltBalance = Number(wallet.cglt_balance ?? 0);
