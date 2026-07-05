@@ -2,7 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import '@fastify/multipart';
 import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
-import { enrollPayGuard } from '../../services/payguard';
+import { enrollPayGuard, type CognitiveBaseline } from '../../services/payguard';
 import { fetchImageAsBase64 } from '../../utils/storage';
 
 const walletKycRoute: FastifyPluginAsync = async (fastify) => {
@@ -34,6 +34,7 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       let doc_type = '', full_name = '', birth_date = '', doc_number = '';
+      let cognitiveData: CognitiveBaseline | null = null;
       const files: Record<string, Buffer> = {};
 
       try {
@@ -45,6 +46,9 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
             if (part.fieldname === 'full_name')  full_name  = val;
             if (part.fieldname === 'birth_date') birth_date = val;
             if (part.fieldname === 'doc_number') doc_number = val;
+            if (part.fieldname === 'cognitive_data') {
+              try { cognitiveData = JSON.parse(val) as CognitiveBaseline; } catch { /* ignore invalid */ }
+            }
           } else {
             const chunks: Buffer[] = [];
             for await (const chunk of part.file) chunks.push(Buffer.from(chunk));
@@ -136,13 +140,15 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
           selfie_b64: selfieBuffer,
           first_name: firstName,
           last_name: lastName,
+          cognitive_baseline: cognitiveData ?? undefined,
         });
 
         if (payguardResult.confidence >= 85) {
+          const kycLevel = cognitiveData ? 2 : 1;
           await fastify.supabase
             .from('wallet_users')
             .update({
-              kyc_level: 1,
+              kyc_level: kycLevel,
               is_verified: true,
               payguard_student_id: payguardResult.student_id,
             })
@@ -153,12 +159,12 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
             .update({
               status: 'approved',
               payguard_confidence: payguardResult.confidence,
-              payguard_decision: 'auto_approved',
+              payguard_decision: cognitiveData ? 'auto_approved_cognitive' : 'auto_approved',
               reviewed_at: new Date().toISOString(),
             })
             .eq('id', submissionId);
 
-          request.log.info({ walletUserId, confidence: payguardResult.confidence }, '[kyc] auto-approved by PayGuard');
+          request.log.info({ walletUserId, confidence: payguardResult.confidence, kycLevel: cognitiveData ? 2 : 1 }, '[kyc] auto-approved by PayGuard');
         } else {
           await fastify.supabase
             .from('kyc_submissions')
@@ -176,12 +182,14 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
       fastify.log.info({ walletId, submissionId }, '[kyc] submitted');
 
       const confidence = payguardResult?.confidence ?? null;
+      const kycLevel = (confidence ?? 0) >= 85 && cognitiveData ? 2 : (confidence ?? 0) >= 85 ? 1 : undefined;
 
       return reply.status(201).send({
         submission_id: submissionId,
         status: (confidence ?? 0) >= 85 ? 'approved' : 'pending',
         confidence,
         auto_approved: (confidence ?? 0) >= 85,
+        kyc_level: kycLevel,
       });
     },
   );

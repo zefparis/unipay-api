@@ -2,11 +2,32 @@ const PAYGUARD_API = 'https://hybrid-vector-api-m5xt.onrender.com';
 const PAYGUARD_API_KEY = process.env.PAYGUARD_API_KEY!;
 const PAYGUARD_TENANT = 'unipay-congo';
 
+export interface CognitiveBaseline {
+  reflex_ms: number;
+  stroop_accuracy: number;
+  stroop_hits: number;
+  stroop_rounds: number;
+  digit_span_score: number;
+  vocal_embedding: number[];
+  vocal_quality: number;
+}
+
 export async function enrollPayGuard(params: {
   selfie_b64: string;
   first_name: string;
   last_name: string;
+  cognitive_baseline?: CognitiveBaseline;
 }): Promise<{ student_id: string; confidence: number }> {
+  const cognitive = params.cognitive_baseline ?? {
+    reflex_ms: 0,
+    stroop_accuracy: 0,
+    stroop_hits: 0,
+    stroop_rounds: 0,
+    digit_span_score: 0,
+    vocal_embedding: [],
+    vocal_quality: 0,
+  };
+
   const res = await fetch(`${PAYGUARD_API}/payguard/enroll`, {
     method: 'POST',
     headers: {
@@ -15,15 +36,11 @@ export async function enrollPayGuard(params: {
       Origin: 'https://unipay-api.onrender.com',
     },
     body: JSON.stringify({
-      ...params,
+      selfie_b64: params.selfie_b64,
+      first_name: params.first_name,
+      last_name: params.last_name,
       tenant_id: PAYGUARD_TENANT,
-      cognitive_baseline: {
-        vocal_embedding: [],
-        vocal_quality: 1,
-        digit_span_score: 0.8,
-        stroop_accuracy: 0.8,
-        reflex_ms: 300,
-      },
+      cognitive_baseline: cognitive,
     }),
   });
   if (!res.ok) throw new Error(`PayGuard enroll failed: ${res.status}`);
