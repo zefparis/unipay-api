@@ -224,6 +224,100 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
     },
   );
 
+  /* ── POST /v1/wallet/kyc/upgrade-cognitive ──────────────────
+     Upgrades a level-1 user to level 2 using cognitive test results.
+     Reuses the selfie already stored from the initial KYC submission.
+     Body: { cognitive_data: CognitiveBaseline }
+  ───────────────────────────────────────────────────────────── */
+  fastify.post(
+    '/wallet/kyc/upgrade-cognitive',
+    async (request, reply) => {
+      if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth service not configured' });
+      const wp = requireWallet(request.headers.authorization, env.JWT_SECRET);
+      if (!wp) return reply.status(401).send({ error: 'Unauthorized' });
+
+      const walletId = wp.wallet_id;
+
+      const { data: user } = await fastify.supabase
+        .from('wallet_users')
+        .select('kyc_level, is_verified')
+        .eq('id', walletId)
+        .maybeSingle();
+
+      if (!user) return reply.status(404).send({ error: 'User not found' });
+      if (user.kyc_level !== 1) {
+        return reply.status(409).send({ error: 'Cognitive upgrade is only available for KYC level 1 users' });
+      }
+
+      const body = request.body as { cognitive_data?: CognitiveBaseline };
+      if (!body?.cognitive_data) {
+        return reply.status(400).send({ error: 'cognitive_data is required' });
+      }
+
+      const { data: sub } = await fastify.supabase
+        .from('kyc_submissions')
+        .select('selfie_url, full_name')
+        .eq('wallet_user_id', walletId)
+        .eq('status', 'approved')
+        .order('submitted_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!sub?.selfie_url || !sub?.full_name) {
+        return reply.status(409).send({ error: 'No approved KYC submission found. Please complete KYC level 1 first.' });
+      }
+
+      try {
+        const { data: signed, error: signedErr } = await fastify.supabase.storage
+          .from('kyc-docs')
+          .createSignedUrl(sub.selfie_url, 300);
+
+        if (signedErr || !signed?.signedUrl) {
+          throw signedErr ?? new Error('Selfie signed URL failed');
+        }
+
+        const selfieB64 = await fetchImageAsBase64(signed.signedUrl);
+        const [firstName, ...lastNameParts] = sub.full_name.trim().split(/\s+/);
+        const lastName = lastNameParts.join(' ') || sub.full_name;
+
+        const payguardResult = await enrollPayGuard({
+          selfie_b64: selfieB64,
+          first_name: firstName,
+          last_name: lastName,
+          cognitive_baseline: body.cognitive_data,
+        });
+
+        if (payguardResult.confidence >= 85) {
+          await fastify.supabase
+            .from('wallet_users')
+            .update({
+              kyc_level: 2,
+              payguard_student_id: payguardResult.student_id,
+            })
+            .eq('id', walletId);
+
+          request.log.info({ walletId, confidence: payguardResult.confidence }, '[kyc] cognitive upgrade approved → level 2');
+
+          return reply.send({
+            success: true,
+            kyc_level: 2,
+            confidence: payguardResult.confidence,
+          });
+        } else {
+          request.log.info({ walletId, confidence: payguardResult.confidence }, '[kyc] cognitive upgrade rejected (confidence too low)');
+          return reply.status(422).send({
+            success: false,
+            error: `Confiance insuffisante (${payguardResult.confidence}%). Niveau 2 non attribué.`,
+            confidence: payguardResult.confidence,
+          });
+        }
+      } catch (err) {
+        request.log.error({ err, walletId }, '[kyc] cognitive upgrade failed');
+        return reply.status(500).send({ error: 'Upgrade failed. Please try again.' });
+      }
+    },
+  );
+
 };
 
 export default walletKycRoute;
