@@ -109,6 +109,9 @@ const envSchema = z.object({
   ADI_USDC_CONTRACT:     z.string().regex(/^0x[0-9a-fA-F]{40}$/).default('0x9cb8142aEBBcdc60AF7c97Af897A67A8f3CA71C2'),
   ADI_SETTLEMENT_ADDRESS: z.string().regex(/^0x[0-9a-fA-F]{40}$/).default('0x35A32378Ce2321D62c083B7Ae4fe684c14f83Ff0'),
 
+  // PayGuard (Hybrid Vector API) — server-to-server API key for KYC enroll/verify
+  PAYGUARD_API_KEY: z.string().min(16).optional(),
+
   // PredictStreet server-to-server HMAC secret (deposit-notify webhook)
   PREDICTSTREET_SERVER_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(16).optional()),
   // PredictStreet payout webhook — we POST here to request a USDC payout

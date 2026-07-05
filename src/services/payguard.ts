@@ -1,5 +1,5 @@
 const PAYGUARD_API = 'https://hybrid-vector-api-m5xt.onrender.com';
-const PAYGUARD_API_KEY = process.env.PAYGUARD_API_KEY ?? 'unipay-congo-key-2026';
+const PAYGUARD_API_KEY = process.env.PAYGUARD_API_KEY!;
 const PAYGUARD_TENANT = 'unipay-congo';
 
 export async function enrollPayGuard(params: {
