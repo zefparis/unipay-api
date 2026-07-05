@@ -417,7 +417,7 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
     let q = fastify.supabase
       .from('kyc_submissions')
       .select(
-        'id, wallet_user_id, status, doc_type, full_name, birth_date, doc_number, doc_front_url, doc_back_url, selfie_url, reviewer_note, submitted_at, reviewed_at, payguard_confidence, payguard_decision, wallet_users(id, phone, full_name, balance_cdf, kyc_level, is_verified)',
+        'id, wallet_user_id, status, doc_type, full_name, birth_date, doc_number, doc_front_url, doc_back_url, selfie_url, reviewer_note, submitted_at, reviewed_at, payguard_confidence, payguard_decision, submission_type, wallet_users(id, phone, full_name, balance_cdf, kyc_level, is_verified)',
         { count: 'exact' },
       )
       .order('submitted_at', { ascending: false })
@@ -471,7 +471,7 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
     const [submissionRes, userRes] = await Promise.all([
       fastify.supabase
         .from('kyc_submissions')
-        .update({ status: 'approved', reviewer_note: null, reviewed_at: now })
+        .update({ status: 'approved', reviewer_note: null, reviewed_at: now, payguard_decision: 'manual_approved' })
         .eq('id', id),
       fastify.supabase
         .from('wallet_users')

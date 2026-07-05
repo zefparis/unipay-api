@@ -267,6 +267,23 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(409).send({ error: 'No approved KYC submission found. Please complete KYC level 1 first.' });
       }
 
+      // Insert audit row for this upgrade attempt
+      const { data: upgradeSub } = await fastify.supabase
+        .from('kyc_submissions')
+        .insert({
+          wallet_user_id: walletId,
+          status: 'pending',
+          doc_type: 'cognitive_upgrade',
+          full_name: sub.full_name,
+          selfie_url: sub.selfie_url,
+          submission_type: 'cognitive_upgrade',
+          submitted_at: new Date().toISOString(),
+        })
+        .select('id')
+        .single();
+
+      const upgradeId = upgradeSub?.id;
+
       try {
         const { data: signed, error: signedErr } = await fastify.supabase.storage
           .from('kyc-docs')
@@ -296,6 +313,18 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
             })
             .eq('id', walletId);
 
+          if (upgradeId) {
+            await fastify.supabase
+              .from('kyc_submissions')
+              .update({
+                status: 'approved',
+                payguard_confidence: payguardResult.confidence,
+                payguard_decision: 'cognitive_upgrade_approved',
+                reviewed_at: new Date().toISOString(),
+              })
+              .eq('id', upgradeId);
+          }
+
           request.log.info({ walletId, confidence: payguardResult.confidence }, '[kyc] cognitive upgrade approved → level 2');
 
           return reply.send({
@@ -304,16 +333,45 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
             confidence: payguardResult.confidence,
           });
         } else {
+          if (upgradeId) {
+            await fastify.supabase
+              .from('kyc_submissions')
+              .update({
+                status: 'rejected',
+                payguard_confidence: payguardResult.confidence,
+                payguard_decision: 'cognitive_upgrade_insufficient',
+                reviewer_note: `Confiance insuffisante (${payguardResult.confidence}%)`,
+                reviewed_at: new Date().toISOString(),
+              })
+              .eq('id', upgradeId);
+          }
+
           request.log.info({ walletId, confidence: payguardResult.confidence }, '[kyc] cognitive upgrade rejected (confidence too low)');
           return reply.status(422).send({
             success: false,
-            error: `Confiance insuffisante (${payguardResult.confidence}%). Niveau 2 non attribué.`,
+            error: `Score insuffisant (${Math.round(payguardResult.confidence)}%). Réessayez ou contactez le support.`,
             confidence: payguardResult.confidence,
           });
         }
       } catch (err) {
-        request.log.error({ err, walletId }, '[kyc] cognitive upgrade failed');
-        return reply.status(500).send({ error: 'Upgrade failed. Please try again.' });
+        request.log.error({ err, walletId }, '[kyc] cognitive upgrade failed (PayGuard error)');
+
+        if (upgradeId) {
+          await fastify.supabase
+            .from('kyc_submissions')
+            .update({
+              status: 'failed',
+              payguard_decision: 'cognitive_upgrade_error',
+              reviewer_note: err instanceof Error ? err.message : 'Unknown error',
+              reviewed_at: new Date().toISOString(),
+            })
+            .eq('id', upgradeId);
+        }
+
+        return reply.status(503).send({
+          success: false,
+          error: 'Service de vérification temporairement indisponible, réessayez dans quelques instants.',
+        });
       }
     },
   );
