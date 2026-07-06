@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import multipart from '@fastify/multipart';
+import cors from '@fastify/cors';
 import crypto from 'node:crypto';
 import { env } from './config/env';
 
@@ -54,6 +55,7 @@ import adiPayoutRoute from './routes/wallet/adi-payout';
 import adiRefundRoute from './routes/wallet/adi-refund';
 import adminAdiRoute from './routes/admin/adi';
 import adminPredictStreetRoute from './routes/admin/predictstreet';
+import adminDevExpensesRoute from './routes/admin/dev-expenses';
 
 export async function buildServer() {
   const server = Fastify({
@@ -180,8 +182,24 @@ export async function buildServer() {
       v1.register(adiRefundRoute);
       v1.register(adminAdiRoute);
       v1.register(adminPredictStreetRoute);
+      v1.register(adminDevExpensesRoute);
     },
     { prefix: '/v1' },
+  );
+
+  /* ──────────────────────────────────────────────────────────────────────────
+   * GET /dev-expenses/report/:token — PUBLIC, token-protected, rate-limited.
+   * Scoped CORS: only the Netlify public report domain is allowed.
+   * ────────────────────────────────────────────────────────────────────────── */
+  await server.register(
+    async (instance) => {
+      await instance.register(cors, {
+        origin: env.DEV_EXPENSES_PUBLIC_ORIGIN || 'https://dev-expenses.netlify.app',
+        methods: ['GET', 'OPTIONS'],
+        credentials: false,
+      });
+      instance.register(adminDevExpensesRoute);
+    },
   );
 
   /* ──────────────────────────────────────────────────────────────────────────

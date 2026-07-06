@@ -29,6 +29,8 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
     if (urlPath.startsWith('/v1/adi/')) return;
     // PredictStreet routes use their own Bearer token auth
     if (urlPath.startsWith('/api/predictstreet/')) return;
+    // Dev Expenses public report — token-protected, no admin auth
+    if (urlPath.startsWith('/dev-expenses/report/')) return;
 
     // Admin secret bypass — avoids API key requirement for admin tooling
     const adminSecretHeader = request.headers['x-admin-secret'];

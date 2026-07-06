@@ -27,6 +27,7 @@
     "ethers": "^6.13.5",
     "fastify": "^4.27.0",
     "fastify-plugin": "^4.5.1",
+    "pdfkit": "^0.15.2",
     "stripe": "^22.2.0",
     "typescript": "^5.4.5",
     "undici": "^5.29.0",
@@ -34,6 +35,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/pdfkit": "^0.13.9",
     "pino-pretty": "^11.2.1",
     "solc": "^0.8.20",
     "tsx": "^4.15.7"

@@ -127,6 +127,18 @@ const envSchema = z.object({
   CDP_API_KEY_ID:     z.string().min(1).optional(),
   CDP_API_KEY_SECRET: z.string().min(1).optional(),
   CDP_WALLET_SECRET:  z.string().min(1).optional(),
+
+  // ── Dev Expenses Tracker ───────────────────────────────────
+  // Anthropic Console API key for usage cost pull
+  ANTHROPIC_ADMIN_API_KEY: z.string().min(1).optional(),
+  // Vercel team billing API
+  VERCEL_API_TOKEN: z.string().min(1).optional(),
+  VERCEL_TEAM_ID:   z.string().min(1).optional(),
+  // Public report page origin (Netlify) — used for CORS whitelist + share URL
+  DEV_EXPENSES_PUBLIC_ORIGIN: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().url().optional(),
+  ).default('https://dev-expenses.netlify.app'),
 });
 
 const result = envSchema.safeParse(process.env);
