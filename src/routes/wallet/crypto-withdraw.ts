@@ -8,7 +8,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
-import { sendUsdt } from '../../lib/bsc-withdrawal';
+import { sendUsdt, isContractAddress } from '../../lib/bsc-withdrawal';
 
 /* ── BSC only — TRC20/ERC20 not yet available ────────────────────────── */
 const SUPPORTED_NETWORKS = ['BSC'] as const;
@@ -19,6 +19,13 @@ const NETWORK_FEE: Record<SupportedNetwork, number> = { BSC: 0.5 };
 
 /* ── Address regex (BSC = EVM) ─────────────────────────────────────────── */
 const EVM_ADDR = /^0x[a-fA-F0-9]{40}$/;
+
+/* ── Forbidden destination addresses (lowercase) ──────────────────────── */
+const FORBIDDEN_ADDRESSES = new Set([
+  '0x55d398326f99059ff775485246999027b3197955', // USDT BEP-20 contract
+  '0x0000000000000000000000000000000000000000', // zero address
+  env.USDT_BSC_CONTRACT?.toLowerCase(),          // safety: always block configured USDT contract
+].filter(Boolean) as string[]);
 
 /* ── Minimum net withdrawal (USDT) ────────────────────────────────────── */
 const MIN_NET = 5;
@@ -72,6 +79,41 @@ const walletCryptoWithdrawRoute: FastifyPluginAsync = async (fastify) => {
           error:   'INVALID_ADDRESS',
           message: 'EVM address must be a valid 0x hex address (42 chars)',
         });
+      }
+
+      /* ── 2b. Block forbidden addresses (token contracts, zero address) ── */
+      const normalizedDest = destination_address.toLowerCase();
+
+      if (FORBIDDEN_ADDRESSES.has(normalizedDest)) {
+        fastify.log.warn({ walletId, destination_address }, 'Withdrawal blocked — forbidden address');
+        return reply.status(400).send({
+          error:   'FORBIDDEN_DESTINATION',
+          message: 'This address cannot receive withdrawals (token contract or null address)',
+        });
+      }
+
+      /* ── 2c. Block smart contract destinations (on-chain check) ─────── */
+      // Whitelist check: exchange deposit addresses that ARE contracts
+      const { data: whitelisted } = await fastify.supabase
+        .from('whitelisted_contract_destinations')
+        .select('address')
+        .eq('address', normalizedDest)
+        .maybeSingle();
+
+      if (!whitelisted) {
+        try {
+          const isContract = await isContractAddress(destination_address);
+          if (isContract) {
+            fastify.log.warn({ walletId, destination_address }, 'Withdrawal blocked — destination is a contract');
+            return reply.status(400).send({
+              error:   'CONTRACT_DESTINATION_BLOCKED',
+              message: 'Withdrawals to smart contract addresses are not supported. Please provide a wallet (EOA) address.',
+            });
+          }
+        } catch (err) {
+          fastify.log.error({ err, destination_address }, 'isContractAddress check failed');
+          return reply.status(503).send({ error: 'Could not verify destination address on-chain' });
+        }
       }
 
       /* ── Check hot wallet is configured ────────────────────────────── */

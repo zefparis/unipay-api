@@ -18,8 +18,10 @@ COMMENT ON COLUMN public.dev_expenses.archived_at IS
   'Timestamp at which the expense was archived. NULL when archived=false.';
 
 -- ── 1b. Refresh view to include new archived columns ───────
--- The view uses de.* so it must be recreated to pick up new columns.
-CREATE OR REPLACE VIEW public.dev_expenses_with_status AS
+-- DROP + CREATE (not CREATE OR REPLACE) because de.* now expands with
+-- 2 extra columns, shifting is_overdue's position — PG rejects that.
+DROP VIEW IF EXISTS public.dev_expenses_with_status;
+CREATE VIEW public.dev_expenses_with_status AS
 SELECT
   de.*,
   (
@@ -79,3 +81,6 @@ CREATE INDEX IF NOT EXISTS idx_quotes_creditor_id
 CREATE INDEX IF NOT EXISTS idx_quotes_sent_valid_until
   ON public.quotes (valid_until)
   WHERE status = 'sent';
+
+-- ── 5. Refresh PostgREST schema cache ───────────────────────
+NOTIFY pgrst, 'reload schema';

@@ -28,6 +28,19 @@ function getHotWallet(): ethers.Wallet {
   return new ethers.Wallet(key, getProvider());
 }
 
+/* ── Address guard ───────────────────────────────────────────────────────── */
+
+/**
+ * Returns true if `address` is a smart contract (has bytecode), false if it's
+ * an EOA (externally owned account). Uses eth_getCode which returns '0x' for
+ * plain wallets and non-empty hex for any contract.
+ */
+export async function isContractAddress(address: string): Promise<boolean> {
+  const provider = getProvider();
+  const code = await provider.getCode(address);
+  return code !== '0x' && code !== '0x0';
+}
+
 /* ── Public API ─────────────────────────────────────────────────────────── */
 
 export interface HotWalletBalances {
