@@ -1,7 +1,10 @@
-# Dev Expenses Tracker v2 — Generalised Creditor/Invoice Registry
+# Dev Expenses Tracker v3 — Devis, Archivage & Cycle complet
 
-> **Évolution de la v1** (5 cloud services fixes) vers un registre créanciers/factures
-> généraliste : tout type de créancier, catégorie libre, référence projet, date d'échéance.
+> **Évolution de la v2** : ajout des devis (estimations en amont de la facturation),
+> archivage soft des dépenses payées, et vue « À payer » segmentée en 3 groupes.
+>
+> **Cycle complet** : Devis → Acceptation → Dev Expense (pending) → Paiement → Archive
+>
 > Financé par tekkbridge, réglé par Benoît au nom de tekkbridge.
 
 ---
@@ -25,7 +28,7 @@
 | `active` | bool | Soft-delete : `false` = désactivé |
 | `created_at` | timestamptz | — |
 
-#### `dev_expenses` (évolué, migration `20260706120000`)
+#### `dev_expenses` (évolué, migrations `20260706120000` + `20260706150000`)
 
 Colonnes ajoutées / modifiées :
 
@@ -40,6 +43,31 @@ Colonnes ajoutées / modifiées :
 | `invoice_number` | max 100 chars |
 | `funded_by` | default `'tekkbridge'` |
 | `paid_by` | default `'benoit'` |
+| `archived` | boolean NOT NULL default false (v3) |
+| `archived_at` | timestamptz, NULL quand non archivé (v3) |
+
+**Index v3** : `idx_dev_expenses_active_due` sur `(status, due_date) WHERE archived = false`
+
+#### `quotes` (nouvelle, migration `20260706150000`)
+
+| Colonne | Type | Description |
+|---------|------|-------------|
+| `id` | uuid PK | Auto-généré |
+| `creditor_id` | uuid? | FK → `creditors.id` (ON DELETE SET NULL) |
+| `creditor_name` | text? | Saisie libre si creditor_id NULL |
+| `project_ref` | text NOT NULL | Référence projet |
+| `category` | text? | Catégorie libre |
+| `amount_usd` | numeric(10,2) | Montant estimé, CHECK ≥ 0 |
+| `description` | text? | Description libre |
+| `status` | text | `draft` \| `sent` \| `accepted` \| `rejected` \| `expired` |
+| `valid_until` | date? | Date de validité du devis |
+| `quote_file_url` | text? | Chemin dans le bucket `dev-expenses-invoices/quotes/` |
+| `converted_expense_id` | uuid? | FK → `dev_expenses.id` — renseigné quand accepté |
+| `notes` | text? | Notes libres |
+| `created_at` | timestamptz | — |
+| `updated_at` | timestamptz | — |
+
+**RLS** : `service_role` only (même politique que `dev_expenses`).
 
 **Index partiel** : `dev_expenses_creditor_month_auto_uq` sur `(creditor_id, billing_month) WHERE source='api_pull'`  
 → Permet plusieurs entrées manuelles par créancier/mois, une seule entrée API.
@@ -68,13 +96,25 @@ Enrichit chaque ligne avec :
 | Méthode | Route | Description |
 |---------|-------|-------------|
 | `POST` | `/pull-automated` | Pull Anthropic + Vercel (cron mensuel) |
-| `POST` | `/` | Saisie manuelle multipart (nouveau : creditor_id/name, project_ref, due_date, invoice_number) |
+| `POST` | `/` | Saisie manuelle multipart (creditor_id/name, project_ref, due_date, invoice_number) |
 | `PATCH` | `/:id/mark-paid` | Marquer payé + payment_ref |
-| `POST` | `/generate-report` | PDF + share_token. Ne bloque plus sur services manquants. Agrège par billing_month ET due_date. Retourne `pending_warnings` |
-| `GET` | `/?billing_month=&status=&creditor_id=&overdue=true` | Lister factures (filtres étendus) |
-| `GET` | `/upcoming` | Factures dues dans 7 jours, status=pending |
-| `GET` | `/history?page=&limit=` | Historique mensuel (invoice_count, creditor_count) |
-| `GET` | `/dev-expenses/report/:token` | **PUBLIC** — rapport JSON tokenisé |
+| `PATCH` | `/:id/archive` | Archiver (uniquement si status=paid, sinon 400) |
+| `PATCH` | `/:id/unarchive` | Désarchiver |
+| `POST` | `/generate-report` | PDF + share_token. **Exclut archived=true**. Agrège par billing_month ET due_date |
+| `GET` | `/?billing_month=&status=&creditor_id=&overdue=&archived=` | Lister factures. `archived=true` → vue archives. Défaut : non-archivées |
+| `GET` | `/upcoming` | **3 groupes** : `{ overdue, pending, paid_recent }`. Exclut archived |
+| `GET` | `/history?page=&limit=` | Historique mensuel (exclut archived) |
+| `GET` | `/dev-expenses/report/:token` | **PUBLIC** — rapport JSON tokenisé (exclut archived) |
+
+### Quotes `/v1/admin/quotes`
+
+| Méthode | Route | Description |
+|---------|-------|-------------|
+| `POST` | `/` | Créer un devis (multipart : fichier PDF optionnel) |
+| `GET` | `/?status=&creditor_id=` | Lister les devis (filtrable par statut/créancier) |
+| `PATCH` | `/:id` | Éditer (montant, statut, validité, notes). Refusé si déjà accepted |
+| `POST` | `/:id/accept` | Accepter → crée automatiquement une `dev_expense` (status=pending, source=quote). Body: `{ due_date, billing_month?, invoice_number? }` |
+| `POST` | `/:id/reject` | Rejeter → status=rejected |
 
 ---
 
@@ -89,14 +129,16 @@ Enrichit chaque ligne avec :
 
 ## Frontend Admin (unipay-congo)
 
-Page `/dashboard/admin/dev-expenses` — 4 onglets :
+Page `/dashboard/admin/dev-expenses` — 6 onglets :
 
 | Onglet | Contenu |
 |--------|---------|
-| **À payer** | Factures échues (rouge = overdue, orange = J+3, jaune = J+7). Bouton "Réglé" inline |
-| **Saisie** | Formulaire enrichi : sélecteur créancier (+ création à la volée), catégorie libre (suggestions), projet, échéance, N° facture, upload |
+| **À payer** | 3 sections empilées : En retard (rouge), À venir (orange, J+7), Payées récemment (vert, collapsible). Bouton « Archiver » sur chaque ligne payée |
+| **Saisie** | Formulaire enrichi : sélecteur créancier (+ création à la volée), catégorie libre, projet, échéance, N° facture, upload |
 | **Créanciers** | CRUD : liste, ajout, édition coordonnées paiement, soft-delete |
-| **Rapports** | Génération PDF + lien public, historique mensuel (N factures, M créanciers) |
+| **Devis** | Liste avec badge statut (brouillon/envoyé/accepté/rejeté/expiré). Création avec upload PDF. Boutons Accepter (mini-form due_date → crée dépense) / Rejeter. Auto-expiration si valid_until dépassé |
+| **Rapports** | Génération PDF + lien public, historique mensuel (exclut archived) |
+| **Archives** | Dépenses archivées, recherche par créancier/projet/mois, bouton « Désarchiver » |
 
 ---
 
@@ -111,7 +153,12 @@ Sections de synthèse : **Par créancier** + **Par catégorie** (si > 1 entrée)
 
 ## Règles métier
 
-- **Génération rapport** : n'est plus bloquée par l'absence de services — agrège toutes les factures dont `billing_month` ou `due_date` tombe dans le mois. Factures `pending` → `pending_warnings` dans la réponse (non bloquant).
-- **Soft-delete créancier** : `DELETE /creditors/:id` met `active=false`, jamais de vraie suppression si des `dev_expenses` y sont liées.
-- **Pull automatisé** : crée/récupère le créancier Anthropic/Vercel par nom (`ilike`), puis SELECT+UPDATE/INSERT (pas d'upsert sur contrainte partielle).
+- **Cycle devis → dépense** : un devis `sent` peut être accepté (POST `/quotes/:id/accept`) → crée une `dev_expense` (status=pending, source=quote) et lie `converted_expense_id`. Le devis ne peut plus être modifié après acceptation.
+- **Archivage** : soft-archive (`archived=true`, `archived_at=now()`). Uniquement sur dépenses `status=paid` (400 si pending). Exclu des rapports PDF, de la vue upcoming, et de l'historique. Désarchivable.
+- **Génération rapport** : agrège toutes les factures dont `billing_month` ou `due_date` tombe dans le mois. **Exclut archived=true et les devis** (devis ≠ dépense engagée). Factures `pending` → `pending_warnings` (non bloquant).
+- **Soft-delete créancier** : `DELETE /creditors/:id` met `active=false`, jamais de vraie suppression.
+- **Pull automatisé** : crée/récupère le créancier Anthropic/Vercel par nom (`ilike`), puis SELECT+UPDATE/INSERT.
+- **Devis expirés** : calcul à l'affichage (frontend) — si `status=sent` et `valid_until < today`, traité comme `expired`.
+- **Storage** : bucket `dev-expenses-invoices`, sous-dossier `quotes/` pour les devis. MIME whitelist : PDF/PNG/JPEG, max 10 Mo.
 - `funded_by = 'tekkbridge'`, `paid_by = 'benoit'` — valeurs par défaut, éditables.
+- **Jamais de DELETE réel** sur `dev_expenses` ni `quotes` — archivage et soft-delete uniquement.

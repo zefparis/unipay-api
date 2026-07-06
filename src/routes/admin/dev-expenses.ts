@@ -478,6 +478,7 @@ const adminDevExpensesRoute: FastifyPluginAsync = async (fastify) => {
     const { data: expenses, error: expErr } = await fastify.supabase
       .from('dev_expenses_with_status')
       .select('id, category, creditor_name, project_ref, amount_usd, status, due_date, is_overdue')
+      .eq('archived', false)
       .or(`billing_month.eq.${month},and(due_date.gte.${month},due_date.lt.${monthEnd})`);
 
     if (expErr) {
@@ -561,7 +562,9 @@ const adminDevExpensesRoute: FastifyPluginAsync = async (fastify) => {
   });
 
   /* ── GET /admin/dev-expenses ─────────────────────────────
-   * Extended filters: billing_month, status, creditor_id, overdue=true
+   * Extended filters: billing_month, status, creditor_id, overdue, archived
+   * archived=true  → show only archived rows (archive view)
+   * archived=false | absent → show only non-archived rows (default)
    * Returns rows from dev_expenses_with_status view.
    * ─────────────────────────────────────────────────────── */
   fastify.get<{
@@ -570,13 +573,14 @@ const adminDevExpensesRoute: FastifyPluginAsync = async (fastify) => {
       status?:        string;
       creditor_id?:   string;
       overdue?:       string;
+      archived?:      string;
     };
   }>(
     '/admin/dev-expenses',
     async (request, reply) => {
       if (!requireAdmin(request, reply)) return;
 
-      const { billing_month, status, creditor_id, overdue } = request.query;
+      const { billing_month, status, creditor_id, overdue, archived } = request.query;
 
       if (billing_month && !MONTH_RE.test(billing_month)) {
         return reply.status(400).send({ error: 'billing_month must be YYYY-MM-01' });
@@ -591,6 +595,12 @@ const adminDevExpensesRoute: FastifyPluginAsync = async (fastify) => {
       if (status)        q = q.eq('status', status);
       if (creditor_id)   q = q.eq('creditor_id', creditor_id);
       if (overdue === 'true') q = (q as any).eq('is_overdue', true);
+      // archived filter: default excludes archived rows
+      if (archived === 'true') {
+        q = (q as any).eq('archived', true);
+      } else {
+        q = (q as any).eq('archived', false);
+      }
 
       const { data, error } = await (q as any).order('due_date', { ascending: true, nullsFirst: false });
 
@@ -604,32 +614,141 @@ const adminDevExpensesRoute: FastifyPluginAsync = async (fastify) => {
   );
 
   /* ── GET /admin/dev-expenses/upcoming ─────────────────────
-   * Returns pending expenses with due_date within the next 7 days.
-   * Used by the admin UI "À payer bientôt" widget.
+   * Returns 3 groups, all excluding archived rows:
+   *   overdue:     status=pending, due_date < today
+   *   pending:     status=pending, due_date in [today, today+7]
+   *   paid_recent: status=paid,    paid_at  in last 7 days
    * ─────────────────────────────────────────────────────── */
   fastify.get(
     '/admin/dev-expenses/upcoming',
     async (request, reply) => {
       if (!requireAdmin(request, reply)) return;
 
-      const today   = new Date();
-      const in7Days = new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000);
-      const in7Str  = in7Days.toISOString().slice(0, 10);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const todayStr    = today.toISOString().slice(0, 10);
+      const in7Str      = new Date(today.getTime() + 7  * 86_400_000).toISOString().slice(0, 10);
+      const since7Str   = new Date(today.getTime() - 7  * 86_400_000).toISOString().slice(0, 10);
 
-      const { data, error } = await fastify.supabase
-        .from('dev_expenses_with_status')
-        .select('*')
-        .eq('status', 'pending')
-        .not('due_date', 'is', null)
-        .lte('due_date', in7Str)
-        .order('due_date', { ascending: true });
+      const [overdueRes, pendingRes, paidRes] = await Promise.all([
+        fastify.supabase
+          .from('dev_expenses_with_status')
+          .select('*')
+          .eq('status', 'pending')
+          .eq('archived', false)
+          .not('due_date', 'is', null)
+          .lt('due_date', todayStr)
+          .order('due_date', { ascending: true }),
 
-      if (error) {
-        fastify.log.error({ err: error }, '[dev-expenses] upcoming query failed');
+        fastify.supabase
+          .from('dev_expenses_with_status')
+          .select('*')
+          .eq('status', 'pending')
+          .eq('archived', false)
+          .not('due_date', 'is', null)
+          .gte('due_date', todayStr)
+          .lte('due_date', in7Str)
+          .order('due_date', { ascending: true }),
+
+        fastify.supabase
+          .from('dev_expenses_with_status')
+          .select('*')
+          .eq('status', 'paid')
+          .eq('archived', false)
+          .not('paid_at', 'is', null)
+          .gte('paid_at', since7Str + 'T00:00:00Z')
+          .order('paid_at', { ascending: false }),
+      ]);
+
+      if (overdueRes.error || pendingRes.error || paidRes.error) {
+        const err = overdueRes.error ?? pendingRes.error ?? paidRes.error;
+        fastify.log.error({ err }, '[dev-expenses] upcoming query failed');
         return reply.status(500).send({ error: 'Internal Server Error' });
       }
 
-      return { data: data ?? [], as_of: today.toISOString().slice(0, 10) };
+      return {
+        overdue:     overdueRes.data  ?? [],
+        pending:     pendingRes.data  ?? [],
+        paid_recent: paidRes.data     ?? [],
+        as_of:       todayStr,
+      };
+    },
+  );
+
+  /* ── PATCH /admin/dev-expenses/:id/archive ─────────────────
+   * Soft-archive an expense. Only paid/reconciled may be archived.
+   * ─────────────────────────────────────────────────────── */
+  fastify.patch<{ Params: { id: string } }>(
+    '/admin/dev-expenses/:id/archive',
+    async (request, reply) => {
+      if (!requireAdmin(request, reply)) return;
+
+      if (!UUID_RE.test(request.params.id)) {
+        return reply.status(400).send({ error: 'Invalid expense id (expected UUID)' });
+      }
+
+      const { data: existing } = await fastify.supabase
+        .from('dev_expenses')
+        .select('id, status, archived')
+        .eq('id', request.params.id)
+        .maybeSingle();
+
+      if (!existing) return reply.status(404).send({ error: 'Expense not found' });
+      if (existing.archived) return reply.status(400).send({ error: 'Expense is already archived' });
+      if (existing.status === 'pending') {
+        return reply.status(400).send({ error: 'Cannot archive a pending expense — mark it as paid first' });
+      }
+
+      const { data, error } = await fastify.supabase
+        .from('dev_expenses')
+        .update({ archived: true, archived_at: new Date().toISOString() })
+        .eq('id', request.params.id)
+        .select()
+        .single();
+
+      if (error) {
+        fastify.log.error({ err: error }, '[dev-expenses] archive failed');
+        return reply.status(500).send({ error: 'Internal Server Error' });
+      }
+
+      return { expense: data };
+    },
+  );
+
+  /* ── PATCH /admin/dev-expenses/:id/unarchive ────────────────
+   * Restore an archived expense to the active set.
+   * ─────────────────────────────────────────────────────── */
+  fastify.patch<{ Params: { id: string } }>(
+    '/admin/dev-expenses/:id/unarchive',
+    async (request, reply) => {
+      if (!requireAdmin(request, reply)) return;
+
+      if (!UUID_RE.test(request.params.id)) {
+        return reply.status(400).send({ error: 'Invalid expense id (expected UUID)' });
+      }
+
+      const { data: existing } = await fastify.supabase
+        .from('dev_expenses')
+        .select('id, archived')
+        .eq('id', request.params.id)
+        .maybeSingle();
+
+      if (!existing) return reply.status(404).send({ error: 'Expense not found' });
+      if (!existing.archived) return reply.status(400).send({ error: 'Expense is not archived' });
+
+      const { data, error } = await fastify.supabase
+        .from('dev_expenses')
+        .update({ archived: false, archived_at: null })
+        .eq('id', request.params.id)
+        .select()
+        .single();
+
+      if (error) {
+        fastify.log.error({ err: error }, '[dev-expenses] unarchive failed');
+        return reply.status(500).send({ error: 'Internal Server Error' });
+      }
+
+      return { expense: data };
     },
   );
 
@@ -650,6 +769,7 @@ const adminDevExpensesRoute: FastifyPluginAsync = async (fastify) => {
       const { data: allExpenses, error } = await fastify.supabase
         .from('dev_expenses_with_status')
         .select('billing_month, category, creditor_id, creditor_name, amount_usd, status')
+        .eq('archived', false)
         .order('billing_month', { ascending: false });
 
       if (error) {
