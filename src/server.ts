@@ -2,7 +2,6 @@ import Fastify from 'fastify';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import multipart from '@fastify/multipart';
-import cors from '@fastify/cors';
 import crypto from 'node:crypto';
 import { env } from './config/env';
 
@@ -189,18 +188,12 @@ export async function buildServer() {
 
   /* ──────────────────────────────────────────────────────────────────────────
    * GET /dev-expenses/report/:token — PUBLIC, token-protected, rate-limited.
-   * Scoped CORS: only the Netlify public report domain is allowed.
+   * Registered without /v1 prefix so the public page can call it directly.
+   * CORS: DEV_EXPENSES_PUBLIC_ORIGIN is included in the global corsPlugin.
+   * Note: admin routes from this plugin are also available at /admin/dev-expenses/*
+   * (without /v1) in addition to /v1/admin/dev-expenses/* — both require admin auth.
    * ────────────────────────────────────────────────────────────────────────── */
-  await server.register(
-    async (instance) => {
-      await instance.register(cors, {
-        origin: env.DEV_EXPENSES_PUBLIC_ORIGIN || 'https://dev-expenses.netlify.app',
-        methods: ['GET', 'OPTIONS'],
-        credentials: false,
-      });
-      instance.register(adminDevExpensesRoute);
-    },
-  );
+  await server.register(adminDevExpensesRoute);
 
   /* ──────────────────────────────────────────────────────────────────────────
    * GET /api/predictstreet/users/:provider_user_id/limits
