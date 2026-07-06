@@ -50,3 +50,18 @@ services:
         value: https://unipay-api.onrender.com
       - key: ADMIN_SECRET
         sync: false
+
+  # ── Cron: daily 08:00 UTC — check invoices due within 7 days ──
+  - type: cron
+    name: dev-expenses-due-check
+    env: node
+    region: frankfurt
+    plan: starter
+    schedule: "0 8 * * *"
+    buildCommand: ""
+    command: node scripts/cron-due-date-check.js
+    envVars:
+      - key: API_URL
+        value: https://unipay-api.onrender.com
+      - key: ADMIN_SECRET
+        sync: false

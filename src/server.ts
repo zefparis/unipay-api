@@ -55,6 +55,7 @@ import adiRefundRoute from './routes/wallet/adi-refund';
 import adminAdiRoute from './routes/admin/adi';
 import adminPredictStreetRoute from './routes/admin/predictstreet';
 import adminDevExpensesRoute from './routes/admin/dev-expenses';
+import adminCreditorsRoute from './routes/admin/creditors';
 
 export async function buildServer() {
   const server = Fastify({
@@ -181,6 +182,7 @@ export async function buildServer() {
       v1.register(adiRefundRoute);
       v1.register(adminAdiRoute);
       v1.register(adminPredictStreetRoute);
+      v1.register(adminCreditorsRoute);
       v1.register(adminDevExpensesRoute);
     },
     { prefix: '/v1' },
