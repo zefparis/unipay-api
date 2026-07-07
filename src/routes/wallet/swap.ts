@@ -3,6 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
 import { notify } from '../../utils/push';
+import { getHotWalletBalances } from '../../lib/bsc-withdrawal';
 
 const getFiatRate   = () => Number(env.FIAT_USD_CDF_RATE ?? '2850') || 2850;
 const CGLT_PER_USDT = Number(process.env.CGLT_PER_USDT ?? '500') || 500;
@@ -26,10 +27,23 @@ const walletSwapRoute: FastifyPluginAsync = async (fastify) => {
   /* ── GET /v1/wallet/swap/rate ─── all pair rates ─── */
   fastify.get('/wallet/swap/rate', async (_request, reply) => {
     const fiatRate = getFiatRate();
+
+    // Real hot wallet USDT balance — NOT a liquidity pool, just operational reserve
+    let hotWalletUsdt = 0;
+    try {
+      const balances = await getHotWalletBalances();
+      hotWalletUsdt = Number(balances.usdt);
+    } catch (err) {
+      fastify.log.warn({ err }, 'Failed to read hot wallet USDT balance for swap-rate display');
+    }
+
     return reply.send({
       rate:   CGLT_PER_USDT,    // backward-compat: CGLT/USDT rate
       fee:    FEE_DISPLAY,       // 0.5 (percent)
       paused: false,
+      pool_usdt: hotWalletUsdt,       // legacy field name kept for frontend compat —
+                                       // value is the operational hot wallet balance, not a pool
+      hot_wallet_usdt: hotWalletUsdt, // honest field name — use this going forward
       pairs: {
         CDF_CGLT:  { rate: 1,             fee: 0,           direction: 'both' },
         CDF_USD:   { rate: fiatRate,       fee: FEE_DISPLAY, direction: 'both' },
