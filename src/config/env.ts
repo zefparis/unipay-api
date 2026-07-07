@@ -78,9 +78,6 @@ const envSchema = z.object({
   VAPID_PRIVATE_KEY: z.string().min(1).optional(),
   VAPID_SUBJECT:     z.string().default('mailto:support@unipaycongo.com'),
 
-  // PredictStreet server-to-server limits API
-  PREDICTSTREET_BEARER_TOKEN: z.string().min(1).optional(),
-
   // Binance — USDT crypto withdrawals + admin management
   BINANCE_MAIN_API_KEY:          z.string().min(1).optional(),
   BINANCE_MAIN_SECRET_KEY:       z.string().min(1).optional(),
@@ -100,25 +97,8 @@ const envSchema = z.object({
   BSC_RPC_URL:      z.string().url().default('https://bsc-dataseed.binance.org'),
   USDT_BSC_CONTRACT: z.string().regex(/^0x[0-9a-fA-F]{40}$/).default('0x55d398326f99059fF775485246999027B3197955'),
 
-  // ADI Chain hot wallet — direct USDC on-chain withdrawals (Chain ID 36900)
-  ADI_SETTLEMENT_PRIVATE_KEY: z.preprocess(
-    (v) => (typeof v === 'string' && /^0x[0-9a-fA-F]{64}$/.test(v) ? v : undefined),
-    z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional(),
-  ),
-  ADI_RPC_URL:           z.string().url().default('https://rpc.adifoundation.ai'),
-  ADI_USDC_CONTRACT:     z.string().regex(/^0x[0-9a-fA-F]{40}$/).default('0x9cb8142aEBBcdc60AF7c97Af897A67A8f3CA71C2'),
-  ADI_SETTLEMENT_ADDRESS: z.string().regex(/^0x[0-9a-fA-F]{40}$/).default('0x35A32378Ce2321D62c083B7Ae4fe684c14f83Ff0'),
-
   // PayGuard (Hybrid Vector API) — server-to-server API key for KYC enroll/verify
   PAYGUARD_API_KEY: z.string().min(16).optional(),
-
-  // PredictStreet server-to-server HMAC secret (deposit-notify webhook)
-  PREDICTSTREET_SERVER_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(16).optional()),
-  // PredictStreet payout webhook — we POST here to request a USDC payout
-  PREDICTSTREET_PAYOUT_URL: z.preprocess(
-    (v) => { try { if (typeof v === 'string' && v) { new URL(v); return v; } } catch { /* fall */ } return undefined; },
-    z.string().url().optional(),
-  ),
 
   // Admin access — comma-separated list of allowed emails for admin routes
   ADMIN_EMAILS: z.string().default('b.barrere@congogaming.com'),

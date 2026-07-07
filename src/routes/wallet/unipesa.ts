@@ -401,37 +401,6 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       });
     }
 
-    // Notify PredictStreet if this is a PredictStreet deposit
-    if (order_id?.startsWith('ps-dep-')) {
-      const psSecret = env.HMAC_SECRET;
-      const psUrl = env.PREDICTSTREET_PAYOUT_URL;
-      if (psSecret && psUrl) {
-        const psPayload = JSON.stringify({
-          event: 'payment.status_update',
-          data: {
-            transaction_id: tx.id,
-            status: 'success',
-            reference: order_id,
-            operator_ref: order_id,
-            amount: netCredited,
-            currency: txCurrency,
-          },
-        });
-        const psSig = crypto.createHmac('sha256', psSecret).update(psPayload).digest('hex');
-        fetch(psUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-UniPay-Signature': `sha256=${psSig}`,
-          },
-          body: psPayload,
-        }).catch((err: unknown) => {
-          fastify.log.warn({ err, order_id }, '[predictstreet] completion webhook delivery failed');
-        });
-        fastify.log.info({ order_id }, '[predictstreet] completion webhook sent');
-      }
-    }
-
     return reply.status(200).send({ received: true, credited: true, currency: txCurrency, amount: netCredited });
   });
 };

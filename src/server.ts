@@ -49,11 +49,6 @@ import adminHotwalletRoute from './routes/admin/hotwallet';
 import adminTreasuryCryptoReceiptsRoute from './routes/admin/treasury-crypto-receipts';
 import adminTreasuryCryptoAssetsRoute    from './routes/admin/treasury-crypto-assets';
 import walletNotificationsRoute from './routes/wallet/notifications';
-import adiDepositRoute from './routes/wallet/adi-deposit';
-import adiPayoutRoute from './routes/wallet/adi-payout';
-import adiRefundRoute from './routes/wallet/adi-refund';
-import adminAdiRoute from './routes/admin/adi';
-import adminPredictStreetRoute from './routes/admin/predictstreet';
 import adminDevExpensesRoute from './routes/admin/dev-expenses';
 import adminCreditorsRoute from './routes/admin/creditors';
 import adminQuotesRoute from './routes/admin/quotes';
@@ -178,11 +173,6 @@ export async function buildServer() {
       v1.register(adminTreasuryCryptoReceiptsRoute);
       v1.register(adminTreasuryCryptoAssetsRoute);
       v1.register(walletNotificationsRoute);
-      v1.register(adiDepositRoute);
-      v1.register(adiPayoutRoute);
-      v1.register(adiRefundRoute);
-      v1.register(adminAdiRoute);
-      v1.register(adminPredictStreetRoute);
       v1.register(adminCreditorsRoute);
       v1.register(adminQuotesRoute);
       v1.register(adminDevExpensesRoute);
@@ -198,62 +188,6 @@ export async function buildServer() {
    * (without /v1) in addition to /v1/admin/dev-expenses/* — both require admin auth.
    * ────────────────────────────────────────────────────────────────────────── */
   await server.register(adminDevExpensesRoute);
-
-  /* ──────────────────────────────────────────────────────────────────────────
-   * GET /api/predictstreet/users/:provider_user_id/limits
-   * Server-to-server. Auth: Bearer PS_LIMITS_BEARER_TOKEN.
-   * Queries user_limits, converts CDF → USD (÷ 3 600), falls back to defaults.
-   * ────────────────────────────────────────────────────────────────────────── */
-  server.get<{ Params: { provider_user_id: string } }>(
-    '/api/predictstreet/users/:provider_user_id/limits',
-    async (req, reply) => {
-      const token = env.PREDICTSTREET_BEARER_TOKEN;
-      if (!token) return reply.code(503).send({ error: 'Limits API not configured' });
-
-      // Constant-time bearer token comparison
-      const provided = req.headers.authorization ?? '';
-      const expected = `Bearer ${token}`;
-      const maxLen = Math.max(provided.length, expected.length);
-      const a = Buffer.from(provided.padEnd(maxLen));
-      const b = Buffer.from(expected.padEnd(maxLen));
-      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-        return reply.code(401).send({ error: 'Unauthorized' });
-      }
-
-      const { provider_user_id } = req.params;
-
-      const DEFAULTS = {
-        deposit_limit_cdf:      180_000,
-        deposit_consumed_cdf:   0,
-        trade_limit_cdf:        720_000,
-        trade_consumed_cdf:     0,
-        withdrawal_limit_cdf:   180_000,
-        withdrawal_consumed_cdf: 0,
-        kyc_status:             'not_started',
-      };
-
-      const { data } = await server.supabase
-        .from('user_limits')
-        .select('deposit_limit_cdf,deposit_consumed_cdf,trade_limit_cdf,trade_consumed_cdf,withdrawal_limit_cdf,withdrawal_consumed_cdf,kyc_status')
-        .eq('user_id', provider_user_id)
-        .maybeSingle();
-
-      const row = data ?? DEFAULTS;
-      const toUsd = (cdf: number) => Math.round((cdf / 3600) * 100) / 100;
-
-      return reply.send({
-        deposit_limit:         toUsd(Number(row.deposit_limit_cdf      ?? DEFAULTS.deposit_limit_cdf)),
-        deposit_consumed:      toUsd(Number(row.deposit_consumed_cdf    ?? DEFAULTS.deposit_consumed_cdf)),
-        trade_limit:           toUsd(Number(row.trade_limit_cdf         ?? DEFAULTS.trade_limit_cdf)),
-        trade_consumed:        toUsd(Number(row.trade_consumed_cdf      ?? DEFAULTS.trade_consumed_cdf)),
-        withdrawal_limit:      toUsd(Number(row.withdrawal_limit_cdf    ?? DEFAULTS.withdrawal_limit_cdf)),
-        withdrawal_consumed:   toUsd(Number(row.withdrawal_consumed_cdf ?? DEFAULTS.withdrawal_consumed_cdf)),
-        eligible:              (row.kyc_status ?? DEFAULTS.kyc_status) === 'verified',
-        kyc_status:            row.kyc_status ?? DEFAULTS.kyc_status,
-        currency:              'USD',
-      });
-    },
-  );
 
   // Global error handler
   server.setErrorHandler((error, request, reply) => {
