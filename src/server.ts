@@ -52,6 +52,8 @@ import walletNotificationsRoute from './routes/wallet/notifications';
 import adminDevExpensesRoute from './routes/admin/dev-expenses';
 import adminCreditorsRoute from './routes/admin/creditors';
 import adminQuotesRoute from './routes/admin/quotes';
+import adminDevExpensesV4Route from './routes/admin/dev-expenses-v4';
+import adminExpenseEntitiesRoute from './routes/admin/expense-entities';
 
 export async function buildServer() {
   const server = Fastify({
@@ -176,6 +178,8 @@ export async function buildServer() {
       v1.register(adminCreditorsRoute);
       v1.register(adminQuotesRoute);
       v1.register(adminDevExpensesRoute);
+      v1.register(adminDevExpensesV4Route);
+      v1.register(adminExpenseEntitiesRoute);
     },
     { prefix: '/v1' },
   );

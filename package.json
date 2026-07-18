@@ -8,7 +8,7 @@
     "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
     "postinstall": "npm run build",
     "start": "node dist/app.js",
-    "test": "node --import tsx/esm --test src/lib/__tests__/*.test.ts",
+    "test": "npx tsx --test src/lib/__tests__/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
