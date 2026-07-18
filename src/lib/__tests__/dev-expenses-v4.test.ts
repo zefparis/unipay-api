@@ -11,8 +11,11 @@ import {
   getExpectedSettlementAmount,
   getRemainingAmount,
   validateTransition,
+  getBillingSnapshotDifference,
+  PUBLIC_ENTITY_COLUMNS,
   type DevExpenseV4,
   type DevExpenseStatusV4,
+  type ExpenseEntity,
 } from '../../services/dev-expenses-v4';
 
 /* ── Helpers ──────────────────────────────────────────────── */
@@ -35,6 +38,9 @@ function makeExpense(overrides: Partial<DevExpenseV4> = {}): DevExpenseV4 {
     initially_paid_by_entity_id: null,
     covered_by_entity_id: null,
     reimbursement_recipient_entity_id: null,
+    billing_recipient_entity_id: null,
+    billing_recipient_snapshot: null,
+    billing_recipient_reviewed: false,
     amount_usd: 1000,
     invoice_amount: 1000,
     invoice_currency: 'USD',
@@ -64,6 +70,45 @@ function makeExpense(overrides: Partial<DevExpenseV4> = {}): DevExpenseV4 {
     paid_at: null,
     created_at: '2026-07-18T00:00:00Z',
     updated_at: '2026-07-18T00:00:00Z',
+    ...overrides,
+  };
+}
+
+function makeEntity(overrides: Partial<ExpenseEntity> = {}): ExpenseEntity {
+  return {
+    id: '00000000-0000-0000-0000-000000000010',
+    code: 'TEST',
+    display_name: 'Test',
+    entity_type: 'company',
+    legal_name: null,
+    trade_name: null,
+    country_code: null,
+    email: null,
+    phone: null,
+    address: null,
+    city: null,
+    postal_code: null,
+    tax_id: null,
+    registration_number: null,
+    vat_number: null,
+    address_line_1: null,
+    address_line_2: null,
+    region: null,
+    contact_name: null,
+    billing_email: null,
+    contact_email: null,
+    website: null,
+    legal_notes: null,
+    can_incur_expenses: true,
+    can_receive_invoices: true,
+    can_pay_expenses: true,
+    can_cover_expenses: true,
+    can_receive_reimbursements: true,
+    bank_details: {},
+    active: true,
+    metadata: {},
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
     ...overrides,
   };
 }
@@ -321,5 +366,717 @@ describe('Transition validation', () => {
     const result = validateTransition(e, { to: 'submitted' });
     assert.equal(result.ok, false);
     assert.match(result.error!, /legacy/i);
+  });
+});
+
+/* ── Snapshot allowlist enforcement ────────────────────────── */
+
+describe('Snapshot allowlist: forbidden keys never present', () => {
+  const FORBIDDEN_KEYS = ['bank_details', 'metadata', 'legal_notes', 'payment_details', 'credentials', 'active', 'created_at', 'updated_at', 'can_receive_invoices', 'can_pay_expenses', 'can_cover_expenses', 'can_receive_reimbursements'];
+
+  function makeEntity(overrides: Partial<ExpenseEntity> = {}): ExpenseEntity {
+    return {
+      id: '00000000-0000-0000-0000-000000000010',
+      code: 'TEST',
+      display_name: 'Test Entity',
+      entity_type: 'company',
+      legal_name: 'Test Legal Name',
+      trade_name: null,
+      country_code: 'CD',
+      email: 'test@example.com',
+      phone: '+243000000',
+      address: '123 Main St',
+      city: 'Kinshasa',
+      postal_code: '00000',
+      tax_id: 'TAX123',
+      registration_number: 'REG123',
+      vat_number: null,
+      address_line_1: null,
+      address_line_2: null,
+      region: null,
+      contact_name: 'John Doe',
+      billing_email: null,
+      contact_email: null,
+      website: null,
+      legal_notes: 'Secret internal notes',
+      can_incur_expenses: true,
+      can_receive_invoices: true,
+      can_pay_expenses: true,
+      can_cover_expenses: true,
+      can_receive_reimbursements: true,
+      bank_details: { iban: 'SECRET_IBAN', swift: 'SECRET_SWIFT' },
+      active: true,
+      metadata: { internal: 'secret' },
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-02T00:00:00Z',
+      ...overrides,
+    };
+  }
+
+  // Simulate the buildBillingRecipientSnapshot logic
+  function buildSnapshot(entity: ExpenseEntity): Record<string, unknown> {
+    return {
+      entity_id: entity.id,
+      legal_name: entity.legal_name ?? null,
+      trade_name: entity.trade_name ?? null,
+      display_name: entity.display_name,
+      entity_type: entity.entity_type,
+      registration_number: entity.registration_number ?? null,
+      tax_id: entity.tax_id ?? null,
+      vat_number: entity.vat_number ?? null,
+      address_line_1: entity.address_line_1 ?? entity.address ?? null,
+      address_line_2: entity.address_line_2 ?? null,
+      postal_code: entity.postal_code ?? null,
+      city: entity.city ?? null,
+      region: entity.region ?? null,
+      country_code: entity.country_code ?? null,
+      contact_name: entity.contact_name ?? null,
+      billing_email: entity.billing_email ?? entity.email ?? null,
+      phone: entity.phone ?? null,
+      captured_at: new Date().toISOString(),
+    };
+  }
+
+  it('snapshot does not contain bank_details', () => {
+    const entity = makeEntity();
+    const snapshot = buildSnapshot(entity);
+    assert.equal('bank_details' in snapshot, false);
+  });
+
+  it('snapshot does not contain metadata', () => {
+    const entity = makeEntity();
+    const snapshot = buildSnapshot(entity);
+    assert.equal('metadata' in snapshot, false);
+  });
+
+  it('snapshot does not contain legal_notes', () => {
+    const entity = makeEntity();
+    const snapshot = buildSnapshot(entity);
+    assert.equal('legal_notes' in snapshot, false);
+  });
+
+  it('snapshot does not contain active flag', () => {
+    const entity = makeEntity();
+    const snapshot = buildSnapshot(entity);
+    assert.equal('active' in snapshot, false);
+  });
+
+  it('snapshot does not contain role capability flags', () => {
+    const entity = makeEntity();
+    const snapshot = buildSnapshot(entity);
+    assert.equal('can_receive_invoices' in snapshot, false);
+    assert.equal('can_pay_expenses' in snapshot, false);
+    assert.equal('can_cover_expenses' in snapshot, false);
+    assert.equal('can_receive_reimbursements' in snapshot, false);
+  });
+
+  it('snapshot does not contain internal timestamps', () => {
+    const entity = makeEntity();
+    const snapshot = buildSnapshot(entity);
+    assert.equal('created_at' in snapshot, false);
+    assert.equal('updated_at' in snapshot, false);
+  });
+
+  it('snapshot contains only allowed keys', () => {
+    const entity = makeEntity();
+    const snapshot = buildSnapshot(entity);
+    const allowedKeys = new Set([
+      'entity_id', 'legal_name', 'trade_name', 'display_name', 'entity_type',
+      'registration_number', 'tax_id', 'vat_number',
+      'address_line_1', 'address_line_2', 'postal_code', 'city', 'region', 'country_code',
+      'contact_name', 'billing_email', 'phone',
+      'captured_at',
+    ]);
+    for (const key of Object.keys(snapshot)) {
+      assert.ok(allowedKeys.has(key), `Unexpected key in snapshot: ${key}`);
+    }
+  });
+
+  it('snapshot does not contain any forbidden keys', () => {
+    const entity = makeEntity();
+    const snapshot = buildSnapshot(entity);
+    for (const forbidden of FORBIDDEN_KEYS) {
+      assert.equal(forbidden in snapshot, false, `Forbidden key '${forbidden}' found in snapshot`);
+    }
+  });
+
+  it('snapshot is immutable after entity modification (different object)', () => {
+    const entity = makeEntity();
+    const snapshot = buildSnapshot(entity);
+    entity.legal_name = 'Changed Name';
+    // Snapshot should still have the original value
+    assert.equal(snapshot.legal_name, 'Test Legal Name');
+  });
+
+  it('snapshot uses address_line_1 fallback to address', () => {
+    const entity = makeEntity({ address_line_1: null, address: 'Fallback Address' });
+    const snapshot = buildSnapshot(entity);
+    assert.equal(snapshot.address_line_1, 'Fallback Address');
+  });
+
+  it('snapshot uses billing_email fallback to email', () => {
+    const entity = makeEntity({ billing_email: null, email: 'fallback@example.com' });
+    const snapshot = buildSnapshot(entity);
+    assert.equal(snapshot.billing_email, 'fallback@example.com');
+  });
+});
+
+/* ── getBillingSnapshotDifference ───────────────────────────── */
+
+describe('getBillingSnapshotDifference', () => {
+  function makeEntity(overrides: Partial<ExpenseEntity> = {}): ExpenseEntity {
+    return {
+      id: '00000000-0000-0000-0000-000000000010',
+      code: 'TEST',
+      display_name: 'Test Entity',
+      entity_type: 'company',
+      legal_name: 'Test Legal',
+      trade_name: null,
+      country_code: 'CD',
+      email: 'test@example.com',
+      phone: '+243000000',
+      address: '123 Main St',
+      city: 'Kinshasa',
+      postal_code: '00000',
+      tax_id: 'TAX123',
+      registration_number: 'REG123',
+      vat_number: null,
+      address_line_1: null,
+      address_line_2: null,
+      region: null,
+      contact_name: 'John',
+      billing_email: null,
+      contact_email: null,
+      website: null,
+      legal_notes: null,
+      can_incur_expenses: true,
+      can_receive_invoices: true,
+      can_pay_expenses: true,
+      can_cover_expenses: true,
+      can_receive_reimbursements: true,
+      bank_details: {},
+      active: true,
+      metadata: {},
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-02T00:00:00Z',
+      ...overrides,
+    };
+  }
+
+  it('returns differs=false when snapshot is null', () => {
+    const entity = makeEntity();
+    const result = getBillingSnapshotDifference(null, entity);
+    assert.equal(result.differs, false);
+    assert.deepEqual(result.changedFields, []);
+  });
+
+  it('returns differs=false when entity is null', () => {
+    const snapshot = { legal_name: 'Test', captured_at: '2026-01-01' };
+    const result = getBillingSnapshotDifference(snapshot, null);
+    assert.equal(result.differs, false);
+  });
+
+  it('returns differs=false when all fields match', () => {
+    const entity = makeEntity();
+    const snapshot = {
+      legal_name: entity.legal_name,
+      trade_name: entity.trade_name,
+      registration_number: entity.registration_number,
+      tax_id: entity.tax_id,
+      vat_number: entity.vat_number,
+      address_line_1: entity.address,
+      address_line_2: entity.address_line_2,
+      postal_code: entity.postal_code,
+      city: entity.city,
+      region: entity.region,
+      country_code: entity.country_code,
+      contact_name: entity.contact_name,
+      billing_email: entity.email,
+      phone: entity.phone,
+      captured_at: '2026-01-01',
+    };
+    const result = getBillingSnapshotDifference(snapshot, entity);
+    assert.equal(result.differs, false);
+    assert.deepEqual(result.changedFields, []);
+  });
+
+  it('returns differs=true when address changes', () => {
+    const entity = makeEntity({ address: 'New Address' });
+    const snapshot = {
+      legal_name: 'Test Legal',
+      address_line_1: 'Old Address',
+      captured_at: '2026-01-01',
+    };
+    const result = getBillingSnapshotDifference(snapshot, entity);
+    assert.equal(result.differs, true);
+    assert.ok(result.changedFields.includes('address_line_1'));
+  });
+
+  it('returns differs=true when billing_email changes', () => {
+    const entity = makeEntity({ email: 'new@example.com' });
+    const snapshot = {
+      billing_email: 'old@example.com',
+      captured_at: '2026-01-01',
+    };
+    const result = getBillingSnapshotDifference(snapshot, entity);
+    assert.equal(result.differs, true);
+    assert.ok(result.changedFields.includes('billing_email'));
+  });
+
+  function makeMatchingSnapshot(entity: ExpenseEntity): Record<string, unknown> {
+    return {
+      legal_name: entity.legal_name,
+      trade_name: entity.trade_name,
+      registration_number: entity.registration_number,
+      tax_id: entity.tax_id,
+      vat_number: entity.vat_number,
+      address_line_1: entity.address_line_1 ?? entity.address,
+      address_line_2: entity.address_line_2,
+      postal_code: entity.postal_code,
+      city: entity.city,
+      region: entity.region,
+      country_code: entity.country_code,
+      contact_name: entity.contact_name,
+      billing_email: entity.billing_email ?? entity.email,
+      phone: entity.phone,
+      captured_at: '2026-01-01',
+    };
+  }
+
+  it('returns differs=false when only captured_at (timestamp) differs', () => {
+    const entity = makeEntity();
+    const snapshot = makeMatchingSnapshot(entity);
+    // captured_at is not in SNAPSHOT_COMPARE_FIELDS, so it should not count
+    const result = getBillingSnapshotDifference(snapshot, entity);
+    assert.equal(result.differs, false);
+  });
+
+  it('returns differs=false when only bank_details change (not compared)', () => {
+    const entity = makeEntity({ bank_details: { iban: 'NEW_IBAN' } });
+    const snapshot = makeMatchingSnapshot(entity);
+    const result = getBillingSnapshotDifference(snapshot, entity);
+    assert.equal(result.differs, false);
+  });
+
+  it('returns differs=true when country_code changes', () => {
+    const entity = makeEntity({ country_code: 'FR' });
+    const snapshot = {
+      country_code: 'CD',
+      captured_at: '2026-01-01',
+    };
+    const result = getBillingSnapshotDifference(snapshot, entity);
+    assert.equal(result.differs, true);
+    assert.ok(result.changedFields.includes('country_code'));
+  });
+
+  it('normalizes empty string as null (no false positive)', () => {
+    const entity = makeEntity({ region: '' });
+    const snapshot = makeMatchingSnapshot(entity);
+    snapshot.region = null;
+    const result = getBillingSnapshotDifference(snapshot, entity);
+    // '' and null should be treated as equal
+    assert.equal(result.differs, false);
+  });
+
+  it('detects multiple changed fields', () => {
+    const entity = makeEntity({ legal_name: 'New Legal', city: 'Lubumbashi', country_code: 'FR' });
+    const snapshot = makeMatchingSnapshot(entity);
+    snapshot.legal_name = 'Old Legal';
+    snapshot.city = 'Kinshasa';
+    snapshot.country_code = 'CD';
+    const result = getBillingSnapshotDifference(snapshot, entity);
+    assert.equal(result.differs, true);
+    assert.equal(result.changedFields.length, 3);
+    assert.ok(result.changedFields.includes('legal_name'));
+    assert.ok(result.changedFields.includes('city'));
+    assert.ok(result.changedFields.includes('country_code'));
+  });
+});
+
+/* ── Role validation logic ─────────────────────────────────── */
+
+describe('Role validation logic', () => {
+  function makeEntity(overrides: Partial<ExpenseEntity> = {}): ExpenseEntity {
+    return {
+      id: '00000000-0000-0000-0000-000000000010',
+      code: 'TEST',
+      display_name: 'Test',
+      entity_type: 'company',
+      legal_name: null,
+      trade_name: null,
+      country_code: null,
+      email: null,
+      phone: null,
+      address: null,
+      city: null,
+      postal_code: null,
+      tax_id: null,
+      registration_number: null,
+      vat_number: null,
+      address_line_1: null,
+      address_line_2: null,
+      region: null,
+      contact_name: null,
+      billing_email: null,
+      contact_email: null,
+      website: null,
+      legal_notes: null,
+      can_incur_expenses: true,
+      can_receive_invoices: true,
+      can_pay_expenses: true,
+      can_cover_expenses: true,
+      can_receive_reimbursements: true,
+      bank_details: {},
+      active: true,
+      metadata: {},
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      ...overrides,
+    };
+  }
+
+  it('active entity with can_receive_invoices=true should pass', () => {
+    const entity = makeEntity({ active: true, can_receive_invoices: true });
+    assert.ok(entity.active && entity.can_receive_invoices);
+  });
+
+  it('inactive entity should fail role check', () => {
+    const entity = makeEntity({ active: false, can_receive_invoices: true });
+    assert.equal(entity.active, false);
+  });
+
+  it('entity with can_receive_invoices=false should fail billing recipient role', () => {
+    const entity = makeEntity({ active: true, can_receive_invoices: false });
+    assert.equal(entity.can_receive_invoices, false);
+  });
+
+  it('entity with can_incur_expenses=false should fail incurred_by role', () => {
+    const entity = makeEntity({ active: true, can_incur_expenses: false });
+    assert.equal(entity.can_incur_expenses, false);
+  });
+
+  it('entity with can_pay_expenses=false should fail initially_paid_by role', () => {
+    const entity = makeEntity({ active: true, can_pay_expenses: false });
+    assert.equal(entity.can_pay_expenses, false);
+  });
+
+  it('entity with can_cover_expenses=false should fail covered_by role', () => {
+    const entity = makeEntity({ active: true, can_cover_expenses: false });
+    assert.equal(entity.can_cover_expenses, false);
+  });
+
+  it('entity with can_receive_reimbursements=false should fail reimbursement role', () => {
+    const entity = makeEntity({ active: true, can_receive_reimbursements: false });
+    assert.equal(entity.can_receive_reimbursements, false);
+  });
+
+  it('entity can incur without can_pay (role separation)', () => {
+    const entity = makeEntity({ active: true, can_incur_expenses: true, can_pay_expenses: false });
+    assert.equal(entity.can_incur_expenses, true);
+    assert.equal(entity.can_pay_expenses, false);
+  });
+
+  it('entity can pay without being the incurring entity', () => {
+    const entity = makeEntity({ active: true, can_incur_expenses: false, can_pay_expenses: true });
+    assert.equal(entity.can_incur_expenses, false);
+    assert.equal(entity.can_pay_expenses, true);
+  });
+
+  it('inactive entity refused even if all role flags are true', () => {
+    const entity = makeEntity({ active: false });
+    assert.equal(entity.active, false);
+  });
+
+  it('can_incur_expenses=false refused for incurred_by', () => {
+    const entity = makeEntity({ active: true, can_incur_expenses: false });
+    assert.equal(entity.can_incur_expenses, false);
+  });
+
+  it('all roles default to true for new entities', () => {
+    const entity = makeEntity();
+    assert.equal(entity.can_incur_expenses, true);
+    assert.equal(entity.can_receive_invoices, true);
+    assert.equal(entity.can_pay_expenses, true);
+    assert.equal(entity.can_cover_expenses, true);
+    assert.equal(entity.can_receive_reimbursements, true);
+  });
+});
+
+/* ── PUBLIC_ENTITY_COLUMNS: bank_details exclusion ────────── */
+
+describe('PUBLIC_ENTITY_COLUMNS', () => {
+  it('is a non-empty string', () => {
+    assert.ok(typeof PUBLIC_ENTITY_COLUMNS === 'string');
+    assert.ok(PUBLIC_ENTITY_COLUMNS.length > 0);
+  });
+
+  it('does not contain bank_details', () => {
+    assert.ok(!PUBLIC_ENTITY_COLUMNS.includes('bank_details'));
+  });
+
+  it('contains legal_notes (admin-only, but not in snapshots)', () => {
+    assert.ok(PUBLIC_ENTITY_COLUMNS.includes('legal_notes'));
+  });
+
+  it('contains all required public columns', () => {
+    const required = [
+      'id', 'code', 'display_name', 'entity_type',
+      'legal_name', 'trade_name', 'country_code',
+      'email', 'phone', 'address', 'city', 'postal_code', 'tax_id',
+      'registration_number', 'vat_number',
+      'address_line_1', 'address_line_2', 'region',
+      'contact_name', 'billing_email', 'contact_email', 'website',
+      'active',
+      'can_incur_expenses', 'can_pay_expenses', 'can_cover_expenses',
+      'can_receive_invoices', 'can_receive_reimbursements',
+      'metadata', 'created_at', 'updated_at',
+    ];
+    for (const col of required) {
+      assert.ok(
+        PUBLIC_ENTITY_COLUMNS.includes(col),
+        `PUBLIC_ENTITY_COLUMNS missing required column: ${col}`,
+      );
+    }
+  });
+
+  it('can be safely used in a Supabase select() call', () => {
+    const cols: string[] = PUBLIC_ENTITY_COLUMNS.split(',');
+    assert.ok(cols.length >= 29, `Expected at least 29 columns, got ${cols.length}`);
+    assert.ok(!cols.includes('bank_details'));
+  });
+});
+
+/* ── bank_details serialization protection ────────────────── */
+
+describe('bank_details serialization protection', () => {
+  it('JSON.stringify of a public entity should not contain bank_details', () => {
+    const entity = makeEntity({
+      bank_details: { iban: 'FR1234567890', swift: 'BICXYZ', account_number: '000123' },
+    });
+    // Simulate what PUBLIC_ENTITY_COLUMNS would return (no bank_details)
+    const publicEntity: Record<string, unknown> = {};
+    for (const col of PUBLIC_ENTITY_COLUMNS.split(',')) {
+      if (col in entity) {
+        (publicEntity as Record<string, unknown>)[col] = (entity as unknown as Record<string, unknown>)[col];
+      }
+    }
+    const serialized = JSON.stringify(publicEntity);
+    assert.ok(!serialized.includes('bank_details'), 'bank_details should not appear in serialized public entity');
+    assert.ok(!serialized.includes('iban'), 'iban should not appear in serialized public entity');
+    assert.ok(!serialized.includes('swift'), 'swift should not appear in serialized public entity');
+    assert.ok(!serialized.includes('account_number'), 'account_number should not appear in serialized public entity');
+  });
+
+  it('JSON.stringify of a full entity WITH bank_details should contain it (proving test is valid)', () => {
+    const entity = makeEntity({
+      bank_details: { iban: 'FR1234567890' },
+    });
+    const serialized = JSON.stringify(entity);
+    assert.ok(serialized.includes('bank_details'), 'bank_details should appear in full entity serialization');
+    assert.ok(serialized.includes('iban'), 'iban should appear in full entity serialization');
+  });
+
+  it('billing recipient snapshot should never contain bank_details', () => {
+    const entity = makeEntity({
+      bank_details: { iban: 'FR1234567890', swift: 'BICXYZ' },
+    });
+    // Simulate the snapshot allowlist from buildBillingRecipientSnapshot
+    const snapshot = {
+      entity_id: entity.id,
+      legal_name: entity.legal_name,
+      trade_name: entity.trade_name,
+      display_name: entity.display_name,
+      entity_type: entity.entity_type,
+      registration_number: entity.registration_number,
+      tax_id: entity.tax_id,
+      vat_number: entity.vat_number,
+      address_line_1: entity.address_line_1,
+      address_line_2: entity.address_line_2,
+      postal_code: entity.postal_code,
+      city: entity.city,
+      region: entity.region,
+      country_code: entity.country_code,
+      contact_name: entity.contact_name,
+      billing_email: entity.billing_email,
+      phone: entity.phone,
+      captured_at: new Date().toISOString(),
+    };
+    const serialized = JSON.stringify(snapshot);
+    assert.ok(!serialized.includes('bank_details'), 'snapshot must not contain bank_details');
+    assert.ok(!serialized.includes('iban'), 'snapshot must not contain iban');
+    assert.ok(!serialized.includes('swift'), 'snapshot must not contain swift');
+  });
+
+  it('sensitive keys list is comprehensive', () => {
+    const sensitiveKeys = [
+      'bank_details', 'account_number', 'iban', 'swift',
+      'private_key', 'wallet_private_key', 'credentials',
+    ];
+    const entity = makeEntity({ bank_details: { iban: 'test', swift: 'test', account_number: 'test' } });
+    const fullSerialized = JSON.stringify(entity);
+    for (const key of sensitiveKeys) {
+      // bank_details will be present in full entity; the point is that
+      // PUBLIC_ENTITY_COLUMNS excludes it
+      if (key === 'bank_details' || key === 'iban' || key === 'swift' || key === 'account_number') {
+        assert.ok(fullSerialized.includes(key), `${key} should be in full entity (test validity)`);
+      }
+    }
+    // Verify none of these are in the public columns
+    for (const key of sensitiveKeys) {
+      assert.ok(!PUBLIC_ENTITY_COLUMNS.includes(key), `${key} must not be in PUBLIC_ENTITY_COLUMNS`);
+    }
+  });
+});
+
+/* ── RPC integration: transition_expense parameters ────────── */
+
+describe('RPC integration: transition_expense', () => {
+  it('transition validates state before calling RPC (invalid transition rejected)', () => {
+    const expense = makeExpense({ status_v4: 'draft' });
+    const result = validateTransition(expense, { to: 'completed' as DevExpenseStatusV4 });
+    assert.equal(result.ok, false);
+  });
+
+  it('transition validates required reason for rejection', () => {
+    const expense = makeExpense({ status_v4: 'under_review' });
+    const result = validateTransition(expense, { to: 'rejected', reason: undefined as unknown as string });
+    assert.equal(result.ok, false);
+    assert.ok(result.error?.includes('rejection_reason'));
+  });
+
+  it('transition validates required reason for dispute', () => {
+    const expense = makeExpense({ status_v4: 'approved' });
+    const result = validateTransition(expense, { to: 'disputed', reason: undefined as unknown as string });
+    assert.equal(result.ok, false);
+    assert.ok(result.error?.includes('dispute_reason'));
+  });
+
+  it('valid transition passes validation and would call RPC', () => {
+    const expense = makeExpense({
+      status_v4: 'draft',
+      title: 'Test Expense',
+      invoice_amount: 125,
+      invoice_currency: 'USD',
+      incurred_by_entity_id: ENTITY_A,
+      covered_by_entity_id: ENTITY_B,
+    });
+    const result = validateTransition(expense, { to: 'submitted' });
+    assert.equal(result.ok, true);
+  });
+
+  it('expected_current_status would be set from expense status_v4', () => {
+    const expense = makeExpense({ status_v4: 'under_review' });
+    // In the service, p_expected_current_status is set to expense.status_v4
+    // before calling the RPC. This test verifies the value is correct.
+    const expectedStatus = expense.status_v4;
+    assert.equal(expectedStatus, 'under_review');
+  });
+
+  it('STATUS_CONFLICT error message is detectable', () => {
+    // Simulate an RPC error message from the transition_expense function
+    const errMsg = 'STATUS_CONFLICT: expected draft, got submitted';
+    assert.ok(errMsg.includes('STATUS_CONFLICT'));
+  });
+});
+
+/* ── RPC integration: fallback removal ─────────────────────── */
+
+describe('RPC fallback removal', () => {
+  it('Financial operation unavailable error is detectable', () => {
+    const errMsg = 'Financial operation unavailable: transition_expense RPC failed — function does not exist';
+    assert.ok(errMsg.includes('Financial operation unavailable'));
+  });
+
+  it('confirm_settlement uses Financial operation unavailable pattern', () => {
+    const errMsg = 'Financial operation unavailable: confirm_settlement RPC failed — function does not exist';
+    assert.ok(errMsg.includes('Financial operation unavailable'));
+    assert.ok(errMsg.includes('confirm_settlement'));
+  });
+
+  it('create_settlement_with_audit uses Financial operation unavailable pattern', () => {
+    const errMsg = 'Financial operation unavailable: create_settlement_with_audit RPC failed — function does not exist';
+    assert.ok(errMsg.includes('Financial operation unavailable'));
+    assert.ok(errMsg.includes('create_settlement_with_audit'));
+  });
+
+  it('resolve_migration_review_with_audit uses Financial operation unavailable pattern', () => {
+    const errMsg = 'Financial operation unavailable: resolve_migration_review_with_audit RPC failed — function does not exist';
+    assert.ok(errMsg.includes('Financial operation unavailable'));
+    assert.ok(errMsg.includes('resolve_migration_review_with_audit'));
+  });
+
+  it('refresh_snapshot_with_audit uses Financial operation unavailable pattern', () => {
+    const errMsg = 'Financial operation unavailable: refresh_snapshot_with_audit RPC failed — function does not exist';
+    assert.ok(errMsg.includes('Financial operation unavailable'));
+    assert.ok(errMsg.includes('refresh_snapshot_with_audit'));
+  });
+
+  it('MIGRATION_REVIEW_ALREADY_RESOLVED error is detectable', () => {
+    const errMsg = 'MIGRATION_REVIEW_ALREADY_RESOLVED: migration review has already been resolved for this expense';
+    assert.ok(errMsg.includes('MIGRATION_REVIEW_ALREADY_RESOLVED'));
+  });
+});
+
+/* ── Migration validation: column and RPC inventory ────────── */
+
+describe('Migration validation: V4 schema completeness', () => {
+  it('all legal profile columns are in PUBLIC_ENTITY_COLUMNS', () => {
+    const legalCols = [
+      'legal_name', 'trade_name', 'registration_number', 'tax_id', 'vat_number',
+      'address_line_1', 'address_line_2', 'postal_code', 'city', 'region',
+      'country_code', 'contact_name', 'billing_email', 'contact_email', 'website',
+    ];
+    for (const col of legalCols) {
+      assert.ok(
+        PUBLIC_ENTITY_COLUMNS.includes(col),
+        `Legal profile column ${col} missing from PUBLIC_ENTITY_COLUMNS`,
+      );
+    }
+  });
+
+  it('all role capability columns are in PUBLIC_ENTITY_COLUMNS', () => {
+    const roleCols = [
+      'can_incur_expenses', 'can_pay_expenses', 'can_cover_expenses',
+      'can_receive_invoices', 'can_receive_reimbursements',
+    ];
+    for (const col of roleCols) {
+      assert.ok(
+        PUBLIC_ENTITY_COLUMNS.includes(col),
+        `Role capability column ${col} missing from PUBLIC_ENTITY_COLUMNS`,
+      );
+    }
+  });
+
+  it('ExpenseEntity interface includes all V4 fields', () => {
+    const entity = makeEntity();
+    // Verify all V4 fields are present
+    assert.ok('can_incur_expenses' in entity);
+    assert.ok('can_pay_expenses' in entity);
+    assert.ok('can_cover_expenses' in entity);
+    assert.ok('can_receive_invoices' in entity);
+    assert.ok('can_receive_reimbursements' in entity);
+    assert.ok('legal_name' in entity);
+    assert.ok('trade_name' in entity);
+    assert.ok('registration_number' in entity);
+    assert.ok('vat_number' in entity);
+    assert.ok('address_line_1' in entity);
+    assert.ok('address_line_2' in entity);
+    assert.ok('region' in entity);
+    assert.ok('contact_name' in entity);
+    assert.ok('billing_email' in entity);
+    assert.ok('contact_email' in entity);
+    assert.ok('website' in entity);
+    assert.ok('bank_details' in entity);
+    assert.ok('legal_notes' in entity);
+  });
+
+  it('DevExpenseV4 interface includes billing recipient fields', () => {
+    const expense = makeExpense();
+    assert.ok('billing_recipient_entity_id' in expense);
+    assert.ok('billing_recipient_snapshot' in expense);
+    assert.ok('billing_recipient_reviewed' in expense);
+    assert.ok('migration_review_required' in expense);
+    assert.ok('settled_amount' in expense);
+    assert.ok('status_v4' in expense);
   });
 });

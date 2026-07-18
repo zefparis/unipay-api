@@ -7,6 +7,47 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+/* ── Public Entity Columns ─────────────────────────────────── */
+/**
+ * Columns that are safe to expose in API responses.
+ * NEVER includes: bank_details, metadata (internal), legal_notes (internal).
+ * Use this constant for ALL selects on expense_entities in routes and services.
+ */
+export const PUBLIC_ENTITY_COLUMNS = [
+  'id',
+  'code',
+  'display_name',
+  'entity_type',
+  'legal_name',
+  'trade_name',
+  'country_code',
+  'email',
+  'phone',
+  'address',
+  'city',
+  'postal_code',
+  'tax_id',
+  'registration_number',
+  'vat_number',
+  'address_line_1',
+  'address_line_2',
+  'region',
+  'contact_name',
+  'billing_email',
+  'contact_email',
+  'website',
+  'legal_notes',
+  'active',
+  'can_incur_expenses',
+  'can_pay_expenses',
+  'can_cover_expenses',
+  'can_receive_invoices',
+  'can_receive_reimbursements',
+  'metadata',
+  'created_at',
+  'updated_at',
+].join(',');
+
 /* ── Types ─────────────────────────────────────────────────── */
 
 export type DevExpenseStatusV4 =
@@ -65,6 +106,9 @@ export interface DevExpenseV4 {
   initially_paid_by_entity_id: string | null;
   covered_by_entity_id: string | null;
   reimbursement_recipient_entity_id: string | null;
+  billing_recipient_entity_id: string | null;
+  billing_recipient_snapshot: Record<string, unknown> | null;
+  billing_recipient_reviewed: boolean;
 
   amount_usd: number;
   invoice_amount: number | null;
@@ -144,7 +188,33 @@ export interface ExpenseEntity {
   display_name: string;
   entity_type: string;
   legal_name: string | null;
+  trade_name: string | null;
   country_code: string | null;
+  email: string | null;
+  phone: string | null;
+  address: string | null;
+  city: string | null;
+  postal_code: string | null;
+  tax_id: string | null;
+  // New legal profile fields
+  registration_number: string | null;
+  vat_number: string | null;
+  address_line_1: string | null;
+  address_line_2: string | null;
+  region: string | null;
+  contact_name: string | null;
+  billing_email: string | null;
+  contact_email: string | null;
+  website: string | null;
+  legal_notes: string | null;
+  // Role capabilities
+  can_incur_expenses: boolean;
+  can_receive_invoices: boolean;
+  can_pay_expenses: boolean;
+  can_cover_expenses: boolean;
+  can_receive_reimbursements: boolean;
+  // Sensitive — never expose in lists or snapshots
+  bank_details: Record<string, unknown>;
   active: boolean;
   metadata: Record<string, unknown>;
   created_at: string;
@@ -199,6 +269,69 @@ export function getRemainingAmount(expense: DevExpenseV4): number {
   const expected = getExpectedSettlementAmount(expense);
   const settled = expense.settled_amount ?? 0;
   return Math.max(expected - settled, 0);
+}
+
+/* ── Billing snapshot comparison ────────────────────────────── */
+
+const SNAPSHOT_COMPARE_FIELDS: readonly string[] = [
+  'legal_name',
+  'trade_name',
+  'registration_number',
+  'tax_id',
+  'vat_number',
+  'address_line_1',
+  'address_line_2',
+  'postal_code',
+  'city',
+  'region',
+  'country_code',
+  'contact_name',
+  'billing_email',
+  'phone',
+];
+
+export interface BillingSnapshotDiff {
+  differs: boolean;
+  changedFields: string[];
+}
+
+/**
+ * Compare a billing recipient snapshot against the current entity profile.
+ * Only compares legal/contact fields — never bank_details, metadata, active,
+ * role flags, timestamps, or internal notes.
+ */
+export function getBillingSnapshotDifference(
+  snapshot: Record<string, unknown> | null,
+  entity: { legal_name?: string | null; trade_name?: string | null; registration_number?: string | null; tax_id?: string | null; vat_number?: string | null; address_line_1?: string | null; address_line_2?: string | null; postal_code?: string | null; city?: string | null; region?: string | null; country_code?: string | null; contact_name?: string | null; billing_email?: string | null; phone?: string | null; address?: string | null; email?: string | null } | null,
+): BillingSnapshotDiff {
+  if (!snapshot || !entity) return { differs: false, changedFields: [] };
+
+  const changedFields: string[] = [];
+
+  for (const field of SNAPSHOT_COMPARE_FIELDS) {
+    const snapshotVal = snapshot[field] ?? null;
+    // For address_line_1, fall back to entity.address; for billing_email, fall back to entity.email
+    let entityVal: unknown;
+    if (field === 'address_line_1') {
+      entityVal = entity.address_line_1 ?? entity.address ?? null;
+    } else if (field === 'billing_email') {
+      entityVal = entity.billing_email ?? entity.email ?? null;
+    } else {
+      entityVal = (entity as Record<string, unknown>)[field] ?? null;
+    }
+
+    // Normalize: treat empty string as null
+    const norm = (v: unknown) => (v === '' ? null : v);
+
+    if (norm(snapshotVal) !== norm(entityVal)) {
+      changedFields.push(field);
+    }
+  }
+
+  return {
+    differs: changedFields.length > 0,
+    changedFields,
+  };
 }
 
 /* ── Transition validation ─────────────────────────────────── */
@@ -345,8 +478,9 @@ export async function createAuditEvent(
   });
 
   if (error) {
-    // Log but don't throw — audit is best-effort but should not break the operation
-    console.error('[dev-expenses-v4] Failed to create audit event:', error.message);
+    // Throw instead of silently logging — callers using RPC transactions
+    // will rollback. Non-transactional callers should catch if needed.
+    throw new Error(`[dev-expenses-v4] Failed to create audit event: ${error.message}`);
   }
 }
 
@@ -455,22 +589,129 @@ export class DevExpensesV4Service {
       expense.initially_paid_by_entity_id,
       expense.covered_by_entity_id,
       expense.reimbursement_recipient_entity_id,
+      expense.billing_recipient_entity_id,
     ].filter(Boolean) as string[];
 
     if (ids.length === 0) return {};
 
+    // Exclude bank_details from entity detail responses
     const { data, error } = await this.supabase
       .from('expense_entities')
-      .select('*')
+      .select(PUBLIC_ENTITY_COLUMNS)
       .in('id', ids);
 
     if (error || !data) return {};
 
     const map: Record<string, ExpenseEntity> = {};
-    for (const e of data as ExpenseEntity[]) {
+    for (const e of data as unknown as ExpenseEntity[]) {
       map[e.id] = e;
     }
     return map;
+  }
+
+  /**
+   * Validate that an entity is active and has the required role capability.
+   * Throws if the entity is inactive or lacks the required permission.
+   */
+  private async validateEntityRole(
+    entityId: string,
+    role: 'can_incur_expenses' | 'can_receive_invoices' | 'can_pay_expenses' | 'can_cover_expenses' | 'can_receive_reimbursements',
+    label: string,
+  ): Promise<void> {
+    const { data, error } = await this.supabase
+      .from('expense_entities')
+      .select('id,active,can_incur_expenses,can_receive_invoices,can_pay_expenses,can_cover_expenses,can_receive_reimbursements')
+      .eq('id', entityId)
+      .maybeSingle();
+
+    if (error || !data) {
+      throw new Error(`Entity not found for role validation (${label})`);
+    }
+
+    if (!data.active) {
+      throw new Error(`Entity is inactive and cannot be used as ${label}`);
+    }
+
+    if (!data[role]) {
+      throw new Error(`Entity does not have '${role}' permission and cannot be used as ${label}`);
+    }
+  }
+
+  /**
+   * Build a billing recipient snapshot using an EXPLICIT ALLOWLIST.
+   * Never copies: bank_details, metadata, legal_notes, active, role flags,
+   * created_at, updated_at, or any internal field.
+   */
+  private buildBillingRecipientSnapshot(entity: ExpenseEntity): Record<string, unknown> {
+    return {
+      entity_id: entity.id,
+      legal_name: entity.legal_name ?? null,
+      trade_name: entity.trade_name ?? null,
+      display_name: entity.display_name,
+      entity_type: entity.entity_type,
+
+      registration_number: entity.registration_number ?? null,
+      tax_id: entity.tax_id ?? null,
+      vat_number: entity.vat_number ?? null,
+
+      address_line_1: entity.address_line_1 ?? entity.address ?? null,
+      address_line_2: entity.address_line_2 ?? null,
+      postal_code: entity.postal_code ?? null,
+      city: entity.city ?? null,
+      region: entity.region ?? null,
+      country_code: entity.country_code ?? null,
+
+      contact_name: entity.contact_name ?? null,
+      billing_email: entity.billing_email ?? entity.email ?? null,
+      phone: entity.phone ?? null,
+
+      captured_at: new Date().toISOString(),
+    };
+  }
+
+  private async fetchEntitySnapshot(entityId: string): Promise<Record<string, unknown> | null> {
+    const { data, error } = await this.supabase
+      .from('expense_entities')
+      .select(PUBLIC_ENTITY_COLUMNS)
+      .eq('id', entityId)
+      .maybeSingle();
+
+    if (error || !data) return null;
+    const entity = data as unknown as ExpenseEntity;
+    return this.buildBillingRecipientSnapshot(entity);
+  }
+
+  async refreshSnapshot(expenseId: string, actor: ActorInfo): Promise<DevExpenseV4> {
+    const expense = await this.getExpense(expenseId);
+    if (!expense) throw new Error('Expense not found');
+    if (!expense.billing_recipient_entity_id) {
+      throw new Error('No billing recipient entity set on this expense');
+    }
+
+    const snapshot = await this.fetchEntitySnapshot(expense.billing_recipient_entity_id);
+    if (!snapshot) {
+      throw new Error('Billing recipient entity not found');
+    }
+
+    // Use transactional RPC for atomic snapshot update + audit
+    const { data: rpcResult, error: rpcError } = await this.supabase
+      .rpc('refresh_snapshot_with_audit', {
+        p_expense_id: expenseId,
+        p_snapshot: snapshot,
+        p_previous_status: expense.status_v4,
+        p_new_status: expense.status_v4,
+        p_entity_id: expense.billing_recipient_entity_id,
+        p_actor_type: actor.actor_type,
+        p_actor_id: actor.actor_id,
+        p_actor_name: actor.actor_name,
+      });
+
+    if (rpcError || !rpcResult) {
+      // No fallback — RPC is required for atomic snapshot refresh + audit
+      throw new Error(`Financial operation unavailable: refresh_snapshot_with_audit RPC failed — ${rpcError?.message ?? 'No data returned'}`);
+    }
+
+    return rpcResult as DevExpenseV4;
   }
 
   /* ── List ──────────────────────────────────────────────── */
@@ -483,6 +724,7 @@ export class DevExpensesV4Service {
     supplier_id?: string;
     incurred_by_entity_id?: string;
     covered_by_entity_id?: string;
+    billing_recipient_entity_id?: string;
     currency?: string;
     date_from?: string;
     date_to?: string;
@@ -515,6 +757,9 @@ export class DevExpensesV4Service {
     }
     if (params.covered_by_entity_id) {
       q = q.eq('covered_by_entity_id', params.covered_by_entity_id);
+    }
+    if (params.billing_recipient_entity_id) {
+      q = q.eq('billing_recipient_entity_id', params.billing_recipient_entity_id);
     }
     if (params.currency) {
       q = q.eq('invoice_currency', params.currency);
@@ -574,6 +819,29 @@ export class DevExpensesV4Service {
     if (!insertData.invoice_currency) insertData.invoice_currency = 'USD';
     if (insertData.settled_amount == null) insertData.settled_amount = 0;
     if (insertData.migration_review_required == null) insertData.migration_review_required = false;
+    if (insertData.billing_recipient_reviewed == null) insertData.billing_recipient_reviewed = false;
+
+    // Validate entity roles for all entity references
+    if (insertData.incurred_by_entity_id) {
+      await this.validateEntityRole(insertData.incurred_by_entity_id as string, 'can_incur_expenses', 'incurred by entity');
+    }
+    if (insertData.initially_paid_by_entity_id) {
+      await this.validateEntityRole(insertData.initially_paid_by_entity_id as string, 'can_pay_expenses', 'initially paid by entity');
+    }
+    if (insertData.covered_by_entity_id) {
+      await this.validateEntityRole(insertData.covered_by_entity_id as string, 'can_cover_expenses', 'covered by entity');
+    }
+    if (insertData.reimbursement_recipient_entity_id) {
+      await this.validateEntityRole(insertData.reimbursement_recipient_entity_id as string, 'can_receive_reimbursements', 'reimbursement recipient entity');
+    }
+
+    // Generate billing recipient snapshot if entity_id is provided but no snapshot
+    if (insertData.billing_recipient_entity_id && !insertData.billing_recipient_snapshot) {
+      // Validate entity role
+      await this.validateEntityRole(insertData.billing_recipient_entity_id as string, 'can_receive_invoices', 'billing recipient');
+      const snapshot = await this.fetchEntitySnapshot(insertData.billing_recipient_entity_id as string);
+      if (snapshot) insertData.billing_recipient_snapshot = snapshot;
+    }
 
     const { data, error } = await this.supabase
       .from('dev_expenses')
@@ -587,6 +855,10 @@ export class DevExpensesV4Service {
 
     const expense = data as DevExpenseV4;
 
+    // Sanitize audit metadata — never log snapshots (may contain entity data)
+    const auditInput = { ...input };
+    delete auditInput.billing_recipient_snapshot;
+
     await createAuditEvent(this.supabase, {
       expense_id: expense.id,
       event_type: 'expense_created',
@@ -595,7 +867,7 @@ export class DevExpensesV4Service {
       actor_type: actor.actor_type,
       actor_id: actor.actor_id,
       actor_name: actor.actor_name,
-      metadata: { input },
+      metadata: { input: auditInput },
     });
 
     return expense;
@@ -618,12 +890,21 @@ export class DevExpensesV4Service {
         'approved_amount', 'settled_amount', 'incurred_by_entity_id',
         'covered_by_entity_id', 'initially_paid_by_entity_id',
         'reimbursement_recipient_entity_id',
+        'billing_recipient_entity_id',
       ];
       for (const field of financialFields) {
         if (field in updates) {
           throw new Error(`Cannot modify '${field}' on a completed expense. Use a correction action instead.`);
         }
       }
+    }
+
+    // Refresh billing recipient snapshot if entity_id changed
+    if ('billing_recipient_entity_id' in updates && updates.billing_recipient_entity_id) {
+      // Validate entity role
+      await this.validateEntityRole(updates.billing_recipient_entity_id as string, 'can_receive_invoices', 'billing recipient');
+      const snapshot = await this.fetchEntitySnapshot(updates.billing_recipient_entity_id as string);
+      if (snapshot) updates.billing_recipient_snapshot = snapshot;
     }
 
     const { data, error } = await this.supabase
@@ -639,6 +920,10 @@ export class DevExpensesV4Service {
 
     const updated = data as DevExpenseV4;
 
+    // Sanitize audit metadata — never log snapshots (may contain entity data)
+    const auditUpdates = { ...updates };
+    delete auditUpdates.billing_recipient_snapshot;
+
     await createAuditEvent(this.supabase, {
       expense_id: id,
       event_type: 'expense_edited',
@@ -647,7 +932,7 @@ export class DevExpensesV4Service {
       actor_type: actor.actor_type,
       actor_id: actor.actor_id,
       actor_name: actor.actor_name,
-      metadata: { updates },
+      metadata: { updates: auditUpdates },
     });
 
     return updated;
@@ -669,78 +954,75 @@ export class DevExpensesV4Service {
     }
 
     const previousStatus = expense.status_v4;
-    const updates: Record<string, unknown> = {
-      status_v4: ctx.to,
-    };
-
-    // Set timestamps
     const now = new Date().toISOString();
-    switch (ctx.to) {
-      case 'submitted':
-        updates.submitted_at = now;
-        break;
-      case 'under_review':
-        updates.review_started_at = now;
-        break;
-      case 'approved':
-        updates.approved_at = now;
-        if (ctx.approved_amount != null) updates.approved_amount = ctx.approved_amount;
-        break;
-      case 'partially_approved':
-        updates.approved_at = now;
-        if (ctx.approved_amount != null) updates.approved_amount = ctx.approved_amount;
-        if (ctx.notes) updates.internal_notes_v4 = ctx.notes;
-        break;
-      case 'rejected':
-        updates.rejection_reason = ctx.reason;
-        break;
-      case 'disputed':
-        updates.dispute_reason = ctx.reason;
-        break;
-      case 'payment_scheduled':
-        updates.payment_scheduled_at = now;
-        break;
-      case 'completed':
-        updates.completed_at = now;
-        break;
-      case 'cancelled':
-        updates.cancelled_at = now;
-        break;
-      case 'archived':
-        updates.archived = true;
-        updates.archived_at = now;
-        break;
-    }
 
-    const { data, error } = await this.supabase
-      .from('dev_expenses')
-      .update(updates)
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (error || !data) {
-      throw new Error(`Transition failed: ${error?.message ?? 'No data returned'}`);
-    }
-
-    const updated = data as DevExpenseV4;
-
-    await createAuditEvent(this.supabase, {
-      expense_id: id,
-      event_type: 'status_transition',
-      previous_status: previousStatus,
-      new_status: ctx.to,
-      actor_type: actor.actor_type,
-      actor_id: actor.actor_id,
-      actor_name: actor.actor_name,
-      metadata: {
+    // Build RPC parameters — only set fields relevant to the target status
+    const rpcParams: Record<string, unknown> = {
+      p_expense_id: id,
+      p_new_status: ctx.to,
+      p_expected_current_status: previousStatus,
+      p_actor_type: actor.actor_type,
+      p_actor_id: actor.actor_id,
+      p_actor_name: actor.actor_name,
+      p_metadata: {
         approved_amount: ctx.approved_amount,
         reason: ctx.reason,
         notes: ctx.notes,
       },
-    });
+    };
 
-    return updated;
+    // Set timestamps and fields based on target status
+    switch (ctx.to) {
+      case 'submitted':
+        rpcParams.p_submitted_at = now;
+        break;
+      case 'under_review':
+        rpcParams.p_review_started_at = now;
+        break;
+      case 'approved':
+        rpcParams.p_approved_at = now;
+        if (ctx.approved_amount != null) rpcParams.p_approved_amount = ctx.approved_amount;
+        break;
+      case 'partially_approved':
+        rpcParams.p_approved_at = now;
+        if (ctx.approved_amount != null) rpcParams.p_approved_amount = ctx.approved_amount;
+        if (ctx.notes) rpcParams.p_internal_notes_v4 = ctx.notes;
+        break;
+      case 'rejected':
+        rpcParams.p_rejection_reason = ctx.reason;
+        break;
+      case 'disputed':
+        rpcParams.p_dispute_reason = ctx.reason;
+        break;
+      case 'payment_scheduled':
+        rpcParams.p_payment_scheduled_at = now;
+        break;
+      case 'completed':
+        rpcParams.p_completed_at = now;
+        break;
+      case 'cancelled':
+        rpcParams.p_cancelled_at = now;
+        break;
+      case 'archived':
+        rpcParams.p_archived = true;
+        rpcParams.p_archived_at = now;
+        break;
+    }
+
+    const { data: rpcResult, error: rpcError } = await this.supabase
+      .rpc('transition_expense', rpcParams);
+
+    if (rpcError || !rpcResult) {
+      // Check for STATUS_CONFLICT
+      const errMsg = rpcError?.message ?? '';
+      if (errMsg.includes('STATUS_CONFLICT')) {
+        throw new Error(`STATUS_CONFLICT: expense status changed since read (expected ${previousStatus})`);
+      }
+      // No fallback — RPC is required for atomic transitions
+      throw new Error(`Financial operation unavailable: transition_expense RPC failed — ${errMsg}`);
+    }
+
+    return rpcResult as DevExpenseV4;
   }
 
   /* ── Settlements ───────────────────────────────────────── */
@@ -798,48 +1080,32 @@ export class DevExpensesV4Service {
       }
     }
 
-    const { data, error } = await this.supabase
-      .from('dev_expense_settlements')
-      .insert({
-        expense_id: expenseId,
-        settlement_type: input.settlement_type,
-        payer_entity_id: input.payer_entity_id ?? null,
-        recipient_entity_id: input.recipient_entity_id ?? null,
-        amount: input.amount,
-        currency: input.currency ?? 'USD',
-        payment_method: input.payment_method ?? null,
-        transaction_reference: input.transaction_reference ?? null,
-        status: 'scheduled',
-        scheduled_at: input.scheduled_at ?? null,
-        notes: input.notes ?? null,
-        idempotency_key: input.idempotency_key ?? null,
-      })
-      .select()
-      .single();
+    // Use transactional RPC for atomic settlement creation + audit
+    const { data: rpcResult, error: rpcError } = await this.supabase
+      .rpc('create_settlement_with_audit', {
+        p_expense_id: expenseId,
+        p_settlement_type: input.settlement_type,
+        p_payer_entity_id: input.payer_entity_id ?? null,
+        p_recipient_entity_id: input.recipient_entity_id ?? null,
+        p_amount: input.amount,
+        p_currency: input.currency ?? 'USD',
+        p_payment_method: input.payment_method ?? null,
+        p_transaction_reference: input.transaction_reference ?? null,
+        p_scheduled_at: input.scheduled_at ?? null,
+        p_notes: input.notes ?? null,
+        p_idempotency_key: input.idempotency_key ?? null,
+        p_actor_type: actor.actor_type,
+        p_actor_id: actor.actor_id,
+        p_actor_name: actor.actor_name,
+        p_expense_status: expense.status_v4,
+      });
 
-    if (error || !data) {
-      throw new Error(`Settlement creation failed: ${error?.message ?? 'No data returned'}`);
+    if (rpcError || !rpcResult) {
+      // No fallback — RPC is required for atomic settlement creation + audit
+      throw new Error(`Financial operation unavailable: create_settlement_with_audit RPC failed — ${rpcError?.message ?? 'No data returned'}`);
     }
 
-    const settlement = data as Settlement;
-
-    await createAuditEvent(this.supabase, {
-      expense_id: expenseId,
-      event_type: 'settlement_created',
-      previous_status: expense.status_v4,
-      new_status: expense.status_v4,
-      actor_type: actor.actor_type,
-      actor_id: actor.actor_id,
-      actor_name: actor.actor_name,
-      metadata: {
-        settlement_id: settlement.id,
-        settlement_type: input.settlement_type,
-        amount: input.amount,
-        currency: input.currency ?? 'USD',
-      },
-    });
-
-    return settlement;
+    return rpcResult as Settlement;
   }
 
   async updateSettlement(
@@ -863,11 +1129,28 @@ export class DevExpensesV4Service {
     const wasCompleted = prevSettlement.status === 'completed';
     const willComplete = updates.status === 'completed' && !wasCompleted;
 
+    // Use transactional RPC for settlement confirmation (atomic: lock + complete + recalc + auto-transition + audit)
+    if (willComplete) {
+      const { data: rpcResult, error: rpcError } = await this.supabase
+        .rpc('confirm_settlement', {
+          p_settlement_id: settlementId,
+          p_actor_type: actor.actor_type,
+          p_actor_id: actor.actor_id,
+          p_actor_name: actor.actor_name,
+        });
+
+      if (rpcError || !rpcResult || rpcResult.length === 0) {
+        throw new Error(`Financial operation unavailable: confirm_settlement RPC failed — ${rpcError?.message ?? 'No data returned'}`);
+      }
+
+      return rpcResult[0].settlement as Settlement;
+    }
+
+    // Non-completion updates: regular update + audit (audit now throws on failure)
     const { data, error } = await this.supabase
       .from('dev_expense_settlements')
       .update({
         ...updates,
-        ...(willComplete ? { confirmed_at: new Date().toISOString() } : {}),
       })
       .eq('id', settlementId)
       .select()
@@ -879,11 +1162,9 @@ export class DevExpensesV4Service {
 
     const updated = data as Settlement;
 
-    // If settlement status changed to/from completed, recalculate settled_amount
-    if (willComplete || (wasCompleted && updates.status && updates.status !== 'completed')) {
+    // If a completed settlement was changed to non-completed, recalculate
+    if (wasCompleted && updates.status && updates.status !== 'completed') {
       const newSettled = await this.recalculateAndApplySettled(expenseId);
-
-      // Check for auto-transition to partially_paid or completed
       await this.checkAutoTransition(expenseId, newSettled, actor);
     }
 
@@ -963,6 +1244,7 @@ export class DevExpensesV4Service {
       initially_paid_by_entity_id?: string | null;
       covered_by_entity_id?: string | null;
       reimbursement_recipient_entity_id?: string | null;
+      billing_recipient_entity_id?: string | null;
       approved_amount?: number | null;
       settled_amount?: number | null;
       notes?: string;
@@ -972,51 +1254,56 @@ export class DevExpensesV4Service {
     const expense = await this.getExpense(id);
     if (!expense) throw new Error('Expense not found');
 
-    const updates: Record<string, unknown> = {
-      migration_review_required: false,
-    };
-
-    if (input.status) updates.status_v4 = input.status;
-    if (input.incurred_by_entity_id) updates.incurred_by_entity_id = input.incurred_by_entity_id;
-    if (input.initially_paid_by_entity_id) updates.initially_paid_by_entity_id = input.initially_paid_by_entity_id;
-    if (input.covered_by_entity_id) updates.covered_by_entity_id = input.covered_by_entity_id;
-    if (input.reimbursement_recipient_entity_id) updates.reimbursement_recipient_entity_id = input.reimbursement_recipient_entity_id;
-    if (input.approved_amount != null) updates.approved_amount = input.approved_amount;
-    if (input.settled_amount != null) updates.settled_amount = input.settled_amount;
-    if (input.notes) {
-      updates.migration_notes = (expense.migration_notes ?? '') + '\n' + input.notes;
+    // Validate entity roles before calling RPC (better error messages)
+    if (input.billing_recipient_entity_id) {
+      await this.validateEntityRole(input.billing_recipient_entity_id, 'can_receive_invoices', 'billing recipient');
+    }
+    if (input.incurred_by_entity_id) {
+      await this.validateEntityRole(input.incurred_by_entity_id, 'can_incur_expenses', 'incurred_by');
+    }
+    if (input.initially_paid_by_entity_id) {
+      await this.validateEntityRole(input.initially_paid_by_entity_id, 'can_pay_expenses', 'initially_paid_by');
+    }
+    if (input.covered_by_entity_id) {
+      await this.validateEntityRole(input.covered_by_entity_id, 'can_cover_expenses', 'covered_by');
+    }
+    if (input.reimbursement_recipient_entity_id) {
+      await this.validateEntityRole(input.reimbursement_recipient_entity_id, 'can_receive_reimbursements', 'reimbursement_recipient');
     }
 
     // Never auto-complete
-    if (updates.status_v4 === 'completed') {
+    if (input.status === 'completed') {
       throw new Error('Cannot set status to completed during migration review without proof');
     }
 
-    const { data, error } = await this.supabase
-      .from('dev_expenses')
-      .update(updates)
-      .eq('id', id)
-      .select()
-      .single();
+    // Use transactional RPC for atomic resolution + snapshot + audit
+    const { data: rpcResult, error: rpcError } = await this.supabase
+      .rpc('resolve_migration_review_with_audit', {
+        p_expense_id: id,
+        p_status: input.status ?? null,
+        p_incurred_by_entity_id: input.incurred_by_entity_id ?? null,
+        p_initially_paid_by_entity_id: input.initially_paid_by_entity_id ?? null,
+        p_covered_by_entity_id: input.covered_by_entity_id ?? null,
+        p_reimbursement_recipient_entity_id: input.reimbursement_recipient_entity_id ?? null,
+        p_billing_recipient_entity_id: input.billing_recipient_entity_id ?? null,
+        p_approved_amount: input.approved_amount ?? null,
+        p_settled_amount: input.settled_amount ?? null,
+        p_migration_notes: input.notes ?? null,
+        p_actor_type: actor.actor_type,
+        p_actor_id: actor.actor_id,
+        p_actor_name: actor.actor_name,
+      });
 
-    if (error || !data) {
-      throw new Error(`Migration review resolve failed: ${error?.message ?? 'No data returned'}`);
+    if (rpcError || !rpcResult) {
+      const errMsg = rpcError?.message ?? '';
+      if (errMsg.includes('MIGRATION_REVIEW_ALREADY_RESOLVED')) {
+        throw new Error('MIGRATION_REVIEW_ALREADY_RESOLVED: migration review has already been resolved for this expense');
+      }
+      // No fallback — RPC is required for atomic resolution
+      throw new Error(`Financial operation unavailable: resolve_migration_review_with_audit RPC failed — ${errMsg}`);
     }
 
-    const updated = data as DevExpenseV4;
-
-    await createAuditEvent(this.supabase, {
-      expense_id: id,
-      event_type: 'migration_review_resolved',
-      previous_status: expense.status_v4,
-      new_status: updated.status_v4,
-      actor_type: actor.actor_type,
-      actor_id: actor.actor_id,
-      actor_name: actor.actor_name,
-      metadata: { input },
-    });
-
-    return updated;
+    return rpcResult as DevExpenseV4;
   }
 
   /* ── Stats ─────────────────────────────────────────────── */

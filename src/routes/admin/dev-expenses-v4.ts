@@ -58,6 +58,7 @@ const listSchema = z.object({
   supplier_id: z.string().uuid().optional(),
   incurred_by_entity_id: z.string().uuid().optional(),
   covered_by_entity_id: z.string().uuid().optional(),
+  billing_recipient_entity_id: z.string().uuid().optional(),
   currency: z.string().max(10).optional(),
   date_from: z.string().regex(DATE_RE).optional(),
   date_to: z.string().regex(DATE_RE).optional(),
@@ -83,6 +84,7 @@ const createSchema = z.object({
   initially_paid_by_entity_id: z.string().uuid().optional(),
   covered_by_entity_id: z.string().uuid().optional(),
   reimbursement_recipient_entity_id: z.string().uuid().optional(),
+  billing_recipient_entity_id: z.string().uuid().optional(),
   invoice_amount: z.number().min(0).max(99_999_999.99).optional(),
   invoice_currency: z.string().max(10).default('USD'),
   requested_amount: z.number().min(0).max(99_999_999.99).optional(),
@@ -106,6 +108,7 @@ const patchSchema = z.object({
   initially_paid_by_entity_id: z.string().uuid().nullable().optional(),
   covered_by_entity_id: z.string().uuid().nullable().optional(),
   reimbursement_recipient_entity_id: z.string().uuid().nullable().optional(),
+  billing_recipient_entity_id: z.string().uuid().nullable().optional(),
   invoice_amount: z.number().min(0).max(99_999_999.99).nullable().optional(),
   invoice_currency: z.string().max(10).optional(),
   requested_amount: z.number().min(0).max(99_999_999.99).nullable().optional(),
@@ -155,6 +158,7 @@ const migrationReviewSchema = z.object({
   initially_paid_by_entity_id: z.string().uuid().nullable().optional(),
   covered_by_entity_id: z.string().uuid().nullable().optional(),
   reimbursement_recipient_entity_id: z.string().uuid().nullable().optional(),
+  billing_recipient_entity_id: z.string().uuid().nullable().optional(),
   approved_amount: z.number().min(0).max(99_999_999.99).nullable().optional(),
   settled_amount: z.number().min(0).max(99_999_999.99).nullable().optional(),
   notes: z.string().max(2000).optional(),
@@ -182,8 +186,14 @@ function handleError(reply: FastifyReply, err: unknown) {
   const msg = err instanceof Error ? err.message : String(err);
   if (msg.includes('not found')) {
     reply.status(404).send({ error: msg, statusCode: 404 });
+  } else if (msg.includes('STATUS_CONFLICT')) {
+    reply.status(409).send({ error: msg, code: 'STATUS_CONFLICT', statusCode: 409 });
+  } else if (msg.includes('MIGRATION_REVIEW_ALREADY_RESOLVED')) {
+    reply.status(409).send({ error: msg, code: 'MIGRATION_REVIEW_ALREADY_RESOLVED', statusCode: 409 });
   } else if (msg.includes('Idempotency key conflict')) {
-    reply.status(409).send({ error: msg, statusCode: 409 });
+    reply.status(409).send({ error: msg, code: 'IDEMPOTENCY_CONFLICT', statusCode: 409 });
+  } else if (msg.includes('Financial operation unavailable')) {
+    reply.status(503).send({ error: 'Financial operation unavailable', code: 'DEV_EXPENSES_RPC_UNAVAILABLE', statusCode: 503 });
   } else if (msg.includes('Cannot') || msg.includes('required') || msg.includes('must be') || msg.includes('Transition') || msg.includes('already')) {
     reply.status(400).send({ error: msg, statusCode: 400 });
   } else {
@@ -400,6 +410,23 @@ const adminDevExpensesV4Route: FastifyPluginAsync = async (fastify) => {
       const service = new DevExpensesV4Service(fastify.supabase);
       const events = await service.listAuditEvents(request.params.id);
       return { items: events };
+    } catch (err) {
+      return handleError(reply, err);
+    }
+  });
+
+  /* ── POST /admin/dev-expenses-v4/:id/refresh-snapshot ─── */
+  fastify.post<{ Params: { id: string } }>('/admin/dev-expenses-v4/:id/refresh-snapshot', async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
+
+    if (!UUID_RE.test(request.params.id)) {
+      return reply.status(400).send({ error: 'Invalid expense id (expected UUID)' });
+    }
+
+    try {
+      const service = new DevExpensesV4Service(fastify.supabase);
+      const expense = await service.refreshSnapshot(request.params.id, getActor(request));
+      return { expense };
     } catch (err) {
       return handleError(reply, err);
     }

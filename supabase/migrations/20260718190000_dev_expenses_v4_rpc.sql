@@ -18,3 +18,5 @@ $$ LANGUAGE plpgsql STABLE;
 
 COMMENT ON FUNCTION public.sum_completed_settlements(UUID) IS
   'Returns the total of completed settlements for a given expense. Used by the V4 service to recalculate settled_amount.';
+
+GRANT EXECUTE ON FUNCTION public.sum_completed_settlements TO service_role;

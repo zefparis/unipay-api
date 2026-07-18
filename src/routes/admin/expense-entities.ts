@@ -12,6 +12,7 @@
 
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
+import { PUBLIC_ENTITY_COLUMNS } from '../../services/dev-expenses-v4';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -20,7 +21,33 @@ const createSchema = z.object({
   display_name: z.string().min(1).max(200).trim(),
   entity_type: z.enum(['person', 'company', 'partner_group', 'project', 'other']),
   legal_name: z.string().max(200).optional(),
+  trade_name: z.string().max(200).optional(),
   country_code: z.string().max(10).optional(),
+  email: z.string().max(200).optional(),
+  phone: z.string().max(50).optional(),
+  address: z.string().max(500).optional(),
+  city: z.string().max(100).optional(),
+  postal_code: z.string().max(20).optional(),
+  tax_id: z.string().max(100).optional(),
+  // New legal profile fields
+  registration_number: z.string().max(100).optional(),
+  vat_number: z.string().max(100).optional(),
+  address_line_1: z.string().max(500).optional(),
+  address_line_2: z.string().max(500).optional(),
+  region: z.string().max(100).optional(),
+  contact_name: z.string().max(200).optional(),
+  billing_email: z.string().max(200).optional(),
+  contact_email: z.string().max(200).optional(),
+  website: z.string().max(500).optional(),
+  legal_notes: z.string().max(2000).optional(),
+  // Role capabilities
+  can_incur_expenses: z.boolean().default(true),
+  can_receive_invoices: z.boolean().default(true),
+  can_pay_expenses: z.boolean().default(true),
+  can_cover_expenses: z.boolean().default(true),
+  can_receive_reimbursements: z.boolean().default(true),
+  // Sensitive
+  bank_details: z.record(z.unknown()).default({}),
   active: z.boolean().default(true),
   metadata: z.record(z.unknown()).default({}),
 }).strict();
@@ -29,7 +56,33 @@ const patchSchema = z.object({
   display_name: z.string().min(1).max(200).trim().optional(),
   entity_type: z.enum(['person', 'company', 'partner_group', 'project', 'other']).optional(),
   legal_name: z.string().max(200).nullable().optional(),
+  trade_name: z.string().max(200).nullable().optional(),
   country_code: z.string().max(10).nullable().optional(),
+  email: z.string().max(200).nullable().optional(),
+  phone: z.string().max(50).nullable().optional(),
+  address: z.string().max(500).nullable().optional(),
+  city: z.string().max(100).nullable().optional(),
+  postal_code: z.string().max(20).nullable().optional(),
+  tax_id: z.string().max(100).nullable().optional(),
+  // New legal profile fields
+  registration_number: z.string().max(100).nullable().optional(),
+  vat_number: z.string().max(100).nullable().optional(),
+  address_line_1: z.string().max(500).nullable().optional(),
+  address_line_2: z.string().max(500).nullable().optional(),
+  region: z.string().max(100).nullable().optional(),
+  contact_name: z.string().max(200).nullable().optional(),
+  billing_email: z.string().max(200).nullable().optional(),
+  contact_email: z.string().max(200).nullable().optional(),
+  website: z.string().max(500).nullable().optional(),
+  legal_notes: z.string().max(2000).nullable().optional(),
+  // Role capabilities
+  can_incur_expenses: z.boolean().optional(),
+  can_receive_invoices: z.boolean().optional(),
+  can_pay_expenses: z.boolean().optional(),
+  can_cover_expenses: z.boolean().optional(),
+  can_receive_reimbursements: z.boolean().optional(),
+  // Sensitive
+  bank_details: z.record(z.unknown()).nullable().optional(),
   active: z.boolean().optional(),
   metadata: z.record(z.unknown()).optional(),
 }).strict();
@@ -45,18 +98,51 @@ function requireAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
 const adminExpenseEntitiesRoute: FastifyPluginAsync = async (fastify) => {
 
   /* ── GET /admin/expense-entities ───────────────────────── */
-  fastify.get<{ Querystring: { active?: string; entity_type?: string } }>(
+  fastify.get<{ Querystring: {
+    active?: string;
+    entity_type?: string;
+    can_incur_expenses?: string;
+    can_receive_invoices?: string;
+    can_pay_expenses?: string;
+    can_cover_expenses?: string;
+    can_receive_reimbursements?: string;
+    country_code?: string;
+    search?: string;
+  } }>(
     '/admin/expense-entities',
     async (request, reply) => {
       if (!requireAdmin(request, reply)) return;
 
-      let q = fastify.supabase.from('expense_entities').select('*');
+      // Exclude bank_details from list responses
+      let q = fastify.supabase.from('expense_entities').select(PUBLIC_ENTITY_COLUMNS);
 
       if (request.query.active !== undefined) {
         q = q.eq('active', request.query.active !== 'false');
       }
       if (request.query.entity_type) {
         q = q.eq('entity_type', request.query.entity_type);
+      }
+      if (request.query.can_incur_expenses !== undefined) {
+        q = q.eq('can_incur_expenses', request.query.can_incur_expenses === 'true');
+      }
+      if (request.query.can_receive_invoices !== undefined) {
+        q = q.eq('can_receive_invoices', request.query.can_receive_invoices === 'true');
+      }
+      if (request.query.can_pay_expenses !== undefined) {
+        q = q.eq('can_pay_expenses', request.query.can_pay_expenses === 'true');
+      }
+      if (request.query.can_cover_expenses !== undefined) {
+        q = q.eq('can_cover_expenses', request.query.can_cover_expenses === 'true');
+      }
+      if (request.query.can_receive_reimbursements !== undefined) {
+        q = q.eq('can_receive_reimbursements', request.query.can_receive_reimbursements === 'true');
+      }
+      if (request.query.country_code) {
+        q = q.eq('country_code', request.query.country_code);
+      }
+      if (request.query.search) {
+        const s = request.query.search.trim();
+        q = q.or(`display_name.ilike.%${s}%,legal_name.ilike.%${s}%,trade_name.ilike.%${s}%,registration_number.ilike.%${s}%,tax_id.ilike.%${s}%,vat_number.ilike.%${s}%,billing_email.ilike.%${s}%,city.ilike.%${s}%`);
       }
 
       const { data, error } = await q.order('display_name');
@@ -82,7 +168,7 @@ const adminExpenseEntitiesRoute: FastifyPluginAsync = async (fastify) => {
     const { data, error } = await fastify.supabase
       .from('expense_entities')
       .insert(parse.data)
-      .select()
+      .select(PUBLIC_ENTITY_COLUMNS)
       .single();
 
     if (error) {
@@ -117,7 +203,7 @@ const adminExpenseEntitiesRoute: FastifyPluginAsync = async (fastify) => {
       .from('expense_entities')
       .update(parse.data)
       .eq('id', request.params.id)
-      .select()
+      .select(PUBLIC_ENTITY_COLUMNS)
       .single();
 
     if (error) {
