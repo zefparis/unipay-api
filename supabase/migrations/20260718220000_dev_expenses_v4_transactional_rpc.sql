@@ -230,7 +230,7 @@ CREATE OR REPLACE FUNCTION public.create_settlement_with_audit(
   p_settlement_type TEXT,
   p_payer_entity_id UUID DEFAULT NULL,
   p_recipient_entity_id UUID DEFAULT NULL,
-  p_amount        NUMERIC(14,2),
+  p_amount        NUMERIC(14,2) DEFAULT NULL,
   p_currency      TEXT DEFAULT 'USD',
   p_payment_method TEXT DEFAULT NULL,
   p_transaction_reference TEXT DEFAULT NULL,

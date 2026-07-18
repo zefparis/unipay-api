@@ -41,7 +41,11 @@ CREATE INDEX IF NOT EXISTS idx_dev_expenses_billing_recipient
 
 -- ── 3. UPDATE compatibility view ─────────────────────────────────────────────
 
-CREATE OR REPLACE VIEW public.dev_expenses_v4_view AS
+-- DROP + CREATE instead of CREATE OR REPLACE because new columns are inserted
+-- in the middle of the SELECT list, which PostgreSQL forbids for OR REPLACE.
+DROP VIEW IF EXISTS public.dev_expenses_v4_view;
+
+CREATE VIEW public.dev_expenses_v4_view AS
 SELECT
   de.id,
   de.title,

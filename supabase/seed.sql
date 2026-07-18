@@ -1,0 +1,3 @@
+-- Supabase local seed file
+-- Currently no additional seed data required beyond what migrations insert.
+-- Creditors are seeded in migration 20260706120000_dev_expenses_v2.sql.

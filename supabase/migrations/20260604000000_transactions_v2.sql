@@ -14,7 +14,7 @@ DROP TABLE IF EXISTS transactions;
 
 CREATE TABLE transactions (
   id                    uuid          PRIMARY KEY DEFAULT gen_random_uuid(),
-  merchant_id           text          NOT NULL REFERENCES operators(id) ON DELETE RESTRICT,
+  merchant_id           uuid          NOT NULL REFERENCES operators(id) ON DELETE RESTRICT,
   operator              text          NOT NULL
                           CHECK (operator IN ('orange', 'airtel', 'vodacash', 'afrimoney', 'usdt')),
   phone                 text          NOT NULL,
