@@ -173,7 +173,7 @@ const adminExpenseEntitiesRoute: FastifyPluginAsync = async (fastify) => {
 
     if (error) {
       if (error.code === '23505') {
-        return reply.status(409).send({ error: 'Entity with this code already exists' });
+        return reply.status(409).send({ error: 'Entity code already exists', code: 'ENTITY_CODE_CONFLICT' });
       }
       fastify.log.error({ err: error }, '[expense-entities] insert failed');
       return reply.status(500).send({ error: 'Internal Server Error' });

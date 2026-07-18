@@ -65,22 +65,20 @@ WHERE table_schema = 'public'
   AND column_name = 'bank_details';
 
 -- 8. GRANT EXECUTE on all RPC functions to service_role
-SELECT routine_name, has_execute_privilege
-FROM (
-  SELECT routine_name,
-    has_table_privilege('service_role', 'public.' || routine_name || '()', 'EXECUTE') AS has_execute_privilege
-  FROM information_schema.routines
-  WHERE routine_schema = 'public'
-    AND routine_name IN (
-      'transition_expense',
-      'confirm_settlement',
-      'create_settlement_with_audit',
-      'resolve_migration_review_with_audit',
-      'refresh_snapshot_with_audit',
-      'sum_completed_settlements'
-    )
-) t
-ORDER BY routine_name;
+SELECT p.proname AS routine_name,
+       has_function_privilege('service_role', p.oid, 'EXECUTE') AS has_execute_privilege
+FROM pg_proc p
+JOIN pg_namespace n ON p.pronamespace = n.oid
+WHERE n.nspname = 'public'
+  AND p.proname IN (
+    'transition_expense',
+    'confirm_settlement',
+    'create_settlement_with_audit',
+    'resolve_migration_review_with_audit',
+    'refresh_snapshot_with_audit',
+    'sum_completed_settlements'
+  )
+ORDER BY p.proname;
 
 -- 9. SECURITY DEFINER + search_path verification
 SELECT routine_name, security_type, routine_definition
