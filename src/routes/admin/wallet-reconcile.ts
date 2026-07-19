@@ -1,5 +1,5 @@
-import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
+import { safeSecretEqual } from '../../security/secret-compare';
 
 interface ReconcileBody {
   reference: string;
@@ -28,9 +28,7 @@ const walletReconcileRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       const adminSecret = process.env['ADMIN_SECRET'];
-      const _provided = Buffer.from(String(request.headers['x-admin-secret'] ?? ''));
-      const _expected = Buffer.from(adminSecret ?? '');
-      if (!adminSecret || _provided.length !== _expected.length || !crypto.timingSafeEqual(_provided, _expected)) {
+      if (!safeSecretEqual(request.headers['x-admin-secret'], adminSecret)) {
         return reply.status(401).send({ error: 'Unauthorized' });
       }
 

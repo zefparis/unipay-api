@@ -6,10 +6,10 @@
  * Auth: x-admin-secret header (hmac plugin).
  */
 
-import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { getHotWalletBalances } from '../../lib/bsc-withdrawal';
+import { safeSecretEqual } from '../../security/secret-compare';
 
 const adminHotwalletRoute: FastifyPluginAsync = async (fastify) => {
 
@@ -19,9 +19,7 @@ const adminHotwalletRoute: FastifyPluginAsync = async (fastify) => {
       config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
     },
     async (request, reply) => {
-      const _provided = Buffer.from(String(request.headers['x-admin-secret'] ?? ''));
-      const _expected = Buffer.from(env.ADMIN_SECRET ?? '');
-      if (!env.ADMIN_SECRET || _provided.length !== _expected.length || !crypto.timingSafeEqual(_provided, _expected)) {
+      if (!safeSecretEqual(request.headers['x-admin-secret'], env.ADMIN_SECRET)) {
         return reply.status(401).send({ error: 'Unauthorized' });
       }
 

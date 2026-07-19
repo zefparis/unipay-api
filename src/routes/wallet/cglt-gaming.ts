@@ -6,6 +6,7 @@ import { mintWCGLT } from '../../services/bridge';
 import { requireWallet } from '../../utils/wallet-jwt';
 import { findOrCreateWalletByPhone } from '../../utils/wallet-provision';
 import { isCgltBlockchainWriteEnabled } from '../../config/cglt-blockchain-mode';
+import { matchesAnySecret } from '../../security/secret-compare';
 
 const CGLT_PER_WCGLT = parseInt(process.env.CGLT_PER_WCGLT ?? '500');
 
@@ -26,18 +27,34 @@ interface BalanceQuery {
   phone: string;
 }
 
-/** Shared-secret guard for Congo Gaming ↔ UniPay server-to-server calls. */
+/**
+ * Shared-secret guard for CongoGaming → UniPay server-to-server calls.
+ *
+ * Trust boundary 1: accepts CONGOGAMING_API_KEY (new) or GAMING_API_KEY (legacy fallback).
+ * Never accepts BRIDGE_INBOUND_API_KEY — that belongs to trust boundary 2.
+ *
+ * Uses constant-time comparison via matchesAnySecret().
+ */
 function requireGamingKey(request: FastifyRequest, reply: FastifyReply): boolean {
-  const expected = env.GAMING_API_KEY;
-  if (!expected) {
+  const newKey = env.CONGOGAMING_API_KEY;
+  const legacyKey = env.GAMING_API_KEY;
+
+  if (!newKey && !legacyKey) {
     reply.status(500).send({ error: 'Gaming integration not configured', statusCode: 500 });
     return false;
   }
+
   const provided = request.headers['x-api-key'];
-  if (!provided || provided !== expected) {
+  if (typeof provided !== 'string' || !matchesAnySecret(provided, [newKey, legacyKey])) {
     reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
     return false;
   }
+
+  // Log if the legacy key was used (no secret value in log)
+  if (newKey && legacyKey && !matchesAnySecret(provided, [newKey]) && matchesAnySecret(provided, [legacyKey])) {
+    request.log.warn({ boundary: 'congogaming_to_unipay' }, '[LEGACY_API_KEY_USED]');
+  }
+
   return true;
 }
 

@@ -42,6 +42,20 @@ const envSchema = z.object({
   BRIDGE_API_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
   BRIDGE_API_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(16).optional()),
 
+  // ── Phase 05B0: Trust boundary separation ──
+  // New distinct variables for separated trust boundaries.
+  // Legacy GAMING_API_KEY / BRIDGE_API_KEY remain as temporary fallbacks
+  // during the dual-key rotation period (Phase 05B1).
+
+  // Trust boundary 1: CongoGaming → UniPay API (receiver side)
+  CONGOGAMING_API_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(8).optional()),
+
+  // Trust boundary 2: Bridge → UniPay API (receiver side)
+  BRIDGE_INBOUND_API_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(8).optional()),
+
+  // Trust boundary 3: UniPay API → Bridge (sender side)
+  UNIPAY_BRIDGE_API_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(16).optional()),
+
   // BSC wCGLT contract — must match bridge's BSC_WCGLT to avoid double-credit
   BSC_WCGLT_ADDRESS: z.preprocess((v) => (v === '' ? undefined : v), z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional()),
 
@@ -51,7 +65,7 @@ const envSchema = z.object({
   // Admin secret (plain header — internal tooling only)
   ADMIN_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(16).optional()),
 
-  // Congo Gaming ↔ UniPay shared secret (CGLT betting integration)
+  // Congo Gaming ↔ UniPay shared secret — LEGACY, kept for dual-key rotation only
   GAMING_API_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(8).optional()),
 
   // Fiat USD↔CDF conversion rate (manual oracle; update on Render when rate changes)

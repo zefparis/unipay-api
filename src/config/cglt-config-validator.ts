@@ -163,13 +163,14 @@ export async function validateCgltConfig(log?: { info: (msg: object, fmt?: strin
     // ── Check 8: Bridge endpoint compatibility ──
     // unipay-api calls /bridge/mint-wcglt, bridge exposes /bridge/mint
     // We check if /bridge/mint-wcglt returns 404 (incompatible)
-    if (bridgeReachable && env.BRIDGE_API_KEY) {
+    const bridgeAuthKey = env.UNIPAY_BRIDGE_API_KEY ?? env.BRIDGE_API_KEY;
+    if (bridgeReachable && bridgeAuthKey) {
       try {
         const response = await fetch(`${env.BRIDGE_API_URL}/bridge/mint-wcglt`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${env.BRIDGE_API_KEY}`,
+            'Authorization': `Bearer ${bridgeAuthKey}`,
           },
           body: JSON.stringify({ to: '0x0000000000000000000000000000000000000000', amount: '0' }),
           signal: AbortSignal.timeout(5000),

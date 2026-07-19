@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import type { ApiKeyWithOperator } from '../types/operator';
 import { env } from '../config/env';
+import { safeSecretEqual } from '../security/secret-compare';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -23,14 +24,15 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
     // Wallet routes use wallet JWT auth — handled inside each route
     if (urlPath.startsWith('/v1/wallet/')) return;
     if (urlPath.startsWith('/api/wallet/')) return;
-    // Internal routes are authenticated via x-api-key (GAMING_API_KEY) only
+    // Internal routes are authenticated via x-api-key (BRIDGE_INBOUND_API_KEY or legacy GAMING_API_KEY)
     if (urlPath.startsWith('/v1/internal/')) return;
     // Dev Expenses public report — token-protected, no admin auth
     if (urlPath.startsWith('/dev-expenses/report/')) return;
 
     // Admin secret bypass — avoids API key requirement for admin tooling
+    // Trust boundary 4: uses constant-time comparison via safeSecretEqual.
     const adminSecretHeader = request.headers['x-admin-secret'];
-    if (env.ADMIN_SECRET && adminSecretHeader === env.ADMIN_SECRET) {
+    if (safeSecretEqual(adminSecretHeader, env.ADMIN_SECRET)) {
       request.isAdmin = true;
       request.operatorId = 'admin';
       return;

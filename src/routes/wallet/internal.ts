@@ -1,8 +1,9 @@
 import crypto from 'node:crypto';
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { env } from '../../config/env';
 import { createUserWallet } from '../../services/cdp';
 import { getWcgltDepositProcessor } from '../../config/cglt-blockchain-mode';
+import { matchesAnySecret, safeSecretEqual } from '../../security/secret-compare';
 
 interface CreditBody {
   phone:        string;
@@ -13,14 +14,39 @@ interface CreditBody {
 
 const walletInternalRoute: FastifyPluginAsync = async (fastify) => {
 
+  /**
+   * Bridge inbound auth — trust boundary 2.
+   * Accepts BRIDGE_INBOUND_API_KEY (new) or GAMING_API_KEY (legacy fallback).
+   * Never accepts CONGOGAMING_API_KEY.
+   */
+  function requireBridgeInboundKey(request: FastifyRequest, reply: FastifyReply): boolean {
+    const newKey = env.BRIDGE_INBOUND_API_KEY;
+    const legacyKey = env.GAMING_API_KEY;
+
+    if (!newKey && !legacyKey) {
+      reply.status(500).send({ error: 'Bridge integration not configured' });
+      return false;
+    }
+
+    const provided = request.headers['x-api-key'];
+    if (typeof provided !== 'string' || !matchesAnySecret(provided, [newKey, legacyKey])) {
+      reply.status(401).send({ error: 'Unauthorized' });
+      return false;
+    }
+
+    if (newKey && legacyKey && !matchesAnySecret(provided, [newKey]) && matchesAnySecret(provided, [legacyKey])) {
+      request.log.warn({ boundary: 'bridge_to_unipay' }, '[LEGACY_API_KEY_USED]');
+    }
+
+    return true;
+  }
+
   /* ── GET /v1/internal/bsc-addresses ─────────────────────── */
   fastify.get(
     '/internal/bsc-addresses',
     { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
     async (request, reply) => {
-      if (request.headers['x-api-key'] !== env.GAMING_API_KEY) {
-        return reply.status(401).send({ error: 'Unauthorized' });
-      }
+      if (!requireBridgeInboundKey(request, reply)) return;
       const { data, error } = await fastify.supabase
         .from('wallet_users')
         .select('phone, blockchain_address')
@@ -55,9 +81,7 @@ const walletInternalRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      if (request.headers['x-api-key'] !== env.GAMING_API_KEY) {
-        return reply.status(401).send({ error: 'Unauthorized' });
-      }
+      if (!requireBridgeInboundKey(request, reply)) return;
 
       const { phone, cglt_amount, tx_hash } = request.body;
       const bsc_address = request.body.bsc_address.toLowerCase();
@@ -127,10 +151,8 @@ const walletInternalRoute: FastifyPluginAsync = async (fastify) => {
     '/internal/backfill-cdp-wallets',
     { config: { rateLimit: { max: 3, timeWindow: '1 minute' } } },
     async (request, reply) => {
-      const adminSecret = process.env.ADMIN_SECRET ?? '';
-      const _provided = Buffer.from(String(request.headers['x-admin-secret'] ?? ''));
-      const _expected = Buffer.from(adminSecret);
-      if (!adminSecret || _provided.length !== _expected.length || !crypto.timingSafeEqual(_provided, _expected)) {
+      const adminSecret = process.env.ADMIN_SECRET;
+      if (!safeSecretEqual(request.headers['x-admin-secret'], adminSecret)) {
         return reply.status(403).send({ error: 'Forbidden' });
       }
 

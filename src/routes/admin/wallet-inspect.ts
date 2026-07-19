@@ -1,14 +1,12 @@
-import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
+import { safeSecretEqual } from '../../security/secret-compare';
 
 const walletInspectRoute: FastifyPluginAsync = async (fastify) => {
   fastify.get<{ Params: { reference: string } }>(
     '/admin/wallet/inspect/:reference',
     async (request, reply) => {
       const adminSecret = process.env['ADMIN_SECRET'];
-      const _provided = Buffer.from(String(request.headers['x-admin-secret'] ?? ''));
-      const _expected = Buffer.from(adminSecret ?? '');
-      if (!adminSecret || _provided.length !== _expected.length || !crypto.timingSafeEqual(_provided, _expected)) {
+      if (!safeSecretEqual(request.headers['x-admin-secret'], adminSecret)) {
         return reply.status(401).send({ error: 'Unauthorized' });
       }
 

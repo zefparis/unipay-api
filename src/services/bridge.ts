@@ -7,6 +7,7 @@
  */
 
 import { assertCgltBlockchainWriteEnabled } from '../config/cglt-blockchain-mode';
+import { env } from '../config/env';
 
 const CGLT_PER_WCGLT   = 500;
 const BRIDGE_TIMEOUT_MS = 8_000; // must be < upstreamFetch timeout (10s) + Vercel function timeout (10s)
@@ -23,9 +24,11 @@ export async function mintWCGLT(
   amountCGLT: number,
 ): Promise<string> {
   assertCgltBlockchainWriteEnabled();
-  const bridgeUrl = process.env.BRIDGE_API_URL ?? 'http://104.248.166.144:3099';
-  const key       = process.env.BRIDGE_API_KEY;
-  if (!key) throw new Error('BRIDGE_API_KEY not set');
+  const bridgeUrl = env.BRIDGE_API_URL ?? 'http://104.248.166.144:3099';
+  // Trust boundary 3: UniPay API → Bridge — use UNIPAY_BRIDGE_API_KEY (new)
+  // with legacy BRIDGE_API_KEY fallback during dual-key rotation.
+  const key       = env.UNIPAY_BRIDGE_API_KEY ?? env.BRIDGE_API_KEY;
+  if (!key) throw new Error('UNIPAY_BRIDGE_API_KEY or BRIDGE_API_KEY not set');
 
   const wcgltAmount = amountCGLT / CGLT_PER_WCGLT;
 
