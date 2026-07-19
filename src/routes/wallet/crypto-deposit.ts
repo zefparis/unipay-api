@@ -6,13 +6,13 @@ import { requireWallet } from '../../utils/wallet-jwt';
 export const SUPPORTED_TOKENS = [
   {
     symbol:   'USDT',
-    contract: '0x55d398326f99059fF775485246999027B3197955',
+    contract: env.USDT_BSC_CONTRACT ?? '',
     decimals: 18,
     name:     'Tether USD',
   },
   {
     symbol:   'wCGLT',
-    contract: '0xBf0535d21E59E4BB026f6848cc71Db971B120374',
+    contract: env.BSC_WCGLT_ADDRESS ?? '',
     decimals: 18,
     name:     'Wrapped CGLT',
   },

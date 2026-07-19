@@ -3,6 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
 import { mintWCGLT } from '../../services/bridge';
+import { isCgltBlockchainWriteEnabled } from '../../config/cglt-blockchain-mode';
 
 const CGLT_PER_WCGLT = parseInt(process.env.CGLT_PER_WCGLT ?? '500', 10);
 
@@ -64,6 +65,11 @@ const wcgltSwapRoute: FastifyPluginAsync = async (fastify) => {
       const wcgltReceived = amountCglt / CGLT_PER_WCGLT;
       const orderId       = crypto.randomUUID();
       const reference     = `WCS-${orderId.slice(0, 8).toUpperCase()}`;
+
+      // blockchain_required — 503 avant toute modification DB
+      if (!isCgltBlockchainWriteEnabled()) {
+        return reply.status(503).send({ error: 'CGLT_BLOCKCHAIN_DISABLED', message: 'Bridge operations are disabled' });
+      }
 
       // Debit CGLT before bridge call
       await fastify.supabase

@@ -56,6 +56,9 @@ export interface HotWalletBalances {
 export async function getHotWalletBalances(): Promise<HotWalletBalances> {
   const wallet   = getHotWallet();
   const provider = getProvider();
+  if (!env.USDT_BSC_CONTRACT) {
+    throw new Error('USDT_BSC_CONTRACT not configured');
+  }
   const contract = new ethers.Contract(env.USDT_BSC_CONTRACT, ERC20_ABI, provider);
 
   const [usdtRaw, bnbRaw]: [bigint, bigint] = await Promise.all([
@@ -94,6 +97,9 @@ export async function sendUsdt({ to, amount }: SendUsdtParams): Promise<SendUsdt
   }
 
   const wallet   = getHotWallet();
+  if (!env.USDT_BSC_CONTRACT) {
+    throw new Error('USDT_BSC_CONTRACT not configured');
+  }
   const contract = new ethers.Contract(env.USDT_BSC_CONTRACT, ERC20_ABI, wallet);
   const provider = wallet.provider!;
 

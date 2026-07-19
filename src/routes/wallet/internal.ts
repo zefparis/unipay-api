@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { createUserWallet } from '../../services/cdp';
+import { getWcgltDepositProcessor } from '../../config/cglt-blockchain-mode';
 
 interface CreditBody {
   phone:        string;
@@ -60,6 +61,15 @@ const walletInternalRoute: FastifyPluginAsync = async (fastify) => {
 
       const { phone, cglt_amount, tx_hash } = request.body;
       const bsc_address = request.body.bsc_address.toLowerCase();
+
+      // Feature flag: only process if bridge processor is active
+      const processor = getWcgltDepositProcessor();
+      if (processor !== 'bridge') {
+        return reply.status(503).send({
+          error: 'WCGLT_DEPOSIT_PROCESSOR_DISABLED',
+          message: `Deposit processor is '${processor}', expected 'bridge'`,
+        });
+      }
 
       // Idempotence — vérifie si la tx est déjà traitée
       const { data: existing } = await fastify.supabase

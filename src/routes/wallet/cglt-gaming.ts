@@ -5,6 +5,7 @@ import { mintCGLT, getSwapRate } from '../../services/blockchain';
 import { mintWCGLT } from '../../services/bridge';
 import { requireWallet } from '../../utils/wallet-jwt';
 import { findOrCreateWalletByPhone } from '../../utils/wallet-provision';
+import { isCgltBlockchainWriteEnabled } from '../../config/cglt-blockchain-mode';
 
 const CGLT_PER_WCGLT = parseInt(process.env.CGLT_PER_WCGLT ?? '500');
 
@@ -155,9 +156,9 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
         .update({ cglt_balance: newBalance })
         .eq('id', wallet.id);
 
-      // ── Mint CGLT on-chain (best-effort; ledger credit already done) ──
+      // ── Mint CGLT on-chain (only if blockchain is enabled) ──
       let blockchainTxHash: string | null = null;
-      if (wallet.blockchain_address) {
+      if (wallet.blockchain_address && isCgltBlockchainWriteEnabled()) {
         try {
           blockchainTxHash = await mintCGLT(wallet.blockchain_address, amount, tx_ref);
         } catch (err) {
@@ -183,12 +184,13 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
         metadata:           { source: 'congogaming', game_ref, tx_ref },
       });
 
-      fastify.log.info({ walletId: wallet.id, amount, game_ref, tx_ref, blockchainTxHash }, '[gaming] CGLT credit');
+      fastify.log.info({ walletId: wallet.id, amount, game_ref, tx_ref, blockchainTxHash, settlement_mode: blockchainTxHash ? 'blockchain' : 'ledger' }, '[gaming] CGLT credit');
 
       return reply.status(201).send({
         success:            true,
         new_balance:        newBalance,
         blockchain_tx_hash: blockchainTxHash,
+        settlement_mode:    blockchainTxHash ? 'blockchain' : 'ledger',
       });
     },
   );
@@ -276,6 +278,11 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(400).send({ error: 'AMOUNT_TOO_SMALL', min_cglt: CGLT_PER_WCGLT });
       }
 
+      // blockchain_required — 503 avant toute modification DB
+      if (!isCgltBlockchainWriteEnabled()) {
+        return reply.status(503).send({ error: 'CGLT_BLOCKCHAIN_DISABLED', message: 'Bridge operations are disabled' });
+      }
+
       // Débiter le wallet UniPay
       const newBalance = cgltBalance - amount;
       await fastify.supabase
@@ -283,7 +290,6 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
         .update({ cglt_balance: newBalance })
         .eq('id', wallet.id);
 
-      // Minter wCGLT sur BSC
       let bscTxHash: string | null = null;
       try {
         bscTxHash = await mintWCGLT(bsc_address, amount);
@@ -364,6 +370,11 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
       const wCGLTAmount = amount / CGLT_PER_WCGLT;
       if (wCGLTAmount < 0.001) {
         return reply.status(400).send({ error: 'AMOUNT_TOO_SMALL', min_cglt: CGLT_PER_WCGLT });
+      }
+
+      // blockchain_required — 503 avant toute modification DB
+      if (!isCgltBlockchainWriteEnabled()) {
+        return reply.status(503).send({ error: 'CGLT_BLOCKCHAIN_DISABLED', message: 'Bridge operations are disabled' });
       }
 
       const newBalance = cgltBalance - amount;

@@ -6,6 +6,8 @@
  * only sends authenticated HTTP requests.
  */
 
+import { assertCgltBlockchainWriteEnabled } from '../config/cglt-blockchain-mode';
+
 const CGLT_PER_WCGLT   = 500;
 const BRIDGE_TIMEOUT_MS = 8_000; // must be < upstreamFetch timeout (10s) + Vercel function timeout (10s)
 
@@ -20,6 +22,7 @@ export async function mintWCGLT(
   bscAddress: string,
   amountCGLT: number,
 ): Promise<string> {
+  assertCgltBlockchainWriteEnabled();
   const bridgeUrl = process.env.BRIDGE_API_URL ?? 'http://104.248.166.144:3099';
   const key       = process.env.BRIDGE_API_KEY;
   if (!key) throw new Error('BRIDGE_API_KEY not set');

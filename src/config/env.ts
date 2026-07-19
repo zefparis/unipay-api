@@ -24,18 +24,26 @@ const envSchema = z.object({
   VODACASH_API_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
   VODACASH_API_KEY: z.string().optional(),
 
+  // ── CGLT Blockchain containment (Phase 03) ──
+  CGLT_BLOCKCHAIN_MODE: z.enum(['disabled', 'read_only', 'enabled']).default('disabled'),
+  WCGLT_DEPOSIT_PROCESSOR: z.enum(['disabled', 'bridge', 'bscscan']).default('disabled'),
+  CGLT_CHAIN_ID: z.string().regex(/^\d+$/).default('242626'),
+
   // USDT on-chain
   USDT_WALLET_ADDRESS: z.string().optional(),
   CGLT_NODE_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
-  CGLT_CONTRACT_ADDRESS: z.string().optional(),
-  CGLT_RESERVE_ADDRESS: z.string().optional(),
+  CGLT_CONTRACT_ADDRESS: z.preprocess((v) => (v === '' ? undefined : v), z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional()),
+  CGLT_RESERVE_ADDRESS: z.preprocess((v) => (v === '' ? undefined : v), z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional()),
   CGLT_MINTER_KEY: z.string().optional(),
-  USDT_ADDRESS: z.string().optional(),
+  USDT_ADDRESS: z.preprocess((v) => (v === '' ? undefined : v), z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional()),
   ENCRYPTION_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().regex(/^[0-9a-fA-F]{64}$/).optional()),
 
   // CGLT Bridge API — required for wCGLT minting on BSC
   BRIDGE_API_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
   BRIDGE_API_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(16).optional()),
+
+  // BSC wCGLT contract — must match bridge's BSC_WCGLT to avoid double-credit
+  BSC_WCGLT_ADDRESS: z.preprocess((v) => (v === '' ? undefined : v), z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional()),
 
   // Merchant JWT
   JWT_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(32).optional()),
@@ -95,7 +103,7 @@ const envSchema = z.object({
     z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional(),
   ),
   BSC_RPC_URL:      z.string().url().default('https://bsc-dataseed.binance.org'),
-  USDT_BSC_CONTRACT: z.string().regex(/^0x[0-9a-fA-F]{40}$/).default('0x55d398326f99059fF775485246999027B3197955'),
+  USDT_BSC_CONTRACT: z.preprocess((v) => (v === '' ? undefined : v), z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional()),
 
   // PayGuard (Hybrid Vector API) — server-to-server API key for KYC enroll/verify
   PAYGUARD_API_KEY: z.string().min(16).optional(),

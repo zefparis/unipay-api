@@ -54,6 +54,8 @@ import adminCreditorsRoute from './routes/admin/creditors';
 import adminQuotesRoute from './routes/admin/quotes';
 import adminDevExpensesV4Route from './routes/admin/dev-expenses-v4';
 import adminExpenseEntitiesRoute from './routes/admin/expense-entities';
+import cgltHealthRoute from './routes/admin/cglt-health';
+import { validateCgltConfig } from './config/cglt-config-validator';
 
 export async function buildServer() {
   const server = Fastify({
@@ -180,6 +182,7 @@ export async function buildServer() {
       v1.register(adminDevExpensesRoute);
       v1.register(adminDevExpensesV4Route);
       v1.register(adminExpenseEntitiesRoute);
+      v1.register(cgltHealthRoute);
     },
     { prefix: '/v1' },
   );
@@ -192,6 +195,11 @@ export async function buildServer() {
    * (without /v1) in addition to /v1/admin/dev-expenses/* — both require admin auth.
    * ────────────────────────────────────────────────────────────────────────── */
   await server.register(adminDevExpensesRoute);
+
+  // CGLT blockchain config validation — non-blocking, forces disabled on failure
+  void validateCgltConfig(server.log).catch((err) => {
+    server.log.error({ err }, '[CGLT_CONFIG_INVALID] Validation failed to run');
+  });
 
   // Global error handler
   server.setErrorHandler((error, request, reply) => {

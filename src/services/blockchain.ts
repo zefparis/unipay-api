@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { ethers } from 'ethers';
+import { assertCgltBlockchainWriteEnabled, isCgltBlockchainReadEnabled } from '../config/cglt-blockchain-mode';
 
 const CGLT_ABI = [
   'function mint(address to, uint256 amount, string txRef) external',
@@ -73,6 +74,7 @@ export async function mintCGLT(
   amountCDF: number,
   txRef: string,
 ): Promise<string> {
+  assertCgltBlockchainWriteEnabled();
   const amount = ethers.parseUnits(amountCDF.toString(), 18);
   const cgltContract = getCgltContract();
   const tx = await cgltContract.mint(walletAddress, amount, txRef, {
@@ -89,6 +91,7 @@ export async function burnCGLT(
   amountCDF: number,
   txRef: string,
 ): Promise<string> {
+  assertCgltBlockchainWriteEnabled();
   const amount = ethers.parseUnits(amountCDF.toString(), 18);
   const cgltContract = getCgltContract();
   const tx = await cgltContract.burn(walletAddress, amount, txRef, {
@@ -101,6 +104,9 @@ export async function burnCGLT(
 }
 
 export async function getCGLTBalance(walletAddress: string): Promise<number> {
+  if (!isCgltBlockchainReadEnabled()) {
+    throw new Error('CGLT_BLOCKCHAIN_DISABLED');
+  }
   const cgltContract = getCgltContract();
   const balance = await cgltContract.balanceOf(walletAddress);
   return Number(ethers.formatUnits(balance, 18));
@@ -124,6 +130,9 @@ export interface SwapRate {
 }
 
 export async function getSwapRate(): Promise<SwapRate> {
+  if (!isCgltBlockchainReadEnabled()) {
+    throw new Error('CGLT_BLOCKCHAIN_DISABLED');
+  }
   const provider = getProvider();
   const reserveAddress = getReserveAddress();
   const reserve = new ethers.Contract(reserveAddress, RESERVE_ABI, provider);

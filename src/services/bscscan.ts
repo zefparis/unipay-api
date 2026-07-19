@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { SUPPORTED_TOKENS } from '../routes/wallet/crypto-deposit';
+import { getWcgltDepositProcessor } from '../config/cglt-blockchain-mode';
 
 const MIN_DEPOSIT_USD = 1;            // ignore dust < $1
 const POLL_INTERVAL_MS = 15_000;      // 15 seconds
@@ -169,7 +170,12 @@ export function startBscPoller(
   logger.info('[bscscan] BSC deposit poller started (15 s interval)');
 
   const tick = async () => {
+    const processor = getWcgltDepositProcessor();
     for (const token of SUPPORTED_TOKENS) {
+      // Skip wCGLT deposits unless bscscan processor is active
+      if (token.symbol === 'wCGLT' && processor !== 'bscscan') {
+        continue;
+      }
       try {
         await checkDepositsForToken(
           supabase,
