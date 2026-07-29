@@ -18,8 +18,8 @@ const RESERVE_ABI = [
   'function cgltPerUsdt() view returns (uint256)',
   'function feePercent() view returns (uint256)',
   'function paused() view returns (bool)',
-  'function swapCGLTtoUSDT(uint256 cgltAmount) external',
-  'function swapUSDTtoCGLT(uint256 usdtAmount6) external',
+  'function swapCGLTtoUSDT(uint256 cgltAmount, uint256 minAmountOut) external',
+  'function swapUSDTtoCGLT(uint256 usdtAmount6, uint256 minAmountOut) external',
 ];
 
 function getProvider() {
