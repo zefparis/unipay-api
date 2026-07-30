@@ -4,7 +4,7 @@
     "module": "CommonJS",
     "lib": ["ES2022", "DOM"],
     "moduleResolution": "node",
-    "ignoreDeprecations": "6.0",
+    "ignoreDeprecations": "5.0",
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
