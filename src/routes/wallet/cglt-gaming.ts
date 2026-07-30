@@ -7,6 +7,7 @@ import { requireWallet } from '../../utils/wallet-jwt';
 import { findOrCreateWalletByPhone } from '../../utils/wallet-provision';
 import { isCgltBlockchainWriteEnabled } from '../../config/cglt-blockchain-mode';
 import { matchesAnySecret } from '../../security/secret-compare';
+import { checkDestinationAddress } from '../../lib/address-guard';
 
 const CGLT_PER_WCGLT = parseInt(process.env.CGLT_PER_WCGLT ?? '500');
 
@@ -392,6 +393,13 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
       // blockchain_required — 503 avant toute modification DB
       if (!isCgltBlockchainWriteEnabled()) {
         return reply.status(503).send({ error: 'CGLT_BLOCKCHAIN_DISABLED', message: 'Bridge operations are disabled' });
+      }
+
+      /* ── Destination address guard (forbidden + contract detection) ── */
+      const guard = await checkDestinationAddress(bsc_address, fastify.supabase);
+      if (!guard.ok) {
+        fastify.log.warn({ phone, bsc_address }, '[cglt-user] BSC withdraw blocked — address guard');
+        return reply.status(guard.status).send(guard.body);
       }
 
       const newBalance = cgltBalance - amount;

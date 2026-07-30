@@ -4,6 +4,7 @@ import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
 import { mintWCGLT } from '../../services/bridge';
 import { isCgltBlockchainWriteEnabled } from '../../config/cglt-blockchain-mode';
+import { checkDestinationAddress } from '../../lib/address-guard';
 
 const CGLT_PER_WCGLT = parseInt(process.env.CGLT_PER_WCGLT ?? '500', 10);
 
@@ -69,6 +70,13 @@ const wcgltSwapRoute: FastifyPluginAsync = async (fastify) => {
       // blockchain_required — 503 avant toute modification DB
       if (!isCgltBlockchainWriteEnabled()) {
         return reply.status(503).send({ error: 'CGLT_BLOCKCHAIN_DISABLED', message: 'Bridge operations are disabled' });
+      }
+
+      /* ── Destination address guard (forbidden + contract detection) ── */
+      const guard = await checkDestinationAddress(bscAddress, fastify.supabase);
+      if (!guard.ok) {
+        fastify.log.warn({ walletId: payload.wallet_id, bsc_recipient: bscAddress }, '[wcglt-swap] bridge blocked — address guard');
+        return reply.status(guard.status).send(guard.body);
       }
 
       // Debit CGLT before bridge call
