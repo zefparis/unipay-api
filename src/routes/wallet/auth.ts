@@ -33,6 +33,7 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: RegisterBody }>(
     '/wallet/register',
     {
+      config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
       schema: {
         body: {
           type: 'object',
@@ -139,6 +140,7 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: LoginBody }>(
     '/wallet/login',
     {
+      config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
       schema: {
         body: {
           type: 'object',
