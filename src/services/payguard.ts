@@ -1,4 +1,4 @@
-const PAYGUARD_API = 'https://hybrid-vector-api-m5xt.onrender.com';
+const PAYGUARD_API = process.env.PAYGUARD_API_URL || 'https://hybrid-vector-api-owc4.onrender.com';
 const PAYGUARD_API_KEY = process.env.PAYGUARD_API_KEY!;
 const PAYGUARD_TENANT = 'unipay-congo';
 
