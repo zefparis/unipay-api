@@ -283,6 +283,66 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
       });
     },
   );
+
+  /* ── POST /v1/merchant/settlement/phone ────────────────────── */
+  /* Allows a merchant to set/update their settlement phone number. */
+  fastify.post<{ Body: { phone: string } }>(
+    '/merchant/settlement/phone',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['phone'],
+          properties: {
+            phone: { type: 'string', minLength: 8, maxLength: 32 },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              ok: { type: 'boolean' },
+              settlement_phone: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const payload = requireMerchantAuth(request);
+      if (!payload) {
+        return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
+      }
+
+      const { phone } = request.body;
+
+      // Validate DRC phone format
+      if (!isValidDrcPhone(phone)) {
+        return reply.status(400).send({
+          error: 'INVALID_PHONE',
+          message: 'Numéro invalide. Format attendu : +243 suivi de 9 chiffres, ou 0 suivi de 9 chiffres.',
+          statusCode: 400,
+        });
+      }
+
+      // Normalize to a canonical format (strip spaces, ensure +243 prefix)
+      const normalized = phone.trim().replace(/\s+/g, '');
+
+      const { error } = await fastify.supabase
+        .from('merchants')
+        .update({ settlement_phone: normalized, updated_at: new Date().toISOString() })
+        .eq('id', payload.merchant_id);
+
+      if (error) {
+        fastify.log.error({ err: error, merchantId: payload.merchant_id }, '[settlement/phone] update failed');
+        return reply.status(500).send({ error: 'Failed to update phone', statusCode: 500 });
+      }
+
+      fastify.log.info({ merchantId: payload.merchant_id, phone: normalized }, '[settlement/phone] phone updated');
+
+      return reply.send({ ok: true, settlement_phone: normalized });
+    },
+  );
 };
 
 export default merchantSettlementRoute;
