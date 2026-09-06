@@ -363,17 +363,12 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(500).send({ error: 'Credit failed' });
       }
     } else {
-      // CDF — plain update (read-modify-write acceptable for rare callback path)
-      const { data: w } = await fastify.supabase
-        .from('wallet_users')
-        .select('balance_cdf')
-        .eq('id', tx.wallet_user_id)
-        .single();
-      const newCdf = Number(w?.balance_cdf ?? 0) + netCredited;
-      await fastify.supabase
-        .from('wallet_users')
-        .update({ balance_cdf: newCdf })
-        .eq('id', tx.wallet_user_id);
+      const { error: creditErr } = await fastify.supabase
+        .rpc('wallet_credit_cdf', { p_user_id: tx.wallet_user_id, p_amount: netCredited });
+      if (creditErr) {
+        fastify.log.error({ err: creditErr.message, txId: tx.id }, '[unipesa/callback] CDF credit failed');
+        return reply.status(500).send({ error: 'Credit failed' });
+      }
     }
 
     await fastify.supabase

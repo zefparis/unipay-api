@@ -101,11 +101,16 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      const newBalance = cgltBalance - amount;
-      await fastify.supabase
-        .from('wallet_users')
-        .update({ cglt_balance: newBalance })
-        .eq('id', wallet.id);
+      const { data: debitedBalance, error: debitError } = await fastify.supabase
+        .rpc('wallet_debit_cglt', { p_user_id: wallet.id, p_amount: amount });
+      if (debitError) {
+        const isInsufficient = debitError.message?.includes('INSUFFICIENT_CGLT');
+        return reply.status(isInsufficient ? 402 : 500).send({
+          error: isInsufficient ? 'INSUFFICIENT_CGLT' : 'CGLT_DEBIT_FAILED',
+          statusCode: isInsufficient ? 402 : 500,
+        });
+      }
+      const newBalance = Number(debitedBalance);
 
       const txId   = crypto.randomUUID();
       const txRef  = `GAME-${txId.slice(0, 8).toUpperCase()}`;
@@ -168,11 +173,13 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(403).send({ error: 'Account is suspended', statusCode: 403 });
       }
 
-      const newBalance = Number(wallet.cglt_balance ?? 0) + amount;
-      await fastify.supabase
-        .from('wallet_users')
-        .update({ cglt_balance: newBalance })
-        .eq('id', wallet.id);
+      const { data: creditedBalance, error: creditError } = await fastify.supabase
+        .rpc('wallet_credit_cglt', { p_user_id: wallet.id, p_amount: amount });
+      if (creditError) {
+        fastify.log.error({ err: creditError, walletId: wallet.id, amount }, '[gaming] CGLT credit failed');
+        return reply.status(500).send({ error: 'CGLT_CREDIT_FAILED', statusCode: 500 });
+      }
+      const newBalance = Number(creditedBalance);
 
       // ── Mint CGLT on-chain (only if blockchain is enabled) ──
       let blockchainTxHash: string | null = null;
@@ -302,11 +309,15 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       // Débiter le wallet UniPay
-      const newBalance = cgltBalance - amount;
-      await fastify.supabase
-        .from('wallet_users')
-        .update({ cglt_balance: newBalance })
-        .eq('id', wallet.id);
+      const { data: debitedBalance, error: debitError } = await fastify.supabase
+        .rpc('wallet_debit_cglt', { p_user_id: wallet.id, p_amount: amount });
+      if (debitError) {
+        const isInsufficient = debitError.message?.includes('INSUFFICIENT_CGLT');
+        return reply.status(isInsufficient ? 402 : 500).send({
+          error: isInsufficient ? 'INSUFFICIENT_CGLT' : 'CGLT_DEBIT_FAILED',
+        });
+      }
+      const newBalance = Number(debitedBalance);
 
       let bscTxHash: string | null = null;
       try {
@@ -314,9 +325,7 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
       } catch (err) {
         // Rembourser si le bridge échoue
         await fastify.supabase
-          .from('wallet_users')
-          .update({ cglt_balance: cgltBalance })
-          .eq('id', wallet.id);
+          .rpc('wallet_credit_cglt', { p_user_id: wallet.id, p_amount: amount });
         fastify.log.error({ err, phone, bsc_address, amount }, '[cglt] BSC bridge failed (refunded)');
         return reply.status(502).send({ error: 'BRIDGE_FAILED' });
       }
@@ -402,14 +411,21 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(guard.status).send(guard.body);
       }
 
-      const newBalance = cgltBalance - amount;
-      await fastify.supabase.from('wallet_users').update({ cglt_balance: newBalance }).eq('id', wallet.id);
+      const { data: debitedBalance, error: debitError } = await fastify.supabase
+        .rpc('wallet_debit_cglt', { p_user_id: wallet.id, p_amount: amount });
+      if (debitError) {
+        const isInsufficient = debitError.message?.includes('INSUFFICIENT_CGLT');
+        return reply.status(isInsufficient ? 402 : 500).send({
+          error: isInsufficient ? 'INSUFFICIENT_CGLT' : 'CGLT_DEBIT_FAILED',
+        });
+      }
+      const newBalance = Number(debitedBalance);
 
       let bscTxHash: string | null = null;
       try {
         bscTxHash = await mintWCGLT(bsc_address, amount);
       } catch (err) {
-        await fastify.supabase.from('wallet_users').update({ cglt_balance: cgltBalance }).eq('id', wallet.id);
+        await fastify.supabase.rpc('wallet_credit_cglt', { p_user_id: wallet.id, p_amount: amount });
         fastify.log.error({ err, phone, bsc_address, amount }, '[cglt-user] BSC bridge failed (refunded)');
         return reply.status(502).send({ error: 'BRIDGE_FAILED' });
       }

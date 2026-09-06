@@ -86,12 +86,10 @@ const walletReconcileRoute: FastifyPluginAsync = async (fastify) => {
 
       let newBalance = Number(walletRow.balance_cdf ?? 0);
       if (delta > 0) {
-        newBalance += delta;
-        const { error: balErr } = await fastify.supabase
-          .from('wallet_users')
-          .update({ balance_cdf: newBalance })
-          .eq('id', tx.wallet_user_id);
+        const { data: creditedBalance, error: balErr } = await fastify.supabase
+          .rpc('wallet_credit_cdf', { p_user_id: tx.wallet_user_id, p_amount: delta });
         if (balErr) return reply.status(500).send({ error: balErr.message });
+        newBalance = Number(creditedBalance);
       }
 
       fastify.log.info({ reference, action, delta, newBalance }, '[reconcile] done');

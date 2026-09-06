@@ -349,34 +349,18 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
       return reply.status(400).send({ error: 'amount must be a non-zero number' });
     }
 
-    // Fetch current balance
-    const { data: user, error: fetchErr } = await fastify.supabase
-      .from('wallet_users')
-      .select('id, balance_cdf, is_active')
-      .eq('id', wallet_user_id)
-      .maybeSingle();
-
-    if (fetchErr || !user) {
-      return reply.status(404).send({ error: 'Wallet user not found' });
-    }
-
-    const currentBalance = Number(user.balance_cdf ?? 0);
-    if (amount < 0 && currentBalance + amount < 0) {
-      return reply.status(400).send({ error: 'Insufficient balance for debit adjustment' });
-    }
-
-    const newBalance = currentBalance + amount;
-
     // Atomic update
-    const { error: updateErr } = await fastify.supabase
-      .from('wallet_users')
-      .update({ balance_cdf: newBalance, updated_at: new Date().toISOString() })
-      .eq('id', wallet_user_id);
+    const { data: adjustedBalance, error: updateErr } = await fastify.supabase
+      .rpc('wallet_adjust_cdf', { p_user_id: wallet_user_id, p_delta: amount });
 
     if (updateErr) {
-      fastify.log.error({ err: updateErr, wallet_user_id }, 'balance adjustment failed');
-      return reply.status(500).send({ error: 'Balance update failed' });
+      const isRejected = updateErr.message?.includes('WALLET_NOT_FOUND_OR_INSUFFICIENT_FUNDS');
+      fastify.log.warn({ err: updateErr, wallet_user_id }, 'balance adjustment rejected');
+      return reply.status(isRejected ? 400 : 500).send({
+        error: isRejected ? 'Wallet not found or insufficient balance' : 'Balance update failed',
+      });
     }
+    const newBalance = Number(adjustedBalance);
 
     // Insert ledger entry
     await fastify.supabase.from('ledger_entries').insert({

@@ -80,10 +80,15 @@ const wcgltSwapRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       // Debit CGLT before bridge call
-      await fastify.supabase
-        .from('wallet_users')
-        .update({ cglt_balance: cgltBalance - amountCglt })
-        .eq('id', payload.wallet_id);
+      const { data: debitedBalance, error: debitError } = await fastify.supabase
+        .rpc('wallet_debit_cglt', { p_user_id: payload.wallet_id, p_amount: amountCglt });
+      if (debitError) {
+        const isInsufficient = debitError.message?.includes('INSUFFICIENT_CGLT');
+        return reply.status(isInsufficient ? 402 : 500).send({
+          error: isInsufficient ? 'insufficient_cglt' : 'cglt_debit_failed',
+        });
+      }
+      const newBalance = Number(debitedBalance);
 
       // Bridge: mint wCGLT on BSC to user's address
       let txHash: string;
@@ -92,9 +97,7 @@ const wcgltSwapRoute: FastifyPluginAsync = async (fastify) => {
       } catch (e) {
         // Refund on bridge failure
         await fastify.supabase
-          .from('wallet_users')
-          .update({ cglt_balance: cgltBalance })
-          .eq('id', payload.wallet_id);
+          .rpc('wallet_credit_cglt', { p_user_id: payload.wallet_id, p_amount: amountCglt });
         fastify.log.error({ err: e }, '[wcglt-swap] bridge failed — CGLT refunded');
         return reply.status(502).send({ error: 'bridge_failed' });
       }
@@ -125,6 +128,7 @@ const wcgltSwapRoute: FastifyPluginAsync = async (fastify) => {
         cglt_spent:    amountCglt,
         wcglt_swapped: wcgltReceived,
         usdt_received: wcgltReceived,
+        new_balance: newBalance,
         bsc_tx_hash:   txHash,
         bsc_recipient: bscAddress,
       });

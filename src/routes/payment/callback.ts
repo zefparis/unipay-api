@@ -3,6 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { verifyCallbackSignature, normalizeCallback } from '../../services/avada';
 import type { AvadaCallbackPayload } from '../../services/avada';
 import { sendWalletDepositEmail } from '../../services/email';
+import { validateProviderCallbackProof } from '../../lib/provider-callback-proof';
 
 // SSRF guard: only HTTPS to non-private/loopback hosts
 function isSafeWebhookUrl(raw: string): boolean {
@@ -62,11 +63,9 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       // Avada signature verification — signature is embedded in the body (AvadaPay HMAC-SHA512 spec)
-      if (request.body && 'signature' in request.body) {
-        if (!verifyCallbackSignature(request.body as Record<string, unknown>)) {
-          fastify.log.warn({ transaction_id: request.body?.transaction_id }, 'Invalid Avada signature');
-          return reply.status(401).send({ error: 'Invalid webhook signature', statusCode: 401 });
-        }
+      if (!request.body?.signature || !verifyCallbackSignature(request.body as Record<string, unknown>)) {
+        fastify.log.warn({ transaction_id: request.body?.transaction_id }, 'Missing or invalid Avada signature');
+        return reply.status(401).send({ error: 'Missing or invalid webhook signature', statusCode: 401 });
       }
 
       const normalized = normalizeCallback(request.body);
@@ -82,11 +81,23 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
       // Primary lookup: by avada_transaction_id
       // Fallback: by reference (our WD-XXXXXXXX order_id), in case Unipesa's
       // callback transaction_id differs from the one returned in the collection response
-      let tx: { id: string; merchant_id: string; status: string; wallet_user_id?: string | null; direction?: string; net_amount?: number } | null = null;
+      let tx: {
+        id: string;
+        merchant_id: string;
+        status: string;
+        wallet_user_id?: string | null;
+        direction?: string;
+        amount: number;
+        net_amount?: number;
+        currency: string;
+        phone: string;
+        operator: string;
+        reference: string | null;
+      } | null = null;
       {
         const { data, error } = await fastify.supabase
           .from('transactions')
-          .select('id, merchant_id, status, wallet_user_id, direction, net_amount')
+          .select('id, merchant_id, status, wallet_user_id, direction, amount, net_amount, currency, phone, operator, reference')
           .eq('avada_transaction_id', avada_transaction_id)
           .maybeSingle();
         if (error) {
@@ -99,7 +110,7 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
       if (!tx && reference) {
         const { data, error } = await fastify.supabase
           .from('transactions')
-          .select('id, merchant_id, status, wallet_user_id, direction, net_amount')
+          .select('id, merchant_id, status, wallet_user_id, direction, amount, net_amount, currency, phone, operator, reference')
           .eq('reference', reference)
           .maybeSingle();
         if (error) {
@@ -112,6 +123,27 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
       if (!tx) {
         fastify.log.warn({ avada_transaction_id, reference }, 'Callback for unknown transaction');
         return reply.status(404).send({ error: 'Transaction not found', statusCode: 404 });
+      }
+
+      const proof = validateProviderCallbackProof(
+        {
+          reference,
+          amount: normalized.amount,
+          phone: normalized.phone,
+          operator: normalized.operator,
+          currency: normalized.raw.currency,
+        },
+        {
+          reference: tx.reference,
+          amount: Number(tx.amount),
+          phone: tx.phone,
+          operator: tx.operator,
+          currency: tx.currency,
+        },
+      );
+      if (!proof.valid) {
+        fastify.log.warn({ txId: tx.id, reason: proof.reason }, 'Provider callback does not match stored transaction');
+        return reply.status(400).send({ error: 'Provider callback proof mismatch', statusCode: 400 });
       }
 
       // Idempotency — skip if already terminal
@@ -132,7 +164,7 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
       if (dbStatus === 'success' && txDirection === 'collect' && walletUserId) {
         const { data: walletRow } = await fastify.supabase
           .from('wallet_users')
-          .select('balance_cdf, email, full_name, lang')
+          .select('email, full_name, lang')
           .eq('id', walletUserId)
           .maybeSingle();
 
@@ -140,11 +172,7 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
           // Deposits only credit the CDF balance. Converting CDF to CGLT is now
           // an explicit user action handled by the swap route.
           const { error: creditError } = await fastify.supabase
-            .from('wallet_users')
-            .update({
-              balance_cdf: Number(walletRow.balance_cdf ?? 0) + txNetAmount,
-            })
-            .eq('id', walletUserId);
+            .rpc('wallet_credit_cdf', { p_user_id: walletUserId, p_amount: txNetAmount });
 
           if (creditError) {
             fastify.log.error(

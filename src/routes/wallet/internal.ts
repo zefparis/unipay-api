@@ -117,12 +117,13 @@ const walletInternalRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(404).send({ error: 'wallet_not_found' });
       }
 
-      const newBalance = Number(wallet.cglt_balance ?? 0) + cglt_amount;
-
-      await fastify.supabase
-        .from('wallet_users')
-        .update({ cglt_balance: newBalance })
-        .eq('id', wallet.id);
+      const { data: creditedBalance, error: creditError } = await fastify.supabase
+        .rpc('wallet_credit_cglt', { p_user_id: wallet.id, p_amount: cglt_amount });
+      if (creditError) {
+        fastify.log.error({ err: creditError, walletId: wallet.id }, '[internal] CGLT credit failed');
+        return reply.status(500).send({ error: 'credit_failed' });
+      }
+      const newBalance = Number(creditedBalance);
 
       await fastify.supabase.from('transactions').insert({
         id:                 crypto.randomUUID(),

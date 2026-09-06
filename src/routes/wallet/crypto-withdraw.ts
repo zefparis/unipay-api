@@ -112,14 +112,14 @@ const walletCryptoWithdrawRoute: FastifyPluginAsync = async (fastify) => {
 
       /* ── 4. Debit USDT balance ───────────────────────────────────────── */
       const { error: debitErr } = await fastify.supabase
-        .from('wallet_users')
-        .update({ usdt_balance: currentUsdt - amount })
-        .eq('id', walletId)
-        .gte('usdt_balance', amount); // atomic guard
+        .rpc('wallet_debit_usdt', { p_user_id: walletId, p_amount: amount });
 
       if (debitErr) {
-        fastify.log.error({ err: debitErr, walletId }, 'USDT debit failed');
-        return reply.status(500).send({ error: 'Debit failed' });
+        const isInsufficient = debitErr.message?.includes('INSUFFICIENT_USDT');
+        fastify.log.warn({ err: debitErr, walletId }, 'USDT debit rejected');
+        return reply.status(isInsufficient ? 402 : 500).send({
+          error: isInsufficient ? 'INSUFFICIENT_USDT' : 'Debit failed',
+        });
       }
 
       /* ── 5. Insert withdrawal_requests row ──────────────────────────── */
@@ -139,9 +139,7 @@ const walletCryptoWithdrawRoute: FastifyPluginAsync = async (fastify) => {
       if (insertErr || !wrRow) {
         // Compensate — refund
         await fastify.supabase
-          .from('wallet_users')
-          .update({ usdt_balance: currentUsdt })
-          .eq('id', walletId);
+          .rpc('wallet_credit_usdt', { p_user_id: walletId, p_amount: amount });
         fastify.log.error({ err: insertErr, walletId }, 'withdrawal_requests insert failed — refunded');
         return reply.status(500).send({ error: 'Failed to create withdrawal record' });
       }
@@ -189,9 +187,7 @@ const walletCryptoWithdrawRoute: FastifyPluginAsync = async (fastify) => {
 
         // Compensate — refund balance
         await fastify.supabase
-          .from('wallet_users')
-          .update({ usdt_balance: currentUsdt })
-          .eq('id', walletId);
+          .rpc('wallet_credit_usdt', { p_user_id: walletId, p_amount: amount });
 
         // Mark failed
         await fastify.supabase

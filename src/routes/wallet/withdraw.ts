@@ -8,6 +8,7 @@ import { notify } from '../../utils/push';
 import { sandboxPayout } from '../../services/avada';
 import type { Channel } from '../../types/payment';
 import { getLimits } from '../../utils/kyc-limits';
+import { isSandboxAllowed } from '../../lib/sandbox-mode';
 
 const WALLET_OPERATORS: Channel[] = ['orange', 'airtel', 'afrimoney'];
 
@@ -119,7 +120,7 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      const isSandbox = request.headers['x-unipay-mode'] === 'sandbox';
+      const isSandbox = isSandboxAllowed(env.NODE_ENV, request.headers['x-unipay-mode']);
 
       const txId      = crypto.randomUUID();
       const reference = `WW-${txId.slice(0, 8).toUpperCase()}`;
@@ -200,9 +201,7 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
       if (insertError) {
         // Compensate — refund deducted balance
         await fastify.supabase
-          .from('wallet_users')
-          .update({ balance_cdf: currentBalance })
-          .eq('id', walletId);
+          .rpc('wallet_credit_cdf', { p_user_id: walletId, p_amount: totalDeducted });
         fastify.log.error({ err: insertError, txId }, 'Wallet withdraw insert failed — balance refunded');
         return reply.status(500).send({ error: 'Failed to create withdrawal', statusCode: 500 });
       }
@@ -257,9 +256,7 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
         // Provider failed — refund balance and mark transaction failed
         fastify.log.error({ err, txId, operator }, 'Wallet withdraw provider error — refunding');
         await fastify.supabase
-          .from('wallet_users')
-          .update({ balance_cdf: currentBalance })
-          .eq('id', walletId);
+          .rpc('wallet_credit_cdf', { p_user_id: walletId, p_amount: totalDeducted });
         await fastify.supabase
           .from('transactions')
           .update({ status: 'failed' })

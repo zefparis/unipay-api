@@ -3,6 +3,8 @@ import type { FastifyPluginAsync } from 'fastify';
 import { getProviderService } from '../../services/index';
 import { sandboxCollection, sandboxPayout } from '../../services/avada';
 import type { Channel, Direction } from '../../types/payment';
+import { env } from '../../config/env';
+import { isSandboxAllowed } from '../../lib/sandbox-mode';
 
 const FEE_RATE = 0.04; // 4% per signed contract with Avada Group RDC
 
@@ -54,7 +56,7 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
       const merchantId = request.operatorId;
 
       // ── Sandbox detection ──────────────────────────────────────
-      let isSandbox = request.headers['x-unipay-mode'] === 'sandbox';
+      let isSandbox = isSandboxAllowed(env.NODE_ENV, request.headers['x-unipay-mode']);
       if (!isSandbox) {
         const { data: mData } = await fastify.supabase
           .from('merchants')

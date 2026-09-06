@@ -7,6 +7,7 @@ import { sandboxCollection } from '../../services/avada';
 import type { Channel } from '../../types/payment';
 import { getLimits } from '../../utils/kyc-limits';
 import { notify } from '../../utils/push';
+import { isSandboxAllowed } from '../../lib/sandbox-mode';
 
 // Wallet-supported MM operators (Vodacash pending due diligence, USDT not in wallet scope)
 const WALLET_OPERATORS: Channel[] = ['orange', 'airtel', 'afrimoney'];
@@ -105,7 +106,7 @@ const walletDepositRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       // Sandbox detection via header
-      const isSandbox = request.headers['x-unipay-mode'] === 'sandbox';
+      const isSandbox = isSandboxAllowed(env.NODE_ENV, request.headers['x-unipay-mode']);
 
       const fee       = Math.round(amount * FEE_RATE * 100) / 100;
       const netAmount = Math.round((amount - fee) * 100) / 100;
@@ -134,9 +135,7 @@ const walletDepositRoute: FastifyPluginAsync = async (fastify) => {
 
         // Credit balance immediately in sandbox
         await fastify.supabase
-          .from('wallet_users')
-          .update({ balance_cdf: Number(wallet.balance_cdf ?? 0) + netAmount })
-          .eq('id', walletId);
+          .rpc('wallet_credit_cdf', { p_user_id: walletId, p_amount: netAmount });
 
         fastify.log.info({ txId, walletId, isSandbox: true }, 'Wallet deposit (sandbox)');
 
