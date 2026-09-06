@@ -109,7 +109,7 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
       // 5. Generate API key: plaintext = "up_<32 random hex>", store bcrypt hash
       const rawKey    = `up_${crypto.randomBytes(16).toString('hex')}`;
       const keyHash   = await bcrypt.hash(rawKey, 10);
-      const keyPrefix = rawKey.slice(0, 8);
+      const keyPrefix = rawKey.slice(0, 12);
 
       const { error: keyError } = await fastify.supabase
         .from('api_keys')

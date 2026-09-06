@@ -1,5 +1,5 @@
 import fp from 'fastify-plugin';
-import crypto from 'node:crypto';
+import bcrypt from 'bcryptjs';
 import type { FastifyPluginAsync } from 'fastify';
 import type { ApiKeyWithOperator } from '../types/operator';
 import { env } from '../config/env';
@@ -65,11 +65,12 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
       return reply.status(401).send({ error: 'Unauthorized', message: 'Invalid API key', statusCode: 401 });
     }
 
-    // Find the matching hash (usually 1 candidate)
+    // Find the matching hash — bcrypt hash is salted, so we must run
+    // bcrypt.compare against every candidate returned by the prefix lookup
+    // (the 12-char prefix can collide across keys, though rarely).
     let matched: ApiKeyWithOperator | null = null;
-    const hash = crypto.createHash('sha256').update(apiKey).digest('hex');
     for (const k of keys as ApiKeyWithOperator[]) {
-      if (hash === k.key_hash) {
+      if (await bcrypt.compare(apiKey, k.key_hash)) {
         matched = k;
         break;
       }

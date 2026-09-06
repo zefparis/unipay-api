@@ -52,7 +52,7 @@ const merchantApikeyRoute: FastifyPluginAsync = async (fastify) => {
       await fastify.supabase
         .from('api_keys')
         .update({ is_active: false })
-        .eq('operator_id', payload.merchant_id)
+        .eq('merchant_id', payload.merchant_id)
         .eq('label', label);
 
       // Generate new key: upk_live_ prefix + 32 random hex chars
@@ -61,7 +61,7 @@ const merchantApikeyRoute: FastifyPluginAsync = async (fastify) => {
       const keyHash = await bcrypt.hash(rawKey, 10);
 
       const { error } = await fastify.supabase.from('api_keys').insert({
-        operator_id: payload.merchant_id,
+        merchant_id: payload.merchant_id,
         key_prefix: keyPrefix,
         key_hash: keyHash,
         label,
