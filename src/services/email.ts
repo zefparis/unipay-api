@@ -528,6 +528,43 @@ export async function sendSupportEscalationEmail(
   }
 }
 
+/* ── sendAdminDirectEmail ───────────────────────────────────── */
+export async function sendAdminDirectEmail(
+  to: string,
+  subject: string,
+  body: string,
+): Promise<void> {
+  const api = getClient();
+  if (!api) {
+    console.warn('[email] BREVO_API_KEY not set — admin direct email skipped');
+    return;
+  }
+
+  const html = layout(`
+    <h2 style="margin:0 0 16px;font-size:20px;font-weight:700;color:#0f172a;">
+      ${subject}
+    </h2>
+    <div style="font-size:15px;color:#475569;line-height:1.7;white-space:pre-wrap;">
+      ${body.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>')}
+    </div>
+    <p style="margin:24px 0 0;font-size:13px;color:#94a3b8;line-height:1.6;">
+      Cordialement,<br/>L'équipe UniPay Congo
+    </p>
+  `);
+
+  try {
+    await api.transactionalEmails.sendTransacEmail({
+      subject,
+      htmlContent: html,
+      sender: { name: env.BREVO_SENDER_NAME, email: env.BREVO_SENDER_EMAIL },
+      to: [{ email: to }],
+    });
+  } catch (err) {
+    console.error('[email] admin direct email failed:', err);
+    throw err;
+  }
+}
+
 /* ── sendAdminNewMerchantEmail ──────────────────────────────── */
 export async function sendAdminNewMerchantEmail(
   merchantName: string,

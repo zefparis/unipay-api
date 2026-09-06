@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
+import { sendAdminDirectEmail } from '../../services/email.js';
 
 function requireAdmin(isAdmin: boolean): boolean {
   return isAdmin;
@@ -616,6 +617,180 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         '[admin] Merchant reactivated',
       );
       return reply.send({ ok: true, merchant: data });
+    },
+  );
+
+  /* ── GET /v1/admin/merchants/:id/support-templates ─────────── */
+  fastify.get<{ Params: { id: string } }>(
+    '/admin/merchants/:id/support-templates',
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required' });
+      }
+
+      const { id } = request.params;
+
+      const { data: merchant, error } = await fastify.supabase
+        .from('merchants')
+        .select('name, email, kyc_status, mode')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (error || !merchant) {
+        return reply.status(404).send({ error: 'Merchant not found' });
+      }
+
+      const m = merchant as { name: string; email: string; kyc_status: string; mode: string };
+      const name = m.name ?? m.email;
+
+      const templates: Array<{ label: string; subject: string; body: string }> = [];
+
+      if (m.kyc_status === 'pending') {
+        templates.push({
+          label: 'Relance KYC',
+          subject: 'Action requise : finalisation de votre KYC UniPay Congo',
+          body: `Bonjour ${name},\n\nNous avons constaté que votre dossier KYC n'a pas encore été soumis. Sans KYC validé, votre compte reste en mode sandbox et vous ne pouvez pas traiter de paiements réels.\n\nPour soumettre votre dossier, rendez-vous dans votre tableau de bord → section KYC. Vous aurez besoin de :\n  - Votre pièce d'identité (IDNat ou passeport)\n  - Votre registre de commerce (RCCM)\n  - La raison sociale de votre entreprise\n\nUne fois le KYC approuvé, votre compte passera automatiquement en mode live.\n\nCordialement,\nL'équipe UniPay Congo`,
+        });
+      }
+
+      if (m.kyc_status === 'submitted') {
+        templates.push({
+          label: 'KYC en cours de revue',
+          subject: 'Votre dossier KYC est en cours de revue',
+          body: `Bonjour ${name},\n\nNous accusons réception de votre dossier KYC. Notre équipe est actuellement en train de l'examiner. Vous recevrez une notification dès que la revue sera terminée.\n\nCe processus prend généralement 24 à 48 heures ouvrées.\n\nCordialement,\nL'équipe UniPay Congo`,
+        });
+      }
+
+      if (m.kyc_status === 'approved' && m.mode === 'sandbox') {
+        templates.push({
+          label: 'Passage en mode live',
+          subject: 'Votre KYC est approuvé — passez en mode live',
+          body: `Bonjour ${name},\n\nBonne nouvelle : votre dossier KYC a été approuvé. Votre compte est actuellement en mode sandbox. Vous pouvez désormais passer en mode live pour traiter des paiements réels.\n\nPour activer le mode live, rendez-vous dans votre tableau de bord → Paramètres, ou contactez-nous si vous avez besoin d'assistance.\n\nCordialement,\nL'équipe UniPay Congo`,
+        });
+      }
+
+      // Generic template — always available
+      templates.push({
+        label: 'Réponse à votre demande',
+        subject: '',
+        body: `Bonjour ${name},\n\n`,
+      });
+
+      return reply.send({ templates });
+    },
+  );
+
+  /* ── POST /v1/admin/merchants/:id/email ────────────────────── */
+  fastify.post<{ Params: { id: string }; Body: { subject: string; body: string; conversation_id?: string } }>(
+    '/admin/merchants/:id/email',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['subject', 'body'],
+          properties: {
+            subject:        { type: 'string', minLength: 1, maxLength: 256 },
+            body:           { type: 'string', minLength: 1, maxLength: 8000 },
+            conversation_id: { type: 'string', format: 'uuid' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required' });
+      }
+
+      const { id } = request.params;
+      const { subject, body, conversation_id } = request.body;
+
+      // Fetch merchant — CRITICAL: use the merchant's own email, never an arbitrary address
+      const { data: merchant, error: merchantError } = await fastify.supabase
+        .from('merchants')
+        .select('id, name, email, status')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (merchantError || !merchant) {
+        return reply.status(404).send({ error: 'Merchant not found' });
+      }
+
+      const m = merchant as { id: string; name: string; email: string; status: string };
+
+      // Find or create conversation — always scoped to THIS merchant
+      let conversationId = conversation_id;
+      if (conversationId) {
+        const { data: conv, error: convError } = await fastify.supabase
+          .from('support_conversations')
+          .select('id, merchant_id')
+          .eq('id', conversationId)
+          .eq('merchant_id', id) // CRITICAL: verify ownership
+          .maybeSingle();
+
+        if (convError || !conv) {
+          return reply.status(404).send({ error: 'Conversation not found for this merchant' });
+        }
+      } else {
+        // Reuse most recent open conversation, or create new
+        const { data: recentConv } = await fastify.supabase
+          .from('support_conversations')
+          .select('id')
+          .eq('merchant_id', id)
+          .in('status', ['open', 'escalated'])
+          .order('updated_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (recentConv) {
+          conversationId = (recentConv as { id: string }).id;
+        } else {
+          const { data: newConv, error: createError } = await fastify.supabase
+            .from('support_conversations')
+            .insert({ merchant_id: id, status: 'open' })
+            .select('id')
+            .single();
+
+          if (createError || !newConv) {
+            fastify.log.error({ err: createError, merchantId: id }, '[admin-email] conversation creation failed');
+            return reply.status(500).send({ error: 'Failed to create conversation' });
+          }
+          conversationId = newConv.id;
+        }
+      }
+
+      // Send the email to the merchant's verified address
+      try {
+        await sendAdminDirectEmail(m.email, subject, body);
+      } catch (err) {
+        fastify.log.error({ err, merchantId: id, to: m.email }, '[admin-email] email send failed');
+        return reply.status(500).send({ error: 'Failed to send email' });
+      }
+
+      // Log the message in support_messages with channel='email'
+      const { error: msgError } = await fastify.supabase
+        .from('support_messages')
+        .insert({
+          conversation_id: conversationId,
+          role: 'admin',
+          channel: 'email',
+          subject,
+          content: body,
+        });
+
+      if (msgError) {
+        fastify.log.error({ err: msgError, conversationId }, '[admin-email] message log failed');
+      }
+
+      fastify.log.info(
+        { merchantId: id, conversationId, adminAction: 'direct_email', to: m.email, subject },
+        '[admin] Direct email sent to merchant',
+      );
+
+      return reply.send({
+        ok: true,
+        conversation_id: conversationId,
+        sent_to: m.email,
+      });
     },
   );
 };

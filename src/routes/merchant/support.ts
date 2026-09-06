@@ -233,7 +233,7 @@ const merchantSupportRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data: messages, error: msgError } = await fastify.supabase
         .from('support_messages')
-        .select('id, role, content, created_at')
+        .select('id, role, content, channel, subject, created_at')
         .eq('conversation_id', id)
         .order('created_at', { ascending: true });
 
