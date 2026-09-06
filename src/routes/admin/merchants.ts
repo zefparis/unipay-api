@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { sendAdminDirectEmail } from '../../services/email.js';
+import { env } from '../../config/env.js';
 
 function requireAdmin(isAdmin: boolean): boolean {
   return isAdmin;
@@ -923,8 +924,8 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
   }
 
   const AVADA_FEE_RATE = 0.03;
-  const CLIENT_FEE_RATE = 0.04;
-  const MARGIN_RATE = CLIENT_FEE_RATE - AVADA_FEE_RATE; // 0.01
+  const CLIENT_FEE_RATE = Number(env.MERCHANT_FEE_RATE); // 0.05 default
+  const MARGIN_RATE = CLIENT_FEE_RATE - AVADA_FEE_RATE; // 0.02
 
   fastify.get<{ Querystring: RevenueQuery }>(
     '/admin/merchants/revenue',

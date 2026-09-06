@@ -7,7 +7,7 @@ import { env } from '../../config/env';
 import { isSandboxAllowed } from '../../lib/sandbox-mode';
 import { isValidDrcPhone } from '../../lib/phone-normalization';
 
-const FEE_RATE = 0.04; // 4% per signed contract with Avada Group RDC
+const FEE_RATE = Number(env.MERCHANT_FEE_RATE); // 5% default (configurable via MERCHANT_FEE_RATE env var)
 
 interface InitiateBody {
   operator: Channel;

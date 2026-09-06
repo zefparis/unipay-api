@@ -71,6 +71,11 @@ const envSchema = z.object({
   // Fiat USD↔CDF conversion rate (manual oracle; update on Render when rate changes)
   FIAT_USD_CDF_RATE: z.string().regex(/^\d+(\.\d+)?$/).default('2850'),
 
+  // Merchant commission fee rate (applied to each transaction amount).
+  // Default 0.05 = 5%. Update via Render env var to adjust without redeploy.
+  // Note: Avada takes 0.03 (3%) of the same amount; UniPay net margin = fee − 0.03.
+  MERCHANT_FEE_RATE: z.string().regex(/^0\.\d+$/).default('0.05'),
+
   // Stripe — diaspora card deposits
   STRIPE_SECRET_KEY:    z.string().min(1).optional(),
   STRIPE_WEBHOOK_SECRET: z.string().min(1).optional(),

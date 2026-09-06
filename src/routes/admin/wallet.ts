@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { randomUUID } from 'node:crypto';
+import { env } from '../../config/env';
 
 function requireAdmin(isAdmin: boolean): boolean {
   return isAdmin;
@@ -150,8 +151,8 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
       return {
         volume,
         frais_avada:  fraisAvada,
-        frais_client: volume * 0.04,
-        marge_nette:  volume * 0.01,
+        frais_client: volume * Number(env.MERCHANT_FEE_RATE),
+        marge_nette:  volume * (Number(env.MERCHANT_FEE_RATE) - 0.03),
         nb_tx:        rows.length,
       };
     }
