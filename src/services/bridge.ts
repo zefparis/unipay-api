@@ -12,6 +12,13 @@ import { env } from '../config/env';
 const CGLT_PER_WCGLT   = 500;
 const BRIDGE_TIMEOUT_MS = 8_000; // must be < upstreamFetch timeout (10s) + Vercel function timeout (10s)
 
+export class BridgeOutcomeUnknownError extends Error {
+  constructor(public readonly operationId: string, cause?: unknown) {
+    super('PENDING_ONCHAIN_CHECK', { cause });
+    this.name = 'BridgeOutcomeUnknownError';
+  }
+}
+
 /**
  * Mints wCGLT on BSC to the given address.
  *
@@ -22,6 +29,7 @@ const BRIDGE_TIMEOUT_MS = 8_000; // must be < upstreamFetch timeout (10s) + Verc
 export async function mintWCGLT(
   bscAddress: string,
   amountCGLT: number,
+  operationId: string,
 ): Promise<string> {
   assertCgltBlockchainWriteEnabled();
   const bridgeUrl = env.BRIDGE_API_URL ?? 'http://104.248.166.144:3099';
@@ -42,13 +50,13 @@ export async function mintWCGLT(
       headers: {
         'Content-Type':  'application/json',
         'Authorization': `Bearer ${key}`,
+        'X-Idempotency-Key': operationId,
       },
-      body:   JSON.stringify({ to: bscAddress, amount: wcgltAmount }),
+      body:   JSON.stringify({ to: bscAddress, amount: wcgltAmount, operation_id: operationId }),
       signal: ctrl.signal,
     });
   } catch (err) {
-    const isTimeout = err instanceof Error && err.name === 'AbortError';
-    throw new Error(isTimeout ? 'bridge_timeout' : `bridge_unreachable: ${String(err)}`);
+    throw new BridgeOutcomeUnknownError(operationId, err);
   } finally {
     clearTimeout(timer);
   }
@@ -60,5 +68,6 @@ export async function mintWCGLT(
 
   const data = await res.json() as { success: boolean; hash?: string; error?: string };
   if (!data.success) throw new Error(data.error ?? 'bridge_failed');
-  return data.hash ?? '';
+  if (!data.hash) throw new BridgeOutcomeUnknownError(operationId);
+  return data.hash;
 }

@@ -87,15 +87,6 @@ async function checkDepositsForToken(
       const blockNum = parseInt(tx.blockNumber, 10);
       if (blockNum > maxBlock) maxBlock = blockNum;
 
-      // Idempotence: skip if already recorded
-      const { data: exists } = await supabase
-        .from('crypto_deposits')
-        .select('id')
-        .eq('tx_hash', tx.hash)
-        .maybeSingle();
-
-      if (exists) continue;
-
       // Calculate USD amount
       const rawAmt   = BigInt(tx.value);
       const amount   = Number(rawAmt) / Math.pow(10, decimals);
@@ -108,36 +99,25 @@ async function checkDepositsForToken(
         continue;
       }
 
-      // 4. Record the deposit
-      const { error: insertErr } = await supabase
-        .from('crypto_deposits')
-        .insert({
-          user_id,
-          tx_hash:        tx.hash,
-          token_symbol:   symbol,
-          token_contract: contractAddress,
-          amount_raw:     tx.value,
-          amount_usd:     amountUsd,
-          from_address:   tx.from,
-          to_address:     tx.to,
-          block_number:   blockNum,
-          status:         'CONFIRMED',
-        });
+      const { data: result, error: processErr } = await supabase.rpc('process_bsc_deposit', {
+        p_user_id:        user_id,
+        p_tx_hash:        tx.hash,
+        p_token_symbol:   symbol,
+        p_token_contract: contractAddress,
+        p_amount_raw:     tx.value,
+        p_amount_usd:     amountUsd,
+        p_from_address:   tx.from,
+        p_to_address:     tx.to,
+        p_block_number:   blockNum,
+      });
 
-      if (insertErr) {
-        // Unique violation = race condition duplicate — safe to skip
-        if ((insertErr as { code?: string }).code === '23505') continue;
-        log(`[bscscan] insert error for ${tx.hash}`, insertErr);
+      if (processErr) {
+        log(`[bscscan] atomic deposit failed for ${tx.hash}`, processErr);
         continue;
       }
 
-      // 5. Credit usdt_balance (BSC crypto deposit — not fiat usd_balance)
-      const { error: creditErr } = await supabase
-        .rpc('wallet_credit_usdt', { p_user_id: user_id, p_amount: amountUsd });
-
-      if (creditErr) {
-        log(`[bscscan] credit failed for ${user_id}: ${amountUsd} USDT`, creditErr);
-      } else {
+      const processed = (result as { processed?: boolean } | null)?.processed === true;
+      if (processed) {
         log(`[bscscan] credited ${amountUsd.toFixed(6)} USDT (${amount} ${symbol}) to user ${user_id} — tx ${tx.hash}`);
       }
     }

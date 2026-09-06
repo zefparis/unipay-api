@@ -146,55 +146,43 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(400).send({ error: 'Provider callback proof mismatch', statusCode: 400 });
       }
 
-      // Idempotency — skip if already terminal
-      if (tx.status === 'success' || tx.status === 'failed') {
+      const { data: callbackResult, error: callbackError } = await fastify.supabase.rpc(
+        'process_wallet_provider_callback',
+        {
+          p_provider: 'unipesa',
+          p_provider_event_id: avada_transaction_id,
+          p_transaction_id: tx.id,
+          p_new_status: dbStatus,
+          p_provider_transaction_id: avada_transaction_id,
+          p_payload: normalized.raw,
+        },
+      );
+
+      if (callbackError) {
+        fastify.log.error({ err: callbackError, txId: tx.id }, 'Atomic provider callback failed');
+        return reply.status(500).send({ error: 'Callback processing failed', statusCode: 500 });
+      }
+
+      const result = callbackResult as { processed?: boolean; duplicate?: boolean; already_terminal?: boolean; credited?: number } | null;
+      if (!result?.processed) {
         return reply.send({ ok: true, idempotent: true });
       }
 
-      await fastify.supabase
-        .from('transactions')
-        .update({ status: dbStatus, metadata: normalized.raw })
-        .eq('id', tx.id);
-
-      // ── Wallet balance credit (deposit confirmed) ─────────────
-      const walletUserId = (tx as { wallet_user_id?: string | null }).wallet_user_id;
-      const txDirection  = (tx as { direction?: string }).direction;
-      const txNetAmount  = Number((tx as { net_amount?: number }).net_amount ?? 0);
-
-      if (dbStatus === 'success' && txDirection === 'collect' && walletUserId) {
+      const walletUserId = tx.wallet_user_id;
+      const txNetAmount = Number(tx.net_amount ?? 0);
+      if (Number(result.credited ?? 0) > 0 && walletUserId) {
         const { data: walletRow } = await fastify.supabase
           .from('wallet_users')
           .select('email, full_name, lang')
           .eq('id', walletUserId)
           .maybeSingle();
-
-        if (walletRow) {
-          // Deposits only credit the CDF balance. Converting CDF to CGLT is now
-          // an explicit user action handled by the swap route.
-          const { error: creditError } = await fastify.supabase
-            .rpc('wallet_credit_cdf', { p_user_id: walletUserId, p_amount: txNetAmount });
-
-          if (creditError) {
-            fastify.log.error(
-              { err: creditError, walletUserId, txId: tx.id },
-              '[wallet-credit] balance credit failed — manual reconciliation required',
-            );
-          } else {
-            fastify.log.info(
-              { walletUserId, netAmount: txNetAmount, txId: tx.id },
-              '[wallet-credit] balance credited',
-            );
-            // Send deposit confirmation email (fire-and-forget)
-            const wr = walletRow as unknown as { email?: string; full_name?: string; lang?: string };
-            if (wr?.email) {
-              sendWalletDepositEmail({
-                to: wr.email, name: wr.full_name ?? '',
-                amount: txNetAmount.toFixed(0), currency: 'CDF',
-                method: 'Mobile Money', txRef: reference ?? tx.id,
-                lang: wr.lang ?? 'fr',
-              });
-            }
-          }
+        if (walletRow?.email) {
+          sendWalletDepositEmail({
+            to: walletRow.email, name: walletRow.full_name ?? '',
+            amount: txNetAmount.toFixed(0), currency: tx.currency,
+            method: 'Mobile Money', txRef: reference ?? tx.id,
+            lang: walletRow.lang ?? 'fr',
+          });
         }
       }
 

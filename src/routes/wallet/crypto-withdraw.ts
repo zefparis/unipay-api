@@ -5,10 +5,15 @@
  * GET  /v1/wallet/crypto-withdrawals
  */
 
+import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
-import { sendUsdt } from '../../lib/bsc-withdrawal';
+import {
+  OnchainConfirmationPendingError,
+  OnchainExecutionFailedError,
+  sendUsdt,
+} from '../../lib/bsc-withdrawal';
 import { checkDestinationAddress } from '../../lib/address-guard';
 
 /* ── BSC only — TRC20/ERC20 not yet available ────────────────────────── */
@@ -111,40 +116,27 @@ const walletCryptoWithdrawRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       /* ── 4. Debit USDT balance ───────────────────────────────────────── */
-      const { error: debitErr } = await fastify.supabase
-        .rpc('wallet_debit_usdt', { p_user_id: walletId, p_amount: amount });
+      const withdrawalId = crypto.randomUUID();
+      const { error: beginError } = await fastify.supabase.rpc(
+        'begin_usdt_onchain_withdrawal',
+        {
+          p_withdrawal_id: withdrawalId,
+          p_user_id: walletId,
+          p_amount: amount,
+          p_network: network,
+          p_destination_address: destination_address,
+          p_fee: fee,
+        },
+      );
 
-      if (debitErr) {
-        const isInsufficient = debitErr.message?.includes('INSUFFICIENT_USDT');
-        fastify.log.warn({ err: debitErr, walletId }, 'USDT debit rejected');
+      if (beginError) {
+        const isInsufficient = beginError.message?.includes('INSUFFICIENT_USDT');
+        fastify.log.warn({ err: beginError, walletId }, 'USDT withdrawal creation rejected');
         return reply.status(isInsufficient ? 402 : 500).send({
-          error: isInsufficient ? 'INSUFFICIENT_USDT' : 'Debit failed',
+          error: isInsufficient ? 'INSUFFICIENT_USDT' : 'Withdrawal creation failed',
         });
       }
 
-      /* ── 5. Insert withdrawal_requests row ──────────────────────────── */
-      const { data: wrRow, error: insertErr } = await fastify.supabase
-        .from('withdrawal_requests')
-        .insert({
-          user_id:             walletId,
-          amount,
-          network,
-          destination_address,
-          fee,
-          status:              'pending',
-        })
-        .select('id')
-        .single();
-
-      if (insertErr || !wrRow) {
-        // Compensate — refund
-        await fastify.supabase
-          .rpc('wallet_credit_usdt', { p_user_id: walletId, p_amount: amount });
-        fastify.log.error({ err: insertErr, walletId }, 'withdrawal_requests insert failed — refunded');
-        return reply.status(500).send({ error: 'Failed to create withdrawal record' });
-      }
-
-      const withdrawalId = wrRow.id;
       const addrMasked   = `${destination_address.slice(0, 6)}…${destination_address.slice(-4)}`;
 
       fastify.log.info(
@@ -159,14 +151,16 @@ const walletCryptoWithdrawRoute: FastifyPluginAsync = async (fastify) => {
           amount: netAmount,
         });
 
-        await fastify.supabase
-          .from('withdrawal_requests')
-          .update({
-            tx_hash:    txHash,
-            status:     'processing',
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', withdrawalId);
+        const { error: resolveError } = await fastify.supabase.rpc(
+          'resolve_usdt_withdrawal_onchain',
+          {
+            p_withdrawal_id: withdrawalId,
+            p_outcome: 'confirmed',
+            p_tx_hash: txHash,
+            p_reason: null,
+          },
+        );
+        if (resolveError) throw new OnchainConfirmationPendingError(txHash, resolveError);
 
         fastify.log.info(
           { withdrawalId, txHash, walletId, network, netAmount, addrMasked },
@@ -175,7 +169,7 @@ const walletCryptoWithdrawRoute: FastifyPluginAsync = async (fastify) => {
 
         return reply.status(201).send({
           withdrawal_id: withdrawalId,
-          status:        'processing',
+          status:        'completed',
           net_amount:    netAmount,
           tx_hash:       txHash,
           fee,
@@ -183,22 +177,37 @@ const walletCryptoWithdrawRoute: FastifyPluginAsync = async (fastify) => {
         });
       } catch (err) {
         const reason = (err as Error)?.message ?? 'On-chain error';
-        fastify.log.error({ err, withdrawalId, walletId }, 'BSC hot-wallet withdrawal failed — refunding');
+        if (err instanceof OnchainConfirmationPendingError) {
+          await fastify.supabase.rpc('mark_usdt_withdrawal_pending_check', {
+            p_withdrawal_id: withdrawalId,
+            p_tx_hash: err.txHash,
+            p_reason: reason,
+          });
+          fastify.log.warn({ err, withdrawalId, walletId, txHash: err.txHash }, 'USDT withdrawal pending on-chain verification');
+          return reply.status(202).send({
+            withdrawal_id: withdrawalId,
+            status: 'pending_onchain_check',
+            tx_hash: err.txHash,
+            network,
+          });
+        }
 
-        // Compensate — refund balance
-        await fastify.supabase
-          .rpc('wallet_credit_usdt', { p_user_id: walletId, p_amount: amount });
+        const txHash = err instanceof OnchainExecutionFailedError ? err.txHash : null;
+        const { error: resolveError } = await fastify.supabase.rpc(
+          'resolve_usdt_withdrawal_onchain',
+          {
+            p_withdrawal_id: withdrawalId,
+            p_outcome: 'failed',
+            p_tx_hash: txHash,
+            p_reason: reason,
+          },
+        );
+        if (resolveError) {
+          fastify.log.error({ err: resolveError, withdrawalId, walletId }, 'USDT withdrawal failure reconciliation failed');
+          return reply.status(500).send({ error: 'Withdrawal reconciliation failed' });
+        }
 
-        // Mark failed
-        await fastify.supabase
-          .from('withdrawal_requests')
-          .update({
-            status:         'failed',
-            failure_reason: reason,
-            updated_at:     new Date().toISOString(),
-          })
-          .eq('id', withdrawalId);
-
+        fastify.log.error({ err, withdrawalId, walletId, txHash }, 'USDT withdrawal failed before or during execution — refunded');
         const status = reason === 'INSUFFICIENT_HOT_WALLET_BALANCE' ? 503
                      : reason === 'INSUFFICIENT_GAS'                 ? 503
                      : 502;

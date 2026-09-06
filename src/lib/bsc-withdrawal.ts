@@ -12,6 +12,7 @@ import { env } from '../config/env';
 const ERC20_ABI = [
   'function transfer(address to, uint256 amount) returns (bool)',
   'function balanceOf(address owner) view returns (uint256)',
+  'event Transfer(address indexed from, address indexed to, uint256 value)',
 ];
 
 /* ── Safety threshold: hot wallet must hold at least this much BNB for gas */
@@ -82,6 +83,22 @@ export interface SendUsdtResult {
   txHash: string;
 }
 
+export class OnchainConfirmationPendingError extends Error {
+  constructor(public readonly txHash: string, cause?: unknown) {
+    super('PENDING_ONCHAIN_CHECK', { cause });
+    this.name = 'OnchainConfirmationPendingError';
+  }
+}
+
+export class OnchainExecutionFailedError extends Error {
+  constructor(public readonly txHash: string, cause?: unknown) {
+    super('ONCHAIN_EXECUTION_FAILED', { cause });
+    this.name = 'OnchainExecutionFailedError';
+  }
+}
+
+export type OnchainTransferStatus = 'pending' | 'confirmed' | 'failed' | 'mismatch';
+
 /**
  * Sends `amount` USDT from the hot wallet to `to` on BSC.
  *
@@ -118,10 +135,80 @@ export async function sendUsdt({ to, amount }: SendUsdtParams): Promise<SendUsdt
   }
 
   /* 4. Execute transfer — wait for 1 confirmation */
-  const tx      = await (contract.transfer(to, amountWei) as Promise<ethers.TransactionResponse>);
-  const receipt = await tx.wait(1);
+  const tx = await (contract.transfer(to, amountWei) as Promise<ethers.TransactionResponse>);
+  try {
+    const receipt = await tx.wait(1);
+    if (!receipt) throw new OnchainConfirmationPendingError(tx.hash);
+    if (receipt.status !== 1) throw new OnchainExecutionFailedError(tx.hash);
+    return { txHash: receipt.hash };
+  } catch (err) {
+    if (err instanceof OnchainConfirmationPendingError || err instanceof OnchainExecutionFailedError) throw err;
+    const receipt = (err as { receipt?: { status?: number; hash?: string } })?.receipt;
+    if (receipt?.status === 0) throw new OnchainExecutionFailedError(receipt.hash ?? tx.hash, err);
+    if (receipt?.status === 1) return { txHash: receipt.hash ?? tx.hash };
+    throw new OnchainConfirmationPendingError(tx.hash, err);
+  }
+}
 
-  if (!receipt) throw new Error('Transaction receipt not received');
+async function verifyTransfer(
+  txHash: string,
+  contractAddress: string,
+  expectedFrom: string,
+  expectedTo: string,
+  expectedAmount: bigint,
+): Promise<OnchainTransferStatus> {
+  const provider = getProvider();
+  const receipt = await provider.getTransactionReceipt(txHash);
+  if (!receipt) return 'pending';
+  if (receipt.status !== 1) return 'failed';
 
-  return { txHash: receipt.hash };
+  const iface = new ethers.Interface(ERC20_ABI);
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() !== contractAddress.toLowerCase()) continue;
+    try {
+      const parsed = iface.parseLog({ topics: [...log.topics], data: log.data });
+      if (
+        parsed?.name === 'Transfer' &&
+        String(parsed.args[0]).toLowerCase() === expectedFrom.toLowerCase() &&
+        String(parsed.args[1]).toLowerCase() === expectedTo.toLowerCase() &&
+        BigInt(parsed.args[2]) === expectedAmount
+      ) {
+        return 'confirmed';
+      }
+    } catch {
+      continue;
+    }
+  }
+  return 'mismatch';
+}
+
+export async function verifyUsdtWithdrawal(
+  txHash: string,
+  recipient: string,
+  amount: number,
+): Promise<OnchainTransferStatus> {
+  if (!env.USDT_BSC_CONTRACT) throw new Error('USDT_BSC_CONTRACT not configured');
+  const wallet = getHotWallet();
+  return verifyTransfer(
+    txHash,
+    env.USDT_BSC_CONTRACT,
+    wallet.address,
+    recipient,
+    ethers.parseUnits(amount.toString(), 18),
+  );
+}
+
+export async function verifyWcgltMint(
+  txHash: string,
+  recipient: string,
+  amount: number,
+): Promise<OnchainTransferStatus> {
+  if (!env.BSC_WCGLT_ADDRESS) throw new Error('BSC_WCGLT_ADDRESS not configured');
+  return verifyTransfer(
+    txHash,
+    env.BSC_WCGLT_ADDRESS,
+    ethers.ZeroAddress,
+    recipient,
+    ethers.parseUnits(amount.toString(), 18),
+  );
 }

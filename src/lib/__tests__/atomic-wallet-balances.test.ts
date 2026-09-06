@@ -25,7 +25,9 @@ describe('atomic wallet balance guards', () => {
 
   it('debits USDT through the guarded RPC before any on-chain send', () => {
     const route = source('src/routes/wallet/crypto-withdraw.ts');
-    const debit = route.indexOf(".rpc('wallet_debit_usdt'");
+    // crypto-withdraw uses begin_usdt_onchain_withdrawal, which atomically debits
+    // USDT (with INSUFFICIENT_USDT guard) and creates the withdrawal record.
+    const debit = route.indexOf("'begin_usdt_onchain_withdrawal'");
     const send = route.indexOf('await sendUsdt');
     assert.ok(debit >= 0);
     assert.ok(send > debit);
@@ -41,8 +43,12 @@ describe('atomic wallet balance guards', () => {
     assert.match(admin, /\.rpc\('wallet_adjust_cdf'/);
     assert.match(gaming, /\.rpc\('wallet_debit_cglt'/);
     assert.match(gaming, /\.rpc\('wallet_credit_cglt'/);
-    assert.match(bridge, /\.rpc\('wallet_debit_cglt'/);
-    assert.match(incoming, /\.rpc\('wallet_credit_cglt'/);
+    // wcglt-swap uses begin_wcglt_onchain_operation, which atomically debits
+    // CGLT (with INSUFFICIENT_CGLT guard) and creates the operation state.
+    assert.match(bridge, /\.rpc\(\s*'begin_wcglt_onchain_operation'/);
+    // internal.ts uses process_bridge_incoming_credit, which atomically credits
+    // CGLT and enforces tx_hash idempotency in one call.
+    assert.match(incoming, /\.rpc\(\s*'process_bridge_incoming_credit'/);
 
     for (const route of [admin, gaming, bridge, incoming]) {
       assert.doesNotMatch(route, /update\(\{\s*(?:balance_cdf|cglt_balance|usdt_balance):/);

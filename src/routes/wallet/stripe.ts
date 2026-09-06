@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import Stripe from 'stripe';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
@@ -193,41 +192,25 @@ const walletStripeRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(200).send({ received: true });
       }
 
-      // Idempotence — skip if already processed
-      const { data: existing } = await fastify.supabase
-        .from('transactions')
-        .select('id')
-        .eq('reference', intent.id)
-        .maybeSingle();
+      const { data: processResult, error: processError } = await fastify.supabase.rpc(
+        'process_stripe_wallet_deposit',
+        {
+          p_payment_intent_id: intent.id,
+          p_wallet_user_id: walletUserId,
+          p_amount: amountUsd,
+          p_payload: { stripe_event_id: event.id },
+        },
+      );
 
-      if (existing) {
-        return reply.status(200).send({ received: true, already_processed: true });
-      }
-
-      // Credit usd_balance via atomic RPC
-      const { error: rpcError } = await fastify.supabase
-        .rpc('wallet_credit_usd', { p_user_id: walletUserId, p_amount: amountUsd });
-
-      if (rpcError) {
-        fastify.log.error({ rpcError, walletUserId, amountUsd }, '[stripe] wallet_credit_usd RPC failed');
+      if (processError) {
+        fastify.log.error({ processError, walletUserId, amountUsd }, '[stripe] atomic deposit failed');
         return reply.status(500).send({ error: 'credit_failed' });
       }
 
-      // Record transaction
-      const txId = crypto.randomUUID();
-      await fastify.supabase.from('transactions').insert({
-        id:             txId,
-        wallet_user_id: walletUserId,
-        operator:       'stripe',
-        direction:      'deposit',
-        amount:         amountUsd,
-        fee:            0,
-        net_amount:     amountUsd,
-        currency:       'USD',
-        reference:      intent.id,
-        status:         'success',
-        metadata:       { stripe_payment_intent: intent.id, source: 'stripe_webhook' },
-      });
+      const processed = (processResult as { processed?: boolean } | null)?.processed === true;
+      if (!processed) {
+        return reply.status(200).send({ received: true, already_processed: true });
+      }
 
       fastify.log.info(
         { walletUserId, amountUsd, intentId: intent.id },

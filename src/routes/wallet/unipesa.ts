@@ -310,25 +310,16 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       return reply.status(400).send({ error: 'Invalid signature' });
     }
 
-    const { order_id, status, currency, amount } = body;
-    if (!order_id) return reply.status(400).send({ error: 'Missing order_id' });
-
-    fastify.log.info({ order_id, status, currency, amount }, '[unipesa/callback] received');
-
-    // Unipesa status=2 → success (confirmed)
-    if (Number(status) !== 2) {
-      await fastify.supabase
-        .from('transactions')
-        .update({ status: 'failed', metadata: { unipesa_status: status } })
-        .eq('reference', order_id)
-        .in('status', ['pending', 'processing']);
-      return reply.status(200).send({ received: true, credited: false });
+    const { order_id, transaction_id, status, currency, amount, customer_id } = body;
+    if (!order_id || !transaction_id) {
+      return reply.status(400).send({ error: 'Missing order_id or transaction_id' });
     }
 
-    // Find the pending/processing transaction by reference (= orderId we sent)
+    fastify.log.info({ order_id, transaction_id, status, currency, amount }, '[unipesa/callback] received');
+
     const { data: tx } = await fastify.supabase
       .from('transactions')
-      .select('id, wallet_user_id, net_amount, currency, direction, status')
+      .select('id, wallet_user_id, amount, net_amount, currency, direction, status, phone, reference')
       .eq('reference', order_id)
       .maybeSingle();
 
@@ -337,66 +328,69 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       return reply.status(404).send({ error: 'Transaction not found' });
     }
 
-    // Idempotency guard
-    if (tx.status === 'success') {
-      return reply.status(200).send({ received: true, already_credited: true });
+    const callbackAmount = Number(amount);
+    const storedAmount = Number(tx.amount);
+    const callbackPhone = String(customer_id ?? '').replace(/[\s-]/g, '');
+    const storedPhone = String(tx.phone ?? '').replace(/[\s-]/g, '');
+    if (
+      !Number.isFinite(callbackAmount) ||
+      callbackAmount !== storedAmount ||
+      String(order_id) !== tx.reference ||
+      (currency && String(currency).toUpperCase() !== String(tx.currency).toUpperCase()) ||
+      (callbackPhone && callbackPhone !== storedPhone)
+    ) {
+      fastify.log.warn({ txId: tx.id }, '[unipesa/callback] signed payload does not match transaction');
+      return reply.status(400).send({ error: 'Provider callback proof mismatch' });
     }
 
-    // For payouts (B2C), balance was already debited at initiation — just confirm.
-    if (tx.direction === 'payout') {
-      await fastify.supabase
-        .from('transactions')
-        .update({ status: 'success' })
-        .eq('id', tx.id);
-      return reply.status(200).send({ received: true, credited: false });
-    }
-
-    // For collections (C2B), credit the correct balance.
-    const netCredited = Number(tx.net_amount ?? amount);
-    const txCurrency  = String(tx.currency ?? currency).toUpperCase();
-
-    if (txCurrency === 'USD') {
-      const { error: creditErr } = await fastify.supabase
-        .rpc('wallet_credit_usd', { p_user_id: tx.wallet_user_id, p_amount: netCredited });
-      if (creditErr) {
-        fastify.log.error({ err: creditErr.message, txId: tx.id }, '[unipesa/callback] USD credit failed');
-        return reply.status(500).send({ error: 'Credit failed' });
-      }
-    } else {
-      const { error: creditErr } = await fastify.supabase
-        .rpc('wallet_credit_cdf', { p_user_id: tx.wallet_user_id, p_amount: netCredited });
-      if (creditErr) {
-        fastify.log.error({ err: creditErr.message, txId: tx.id }, '[unipesa/callback] CDF credit failed');
-        return reply.status(500).send({ error: 'Credit failed' });
-      }
-    }
-
-    await fastify.supabase
-      .from('transactions')
-      .update({ status: 'success' })
-      .eq('id', tx.id);
-
-    fastify.log.info(
-      { txId: tx.id, walletId: tx.wallet_user_id, txCurrency, netCredited },
-      '[unipesa/callback] credited',
+    const dbStatus = Number(status) === 2 ? 'success' : 'failed';
+    const { data: callbackResult, error: callbackError } = await fastify.supabase.rpc(
+      'process_wallet_provider_callback',
+      {
+        p_provider: 'unipesa',
+        p_provider_event_id: String(transaction_id),
+        p_transaction_id: tx.id,
+        p_new_status: dbStatus,
+        p_provider_transaction_id: String(transaction_id),
+        p_payload: body,
+      },
     );
 
-    // Fire-and-forget deposit confirmation email
-    const { data: uUser } = await fastify.supabase
-      .from('wallet_users')
-      .select('email, full_name, lang')
-      .eq('id', tx.wallet_user_id)
-      .maybeSingle();
-    if (uUser?.email) {
-      sendWalletDepositEmail({
-        to: uUser.email, name: uUser.full_name ?? '',
-        amount: netCredited.toFixed(txCurrency === 'USD' ? 2 : 0), currency: txCurrency,
-        method: 'Mobile Money (USD)', txRef: order_id,
-        lang: uUser.lang ?? 'fr',
-      });
+    if (callbackError) {
+      fastify.log.error({ err: callbackError, txId: tx.id }, '[unipesa/callback] atomic processing failed');
+      return reply.status(500).send({ error: 'Callback processing failed' });
     }
 
-    return reply.status(200).send({ received: true, credited: true, currency: txCurrency, amount: netCredited });
+    const result = callbackResult as { processed?: boolean; credited?: number; refunded?: number } | null;
+    if (!result?.processed) {
+      return reply.status(200).send({ received: true, already_processed: true });
+    }
+
+    const netCredited = Number(result.credited ?? 0);
+    const txCurrency = String(tx.currency).toUpperCase();
+    if (netCredited > 0 && tx.wallet_user_id) {
+      const { data: uUser } = await fastify.supabase
+        .from('wallet_users')
+        .select('email, full_name, lang')
+        .eq('id', tx.wallet_user_id)
+        .maybeSingle();
+      if (uUser?.email) {
+        sendWalletDepositEmail({
+          to: uUser.email, name: uUser.full_name ?? '',
+          amount: netCredited.toFixed(txCurrency === 'USD' ? 2 : 0), currency: txCurrency,
+          method: 'Mobile Money (USD)', txRef: order_id,
+          lang: uUser.lang ?? 'fr',
+        });
+      }
+    }
+
+    return reply.status(200).send({
+      received: true,
+      credited: netCredited > 0,
+      refunded: Number(result.refunded ?? 0),
+      currency: txCurrency,
+      amount: netCredited,
+    });
   });
 };
 

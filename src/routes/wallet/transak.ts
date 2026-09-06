@@ -211,66 +211,49 @@ const walletTransakRoute: FastifyPluginAsync = async (fastify) => {
         '[transak] webhook event',
       );
 
-      // Fetch our order (guard against unknown partnerOrderId)
-      const { data: order } = await fastify.supabase
-        .from('transak_orders')
-        .select('id, user_id, status, is_custody')
-        .eq('id', partnerOrderId)
-        .maybeSingle();
-
-      if (!order) {
-        fastify.log.warn({ partnerOrderId }, '[transak] unknown order in webhook');
-        return reply.status(200).send({ ok: true }); // always 200 to Transak
+      if (!partnerOrderId) {
+        fastify.log.warn({ eventID }, '[transak] missing partnerOrderId');
+        return reply.status(200).send({ ok: true });
       }
 
-      // Update order record
-      await fastify.supabase
-        .from('transak_orders')
-        .update({
-          status:          newStatus,
-          transak_order_id: eventData.id ?? null,
-          crypto_amount:   eventData.cryptoAmount ?? null,
-          updated_at:      new Date().toISOString(),
-        })
-        .eq('id', order.id);
+      const providerOrderId = eventData.id ?? eventID ?? partnerOrderId;
+      const cryptoAmt = Number(eventData.cryptoAmount ?? 0);
+      const { data: processResult, error: processError } = await fastify.supabase.rpc(
+        'process_transak_webhook',
+        {
+          p_provider_order_id: providerOrderId,
+          p_partner_order_id: partnerOrderId,
+          p_new_status: newStatus,
+          p_crypto_amount: cryptoAmt > 0 ? cryptoAmt : null,
+          p_payload: parsed,
+        },
+      );
 
-      // Credit usd_balance — only once, only for custody wallet orders
-      if (
-        newStatus === 'COMPLETED' &&
-        order.is_custody &&
-        order.status !== 'COMPLETED'
-      ) {
-        const cryptoAmt = Number(eventData.cryptoAmount ?? 0);
-        if (cryptoAmt > 0) {
-          const { error: creditErr } = await fastify.supabase.rpc('wallet_credit_usd', {
-            p_user_id: order.user_id,
-            p_amount:  cryptoAmt,
+      if (processError) {
+        fastify.log.error({ err: processError, providerOrderId }, '[transak] atomic webhook processing failed');
+        return reply.status(500).send({ error: 'processing_failed' });
+      }
+
+      const result = processResult as { processed?: boolean; unknown_order?: boolean; credited?: number; user_id?: string } | null;
+      if (!result?.processed) {
+        return reply.status(200).send({ ok: true, already_processed: !result?.unknown_order });
+      }
+
+      const credited = Number(result.credited ?? 0);
+      if (credited > 0 && result.user_id) {
+        fastify.log.info({ userId: result.user_id, cryptoAmt: credited }, '[transak] usd_balance credited');
+        const { data: usr } = await fastify.supabase
+          .from('wallet_users')
+          .select('email, full_name, lang')
+          .eq('id', result.user_id)
+          .maybeSingle();
+        if (usr?.email) {
+          sendWalletDepositEmail({
+            to: usr.email, name: usr.full_name ?? '',
+            amount: credited.toFixed(2), currency: 'USDT',
+            method: 'Crypto (Transak)', txRef: providerOrderId,
+            lang: usr.lang ?? 'fr',
           });
-          if (creditErr) {
-            fastify.log.error(
-              { err: creditErr, userId: order.user_id, cryptoAmt },
-              '[transak] wallet_credit_usd failed',
-            );
-          } else {
-            fastify.log.info(
-              { userId: order.user_id, cryptoAmt },
-              '[transak] usd_balance credited',
-            );
-            // Send deposit confirmation email — fetch user's email/lang
-            const { data: usr } = await fastify.supabase
-              .from('wallet_users')
-              .select('email, full_name, lang')
-              .eq('id', order.user_id)
-              .maybeSingle();
-            if (usr?.email) {
-              sendWalletDepositEmail({
-                to: usr.email, name: usr.full_name ?? '',
-                amount: cryptoAmt.toFixed(2), currency: 'USDT',
-                method: 'Crypto (Transak)', txRef: eventData.id ?? order.id,
-                lang: usr.lang ?? 'fr',
-              });
-            }
-          }
         }
       }
 

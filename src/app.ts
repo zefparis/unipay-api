@@ -3,6 +3,7 @@ import { buildServer } from './server';
 import { env } from './config/env';
 import { startBscPoller } from './services/bscscan';
 import { startGasMonitor } from './services/gas-monitor';
+import { startOnchainReconciler } from './services/onchain-reconciliation';
 
 const start = async () => {
   const server = await buildServer();
@@ -13,6 +14,7 @@ const start = async () => {
     startBscPoller(server.supabase, { info: server.log.info.bind(server.log), error: server.log.error.bind(server.log) });
     // Start BSC gas monitor (no-op when BSC_OWNER_KEY absent)
     startGasMonitor({ info: server.log.info.bind(server.log), warn: server.log.warn.bind(server.log), error: server.log.error.bind(server.log) });
+    startOnchainReconciler(server.supabase, server.log);
   } catch (err) {
     server.log.error(err);
     process.exit(1);

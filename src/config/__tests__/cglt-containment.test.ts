@@ -201,7 +201,7 @@ describe('CGLT Blockchain Containment — 12 Mandatory Tests', () => {
 
     const { mintWCGLT } = require('../../services/bridge');
     await assert.rejects(
-      mintWCGLT('0x0000000000000000000000000000000000000001', 500),
+      mintWCGLT('0x0000000000000000000000000000000000000001', 500, 'test-operation'),
       (err: Error & { statusCode?: number }) => {
         assert.equal(err.message, 'CGLT_BLOCKCHAIN_DISABLED');
         assert.equal(err.statusCode, 503);

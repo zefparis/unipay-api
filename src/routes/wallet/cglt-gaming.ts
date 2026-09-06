@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { env } from '../../config/env';
 import { mintCGLT, getSwapRate } from '../../services/blockchain';
-import { mintWCGLT } from '../../services/bridge';
+import { BridgeOutcomeUnknownError, mintWCGLT } from '../../services/bridge';
 import { requireWallet } from '../../utils/wallet-jwt';
 import { findOrCreateWalletByPhone } from '../../utils/wallet-provision';
 import { isCgltBlockchainWriteEnabled } from '../../config/cglt-blockchain-mode';
@@ -309,8 +309,24 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       // Débiter le wallet UniPay
-      const { data: debitedBalance, error: debitError } = await fastify.supabase
-        .rpc('wallet_debit_cglt', { p_user_id: wallet.id, p_amount: amount });
+      const operationId = crypto.randomUUID();
+      const operationReference = `CGLT-BSC-${operationId.slice(0, 8).toUpperCase()}`;
+      const { data: debitedBalance, error: debitError } = await fastify.supabase.rpc(
+        'begin_wcglt_onchain_operation',
+        {
+          p_operation_id: operationId,
+          p_user_id: wallet.id,
+          p_amount_debited: amount,
+          p_amount_onchain: wCGLTAmount,
+          p_recipient: bsc_address,
+          p_reference: operationReference,
+          p_source: 'gaming_cglt_withdraw',
+          p_operator: 'cglt',
+          p_direction: 'cglt_bsc_withdraw',
+          p_phone: wallet.phone,
+          p_metadata: { wcglt_amount: wCGLTAmount, cglt_per_wcglt: CGLT_PER_WCGLT },
+        },
+      );
       if (debitError) {
         const isInsufficient = debitError.message?.includes('INSUFFICIENT_CGLT');
         return reply.status(isInsufficient ? 402 : 500).send({
@@ -321,31 +337,52 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
 
       let bscTxHash: string | null = null;
       try {
-        bscTxHash = await mintWCGLT(bsc_address, amount);
+        bscTxHash = await mintWCGLT(bsc_address, amount, operationId);
       } catch (err) {
-        // Rembourser si le bridge échoue
-        await fastify.supabase
-          .rpc('wallet_credit_cglt', { p_user_id: wallet.id, p_amount: amount });
-        fastify.log.error({ err, phone, bsc_address, amount }, '[cglt] BSC bridge failed (refunded)');
+        if (err instanceof BridgeOutcomeUnknownError) {
+          await fastify.supabase.rpc('mark_wcglt_operation_pending_check', {
+            p_operation_id: operationId,
+            p_tx_hash: null,
+            p_reason: err.message,
+          });
+          fastify.log.warn({ err, operationId, phone }, '[cglt] BSC bridge outcome pending verification');
+          return reply.status(202).send({
+            success: false,
+            status: 'pending_onchain_check',
+            operation_id: operationId,
+            new_balance: newBalance,
+          });
+        }
+        await fastify.supabase.rpc('resolve_wcglt_onchain_operation', {
+          p_operation_id: operationId,
+          p_outcome: 'failed',
+          p_tx_hash: null,
+          p_reason: err instanceof Error ? err.message : 'BRIDGE_FAILED',
+        });
+        fastify.log.error({ err, phone, bsc_address, amount }, '[cglt] BSC bridge failed before broadcast (refunded)');
         return reply.status(502).send({ error: 'BRIDGE_FAILED' });
       }
 
-      await fastify.supabase.from('transactions').insert({
-        id:                 crypto.randomUUID(),
-        wallet_user_id:     wallet.id,
-        operator:           'cglt',
-        direction:          'cglt_bsc_withdraw',
-        amount,
-        fee:                0,
-        net_amount:         amount,
-        currency:           'CGLT',
-        phone:              wallet.phone,
-        reference:          bscTxHash,
-        cglt_amount:        -amount,
-        blockchain_tx_hash: bscTxHash,
-        status:             'success',
-        metadata:           { bsc_address, bridge_tx: bscTxHash, wcglt_amount: wCGLTAmount, cglt_per_wcglt: CGLT_PER_WCGLT },
+      const { error: finalizeError } = await fastify.supabase.rpc('resolve_wcglt_onchain_operation', {
+        p_operation_id: operationId,
+        p_outcome: 'confirmed',
+        p_tx_hash: bscTxHash,
+        p_reason: null,
       });
+      if (finalizeError) {
+        await fastify.supabase.rpc('mark_wcglt_operation_pending_check', {
+          p_operation_id: operationId,
+          p_tx_hash: bscTxHash,
+          p_reason: 'DATABASE_FINALIZATION_UNCERTAIN',
+        });
+        return reply.status(202).send({
+          success: false,
+          status: 'pending_onchain_check',
+          operation_id: operationId,
+          bsc_tx_hash: bscTxHash,
+          new_balance: newBalance,
+        });
+      }
 
       return reply.status(201).send({
         success:      true,
@@ -411,8 +448,24 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(guard.status).send(guard.body);
       }
 
-      const { data: debitedBalance, error: debitError } = await fastify.supabase
-        .rpc('wallet_debit_cglt', { p_user_id: wallet.id, p_amount: amount });
+      const operationId = crypto.randomUUID();
+      const operationReference = `CGLT-BSC-${operationId.slice(0, 8).toUpperCase()}`;
+      const { data: debitedBalance, error: debitError } = await fastify.supabase.rpc(
+        'begin_wcglt_onchain_operation',
+        {
+          p_operation_id: operationId,
+          p_user_id: wallet.id,
+          p_amount_debited: amount,
+          p_amount_onchain: wCGLTAmount,
+          p_recipient: bsc_address,
+          p_reference: operationReference,
+          p_source: 'wallet_cglt_withdraw',
+          p_operator: 'cglt',
+          p_direction: 'cglt_bsc_withdraw',
+          p_phone: wallet.phone,
+          p_metadata: { wcglt_amount: wCGLTAmount, cglt_per_wcglt: CGLT_PER_WCGLT },
+        },
+      );
       if (debitError) {
         const isInsufficient = debitError.message?.includes('INSUFFICIENT_CGLT');
         return reply.status(isInsufficient ? 402 : 500).send({
@@ -423,29 +476,52 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
 
       let bscTxHash: string | null = null;
       try {
-        bscTxHash = await mintWCGLT(bsc_address, amount);
+        bscTxHash = await mintWCGLT(bsc_address, amount, operationId);
       } catch (err) {
-        await fastify.supabase.rpc('wallet_credit_cglt', { p_user_id: wallet.id, p_amount: amount });
-        fastify.log.error({ err, phone, bsc_address, amount }, '[cglt-user] BSC bridge failed (refunded)');
+        if (err instanceof BridgeOutcomeUnknownError) {
+          await fastify.supabase.rpc('mark_wcglt_operation_pending_check', {
+            p_operation_id: operationId,
+            p_tx_hash: null,
+            p_reason: err.message,
+          });
+          fastify.log.warn({ err, operationId, phone }, '[cglt-user] BSC bridge outcome pending verification');
+          return reply.status(202).send({
+            success: false,
+            status: 'pending_onchain_check',
+            operation_id: operationId,
+            new_balance: newBalance,
+          });
+        }
+        await fastify.supabase.rpc('resolve_wcglt_onchain_operation', {
+          p_operation_id: operationId,
+          p_outcome: 'failed',
+          p_tx_hash: null,
+          p_reason: err instanceof Error ? err.message : 'BRIDGE_FAILED',
+        });
+        fastify.log.error({ err, phone, bsc_address, amount }, '[cglt-user] BSC bridge failed before broadcast (refunded)');
         return reply.status(502).send({ error: 'BRIDGE_FAILED' });
       }
 
-      await fastify.supabase.from('transactions').insert({
-        id:                 crypto.randomUUID(),
-        wallet_user_id:     wallet.id,
-        operator:           'cglt',
-        direction:          'cglt_bsc_withdraw',
-        amount,
-        fee:                0,
-        net_amount:         amount,
-        currency:           'CGLT',
-        phone:              wallet.phone,
-        reference:          bscTxHash,
-        cglt_amount:        -amount,
-        blockchain_tx_hash: bscTxHash,
-        status:             'success',
-        metadata:           { bsc_address, bridge_tx: bscTxHash, wcglt_amount: wCGLTAmount, cglt_per_wcglt: CGLT_PER_WCGLT },
+      const { error: finalizeError } = await fastify.supabase.rpc('resolve_wcglt_onchain_operation', {
+        p_operation_id: operationId,
+        p_outcome: 'confirmed',
+        p_tx_hash: bscTxHash,
+        p_reason: null,
       });
+      if (finalizeError) {
+        await fastify.supabase.rpc('mark_wcglt_operation_pending_check', {
+          p_operation_id: operationId,
+          p_tx_hash: bscTxHash,
+          p_reason: 'DATABASE_FINALIZATION_UNCERTAIN',
+        });
+        return reply.status(202).send({
+          success: false,
+          status: 'pending_onchain_check',
+          operation_id: operationId,
+          bsc_tx_hash: bscTxHash,
+          new_balance: newBalance,
+        });
+      }
 
       return reply.status(201).send({
         success:      true,

@@ -55,6 +55,7 @@ import adminQuotesRoute from './routes/admin/quotes';
 import adminDevExpensesV4Route from './routes/admin/dev-expenses-v4';
 import adminExpenseEntitiesRoute from './routes/admin/expense-entities';
 import cgltHealthRoute from './routes/admin/cglt-health';
+import adminOnchainReconciliationRoute from './routes/admin/onchain-reconciliation';
 import { validateCgltConfig } from './config/cglt-config-validator';
 
 export async function buildServer() {
@@ -183,6 +184,7 @@ export async function buildServer() {
       v1.register(adminDevExpensesV4Route);
       v1.register(adminExpenseEntitiesRoute);
       v1.register(cgltHealthRoute);
+      v1.register(adminOnchainReconciliationRoute);
     },
     { prefix: '/v1' },
   );

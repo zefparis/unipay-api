@@ -95,17 +95,6 @@ const walletInternalRoute: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      // Idempotence — vérifie si la tx est déjà traitée
-      const { data: existing } = await fastify.supabase
-        .from('transactions')
-        .select('id')
-        .eq('blockchain_tx_hash', tx_hash)
-        .maybeSingle();
-
-      if (existing) {
-        return reply.send({ success: true, already_processed: true });
-      }
-
       // Retrouver le wallet par adresse BSC
       const { data: wallet } = await fastify.supabase
         .from('wallet_users')
@@ -117,34 +106,30 @@ const walletInternalRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(404).send({ error: 'wallet_not_found' });
       }
 
-      const { data: creditedBalance, error: creditError } = await fastify.supabase
-        .rpc('wallet_credit_cglt', { p_user_id: wallet.id, p_amount: cglt_amount });
-      if (creditError) {
-        fastify.log.error({ err: creditError, walletId: wallet.id }, '[internal] CGLT credit failed');
+      const { data: result, error: processError } = await fastify.supabase.rpc(
+        'process_bridge_incoming_credit',
+        {
+          p_transaction_id: crypto.randomUUID(),
+          p_user_id: wallet.id,
+          p_phone: phone,
+          p_cglt_amount: cglt_amount,
+          p_tx_hash: tx_hash,
+          p_bsc_address: bsc_address,
+        },
+      );
+      if (processError) {
+        fastify.log.error({ err: processError, walletId: wallet.id }, '[internal] atomic CGLT credit failed');
         return reply.status(500).send({ error: 'credit_failed' });
       }
-      const newBalance = Number(creditedBalance);
 
-      await fastify.supabase.from('transactions').insert({
-        id:                 crypto.randomUUID(),
-        wallet_user_id:     wallet.id,
-        operator:           'cglt',
-        direction:          'collect',
-        amount:             cglt_amount,
-        fee:                0,
-        net_amount:         cglt_amount,
-        currency:           'CGLT',
-        phone,
-        reference:          `WCGLT-IN-${tx_hash.slice(0, 8).toUpperCase()}`,
-        blockchain_tx_hash: tx_hash,
-        cglt_amount,
-        status:             'success',
-        metadata:           { source: 'wcglt_incoming', bsc_address },
-      });
+      const processResult = result as { processed?: boolean; duplicate?: boolean; new_balance?: number } | null;
+      if (!processResult?.processed) {
+        return reply.send({ success: true, already_processed: true });
+      }
 
       fastify.log.info({ walletId: wallet.id, phone, cglt_amount, tx_hash }, '[internal] CGLT credited from incoming wCGLT');
 
-      return reply.send({ success: true, new_balance: newBalance });
+      return reply.send({ success: true, new_balance: Number(processResult.new_balance) });
     },
   );
   /* ── POST /v1/internal/backfill-cdp-wallets ────────────── */
