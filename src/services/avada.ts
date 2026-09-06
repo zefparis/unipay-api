@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { fetch as undiciFetch, ProxyAgent } from 'undici';
 import { env } from '../config/env';
+import { normalizePhoneForOperator } from '../lib/phone-normalization';
 
 const BASE = 'https://api.unipesa.tech';
 
@@ -128,18 +129,7 @@ function toNumber(value: unknown): number | null {
 }
 
 function formatPhoneForOperator(phone: string, operator: string): string {
-  // Nettoie : retire espaces, +, préfixe 243
-  let p = phone.replace(/\s+/g, '').replace(/^\+/, '');
-  if (p.startsWith('243')) p = p.slice(3);
-  if (p.startsWith('0')) p = p.slice(1);
-  // p est maintenant le numéro nu sans 0 ni préfixe (ex: 997174834)
-
-  const op = operator.toLowerCase();
-  if (op === 'airtel') {
-    return p;            // Airtel : numéro nu, ex 997174834
-  }
-  // Orange et Africell : avec le 0 initial, ex 0997174834
-  return '0' + p;
+  return normalizePhoneForOperator(phone, operator.toLowerCase() as 'orange' | 'airtel' | 'afrimoney');
 }
 
 function findBalanceValue(data: unknown): number | null {

@@ -5,6 +5,7 @@ import { sandboxCollection, sandboxPayout } from '../../services/avada';
 import type { Channel, Direction } from '../../types/payment';
 import { env } from '../../config/env';
 import { isSandboxAllowed } from '../../lib/sandbox-mode';
+import { isValidDrcPhone } from '../../lib/phone-normalization';
 
 const FEE_RATE = 0.04; // 4% per signed contract with Avada Group RDC
 
@@ -54,6 +55,16 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const { operator, direction, amount, currency, phone, reference, metadata } = request.body;
       const merchantId = request.operatorId;
+
+      // ── Phone validation (reject before hitting provider) ──────
+      // USDT doesn't use a phone number, skip validation for it
+      if (operator !== 'usdt' && !isValidDrcPhone(phone)) {
+        return reply.status(400).send({
+          error: 'INVALID_PHONE',
+          message: 'Numéro invalide : 9 chiffres significatifs requis (ex: +243XXXXXXXXX, 0XXXXXXXXX, ou XXXXXXXXX)',
+          statusCode: 400,
+        });
+      }
 
       // ── Sandbox detection ──────────────────────────────────────
       let isSandbox = isSandboxAllowed(env.NODE_ENV, request.headers['x-unipay-mode']);

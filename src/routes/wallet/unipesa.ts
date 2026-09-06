@@ -21,6 +21,7 @@ import {
   newOrderId,
   UNIPESA_USD_PROVIDER_IDS,
 } from '../../lib/unipesa';
+import { normalizePhoneForOperator, isValidDrcPhone } from '../../lib/phone-normalization';
 import { sendWalletDepositEmail } from '../../services/email';
 
 const FEE_RATE       = 0.03;
@@ -55,15 +56,16 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       if (!authPayload) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
 
       const { phone, operator, amount: amount_usd } = request.body;
-      const walletId        = authPayload.wallet_id;
-      const normalizedPhone = phone.replace(/\s/g, '');
+      const walletId = authPayload.wallet_id;
 
-      if (!/^\+243[0-9]{9}$/.test(normalizedPhone)) {
+      // Validate and normalize phone for Unipesa MSISDN format
+      if (!isValidDrcPhone(phone)) {
         return reply.status(400).send({
           error:   'INVALID_PHONE',
-          message: 'Required format: +243XXXXXXXXX',
+          message: 'Numéro invalide : 9 chiffres significatifs requis (ex: +243XXXXXXXXX, 0XXXXXXXXX, ou XXXXXXXXX)',
         });
       }
+      const normalizedPhone = normalizePhoneForOperator(phone, operator as 'orange' | 'airtel' | 'africell');
 
       const { data: wallet } = await fastify.supabase
         .from('wallet_users')
@@ -175,15 +177,16 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       if (!authPayload) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
 
       const { phone, operator, amount: amount_usd } = request.body;
-      const walletId        = authPayload.wallet_id;
-      const normalizedPhone = phone.replace(/\s/g, '');
+      const walletId = authPayload.wallet_id;
 
-      if (!/^\+243[0-9]{9}$/.test(normalizedPhone)) {
+      // Validate and normalize phone for Unipesa MSISDN format
+      if (!isValidDrcPhone(phone)) {
         return reply.status(400).send({
           error:   'INVALID_PHONE',
-          message: 'Required format: +243XXXXXXXXX',
+          message: 'Numéro invalide : 9 chiffres significatifs requis (ex: +243XXXXXXXXX, 0XXXXXXXXX, ou XXXXXXXXX)',
         });
       }
+      const normalizedPhone = normalizePhoneForOperator(phone, operator as 'orange' | 'airtel' | 'africell');
 
       const { data: wallet } = await fastify.supabase
         .from('wallet_users')
