@@ -125,6 +125,13 @@ const envSchema = z.object({
   // Anthropic — LLM for merchant support bot
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
 
+  // ── Merchant settlement soft limits ──────────────────────────
+  // Above these thresholds, settlement requests go to admin review
+  // instead of automatic payout. Configurable via env, with sensible
+  // defaults for the DRC market (in CDF).
+  SETTLEMENT_AUTO_MAX_PER_REQUEST: z.string().regex(/^\d+(\.\d+)?$/).default('500000'),
+  SETTLEMENT_AUTO_MAX_DAILY: z.string().regex(/^\d+(\.\d+)?$/).default('2000000'),
+
   // Admin access — comma-separated list of allowed emails for admin routes
   ADMIN_EMAILS: z.string().default('b.barrere@congogaming.com'),
 
