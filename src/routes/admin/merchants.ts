@@ -139,13 +139,14 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       const { data: merchants, error, count } = await q;
       if (error) return reply.status(500).send({ error: error.message });
 
-      // Enrich with transaction stats + API key status
+      // Enrich with transaction stats + API key status + KYC reminder counts
       const merchantIds = (merchants ?? []).map((m) => (m as { id: string }).id);
       let txStatsMap: Record<string, { tx_count: number; total_volume: number; last_tx_at: string | null }> = {};
       let keyStatusMap: Record<string, { has_active_key: boolean; key_count: number }> = {};
+      let kycReminderMap: Record<string, { count: number; last_sent_at: string | null }> = {};
 
       if (merchantIds.length > 0) {
-        const [txStatsRes, keyStatsRes] = await Promise.all([
+        const [txStatsRes, keyStatsRes, convsRes] = await Promise.all([
           fastify.supabase
             .from('transactions')
             .select('merchant_id, net_amount, created_at')
@@ -155,7 +156,46 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
             .from('api_keys')
             .select('merchant_id, is_active')
             .in('merchant_id', merchantIds),
+          // Fetch conversations for these merchants to map conv_id → merchant_id
+          fastify.supabase
+            .from('support_conversations')
+            .select('id, merchant_id')
+            .in('merchant_id', merchantIds),
         ]);
+
+        // Build conversation→merchant map
+        const convToMerchant = new Map<string, string>();
+        for (const c of convsRes.data ?? []) {
+          convToMerchant.set((c as { id: string }).id, (c as { merchant_id: string }).merchant_id);
+        }
+
+        // Fetch email messages with template_label for these conversations
+        const convIds = Array.from(convToMerchant.keys());
+        if (convIds.length > 0) {
+          const { data: emailMsgs } = await fastify.supabase
+            .from('support_messages')
+            .select('conversation_id, template_label, created_at')
+            .eq('channel', 'email')
+            .not('template_label', 'is', null)
+            .in('conversation_id', convIds)
+            .order('created_at', { ascending: false });
+
+          // Count KYC reminder emails per merchant
+          for (const msg of emailMsgs ?? []) {
+            const label = (msg as { template_label: string }).template_label;
+            // Match "Relance KYC" and similar KYC reminder templates
+            if (/kyc/i.test(label)) {
+              const mid = convToMerchant.get((msg as { conversation_id: string }).conversation_id);
+              if (!mid) continue;
+              if (!kycReminderMap[mid]) kycReminderMap[mid] = { count: 0, last_sent_at: null };
+              kycReminderMap[mid].count += 1;
+              const createdAt = (msg as { created_at: string }).created_at;
+              if (!kycReminderMap[mid].last_sent_at || createdAt > kycReminderMap[mid].last_sent_at!) {
+                kycReminderMap[mid].last_sent_at = createdAt;
+              }
+            }
+          }
+        }
 
         for (const tx of txStatsRes.data ?? []) {
           const mid = (tx as { merchant_id: string }).merchant_id;
@@ -180,12 +220,15 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         const mid = (m as { id: string }).id;
         const stats = txStatsMap[mid] ?? { tx_count: 0, total_volume: 0, last_tx_at: null };
         const keys = keyStatusMap[mid] ?? { has_active_key: false, key_count: 0 };
+        const kycReminder = kycReminderMap[mid] ?? { count: 0, last_sent_at: null };
         return {
           ...m,
           transaction_count: stats.tx_count,
           total_volume: stats.total_volume,
           last_transaction_at: stats.last_tx_at,
           api_key_status: keys.key_count === 0 ? 'none' : keys.has_active_key ? 'active' : 'inactive',
+          last_kyc_reminder_count: kycReminder.count,
+          last_kyc_reminder_at: kycReminder.last_sent_at,
         };
       });
 
@@ -681,7 +724,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
   );
 
   /* ── POST /v1/admin/merchants/:id/email ────────────────────── */
-  fastify.post<{ Params: { id: string }; Body: { subject: string; body: string; conversation_id?: string } }>(
+  fastify.post<{ Params: { id: string }; Body: { subject: string; body: string; conversation_id?: string; template_label?: string } }>(
     '/admin/merchants/:id/email',
     {
       schema: {
@@ -692,6 +735,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
             subject:        { type: 'string', minLength: 1, maxLength: 256 },
             body:           { type: 'string', minLength: 1, maxLength: 8000 },
             conversation_id: { type: 'string', format: 'uuid' },
+            template_label: { type: 'string', minLength: 1, maxLength: 128 },
           },
         },
       },
@@ -702,7 +746,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       const { id } = request.params;
-      const { subject, body, conversation_id } = request.body;
+      const { subject, body, conversation_id, template_label } = request.body;
 
       // Fetch merchant — CRITICAL: use the merchant's own email, never an arbitrary address
       const { data: merchant, error: merchantError } = await fastify.supabase
@@ -775,6 +819,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
           channel: 'email',
           subject,
           content: body,
+          template_label: template_label ?? null,
         });
 
       if (msgError) {
@@ -791,6 +836,81 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         conversation_id: conversationId,
         sent_to: m.email,
       });
+    },
+  );
+
+  /* ── GET /v1/admin/merchants/:id/email-history-summary ─────── */
+  /* Returns, grouped by template_label, the count and last_sent_at
+   * for emails sent to this merchant. Only channel='email'. */
+  fastify.get<{ Params: { id: string } }>(
+    '/admin/merchants/:id/email-history-summary',
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required' });
+      }
+
+      const { id } = request.params;
+
+      // Verify merchant exists
+      const { data: merchant } = await fastify.supabase
+        .from('merchants')
+        .select('id')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (!merchant) {
+        return reply.status(404).send({ error: 'Merchant not found' });
+      }
+
+      // Fetch all email messages with template_label for this merchant's conversations
+      const { data: messages, error } = await fastify.supabase
+        .from('support_messages')
+        .select('template_label, created_at, conversation_id')
+        .eq('channel', 'email')
+        .not('template_label', 'is', null)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        fastify.log.error({ err: error }, '[admin/email-history-summary] query failed');
+        return reply.status(500).send({ error: 'Internal Server Error' });
+      }
+
+      // Filter to only messages belonging to this merchant's conversations
+      // We need to get the merchant's conversation IDs first
+      const { data: convs } = await fastify.supabase
+        .from('support_conversations')
+        .select('id')
+        .eq('merchant_id', id);
+
+      const convIds = new Set((convs ?? []).map((c: { id: string }) => c.id));
+
+      const filtered = (messages ?? []).filter(
+        (m: { conversation_id: string; template_label: string; created_at: string }) =>
+          convIds.has(m.conversation_id),
+      );
+
+      // Group by template_label
+      const summaryMap = new Map<string, { template_label: string; count: number; last_sent_at: string }>();
+      for (const m of filtered) {
+        const label = m.template_label as string;
+        const existing = summaryMap.get(label);
+        if (existing) {
+          existing.count += 1;
+          if (m.created_at > existing.last_sent_at) {
+            existing.last_sent_at = m.created_at;
+          }
+        } else {
+          summaryMap.set(label, {
+            template_label: label,
+            count: 1,
+            last_sent_at: m.created_at,
+          });
+        }
+      }
+
+      const summary = Array.from(summaryMap.values()).sort((a, b) => b.last_sent_at.localeCompare(a.last_sent_at));
+
+      return reply.send({ summary });
     },
   );
 
