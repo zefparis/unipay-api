@@ -405,6 +405,82 @@ export async function sendWalletPinChangedEmail(params: {
     body, params.lang ?? 'fr');
 }
 
+/* ── sendApiKeyRotationEmail ────────────────────────────────── */
+export async function sendApiKeyRotationEmail(
+  to: string,
+  name: string,
+  newApiKey: string,
+): Promise<void> {
+  const api = getClient();
+  if (!api) {
+    console.warn('[email] BREVO_API_KEY not set — API key rotation email skipped');
+    return;
+  }
+
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:24px;font-weight:700;color:#0f172a;">
+      Mise à jour de sécurité — Nouvelle clé API
+    </h2>
+    <p style="margin:0 0 24px;font-size:15px;color:#475569;line-height:1.6;">
+      Bonjour <strong>${name}</strong>,
+    </p>
+    <p style="margin:0 0 20px;font-size:15px;color:#475569;line-height:1.6;">
+      Suite à une <strong>mise à jour de sécurité</strong> de notre plateforme,
+      votre clé API a été <strong>renouvelée</strong>. Votre ancienne clé n'est
+      plus valide et ne permettra plus d'accéder à l'API UniPay Congo.
+    </p>
+
+    <!-- New API Key block -->
+    <div style="background:#0d1117;border-radius:12px;padding:20px 24px;margin-bottom:24px;">
+      <p style="margin:0 0 8px;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#64748b;">
+        Votre nouvelle clé API
+      </p>
+      <code style="font-family:'Courier New',Courier,monospace;font-size:14px;color:#1D9E75;word-break:break-all;">
+        ${newApiKey}
+      </code>
+      <p style="margin:10px 0 0;font-size:11px;color:#64748b;">
+        ⚠️ Conservez cette clé en lieu sûr — elle ne sera plus affichée.
+      </p>
+    </div>
+
+    <!-- Info row -->
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+      <tr>
+        <td style="padding:0 8px 0 0;width:50%;">
+          <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px;">
+            <p style="margin:0 0 4px;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#94a3b8;">Base URL</p>
+            <code style="font-size:12px;color:#0f172a;">https://unipay-api.onrender.com</code>
+          </div>
+        </td>
+        <td style="padding:0 0 0 8px;width:50%;">
+          <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px;">
+            <p style="margin:0 0 4px;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#94a3b8;">Header</p>
+            <code style="font-size:12px;color:#0f172a;">X-API-Key: [votre clé]</code>
+          </div>
+        </td>
+      </tr>
+    </table>
+
+    <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:16px 20px;margin-bottom:24px;">
+      <p style="margin:0;font-size:14px;color:#991b1b;">
+        ⚠️ Votre ancienne clé API a été désactivée. Utilisez uniquement la nouvelle clé ci-dessus pour toutes vos requêtes.
+      </p>
+    </div>
+
+    <p style="margin:0;font-size:13px;color:#94a3b8;line-height:1.6;">
+      Besoin d'aide ? Répondez à cet e-mail ou contactez-nous à
+      <a href="mailto:contact@unipaycongo.com" style="color:#1D9E75;text-decoration:none;">contact@unipaycongo.com</a>.
+    </p>
+  `;
+
+  await api.transactionalEmails.sendTransacEmail({
+    subject: 'UniPay Congo — Mise à jour de sécurité, nouvelle clé API',
+    htmlContent: layout(body),
+    sender: { name: env.BREVO_SENDER_NAME, email: env.BREVO_SENDER_EMAIL },
+    to: [{ email: to, name }],
+  });
+}
+
 /* ── sendAdminNewMerchantEmail ──────────────────────────────── */
 export async function sendAdminNewMerchantEmail(
   merchantName: string,
