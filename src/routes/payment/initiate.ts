@@ -27,7 +27,7 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
           type: 'object',
           required: ['operator', 'direction', 'amount', 'currency', 'phone'],
           properties: {
-            operator: { type: 'string', enum: ['vodacash', 'orange', 'airtel', 'afrimoney', 'usdt'] },
+            operator: { type: 'string', enum: ['orange', 'airtel', 'afrimoney', 'usdt'] },
             direction: { type: 'string', enum: ['collect', 'payout'] },
             amount: { type: 'number', minimum: 1 },
             currency: { type: 'string', minLength: 3, maxLength: 3 },
@@ -64,15 +64,6 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
           .eq('id', merchantId)
           .maybeSingle();
         isSandbox = mData?.mode === 'sandbox';
-      }
-
-      // Vodacash — direct integration pending due diligence with Vodacom DRC
-      if (operator === 'vodacash' && !isSandbox) {
-        return reply.status(503).send({
-          error: 'Service Unavailable',
-          message: 'Vodacash integration is not yet available. CGL is currently in due diligence with Vodacom DRC.',
-          statusCode: 503,
-        });
       }
 
       const fee = Math.round(amount * FEE_RATE * 100) / 100;

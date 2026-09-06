@@ -8,7 +8,6 @@ import type { Channel } from '../types/payment';
 type ProviderService = typeof vodacash;
 
 const registry: Record<Channel, ProviderService> = {
-  vodacash,
   orange,
   airtel,
   afrimoney,

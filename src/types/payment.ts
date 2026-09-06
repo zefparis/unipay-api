@@ -1,4 +1,4 @@
-export type Channel = 'vodacash' | 'orange' | 'airtel' | 'afrimoney' | 'usdt';
+export type Channel = 'orange' | 'airtel' | 'afrimoney' | 'usdt';
 export type Direction = 'collect' | 'payout';
 export type PaymentStatus = 'pending' | 'processing' | 'success' | 'failed' | 'cancelled';
 

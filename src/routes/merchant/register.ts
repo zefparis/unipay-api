@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import type { FastifyPluginAsync } from 'fastify';
 import { sendWelcomeEmail, sendAdminNewMerchantEmail } from '../../services/email.js';
 
-const OPERATORS = ['orange', 'airtel', 'afrimoney', 'vodacash'] as const;
+const OPERATORS = ['orange', 'airtel', 'afrimoney'] as const;
 
 interface RegisterBody {
   name: string;

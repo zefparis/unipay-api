@@ -4,7 +4,7 @@ interface TransactionQuery {
   page: number;
   limit: number;
   status?: 'pending' | 'processing' | 'success' | 'failed' | 'cancelled';
-  operator?: 'vodacash' | 'orange' | 'airtel' | 'afrimoney' | 'usdt';
+  operator?: 'orange' | 'airtel' | 'afrimoney' | 'usdt';
   merchant_id?: string;
 }
 
@@ -19,7 +19,7 @@ const adminTransactionsRoute: FastifyPluginAsync = async (fastify) => {
             page: { type: 'integer', minimum: 1, default: 1 },
             limit: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
             status: { type: 'string', enum: ['pending', 'processing', 'success', 'failed', 'cancelled'] },
-            operator: { type: 'string', enum: ['vodacash', 'orange', 'airtel', 'afrimoney', 'usdt'] },
+            operator: { type: 'string', enum: ['orange', 'airtel', 'afrimoney', 'usdt'] },
             merchant_id: { type: 'string' },
           },
         },

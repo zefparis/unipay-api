@@ -21,7 +21,7 @@ const merchantTransactionsRoute: FastifyPluginAsync = async (fastify) => {
             page: { type: 'integer', minimum: 1, default: 1 },
             limit: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
             status: { type: 'string', enum: ['pending', 'processing', 'success', 'failed', 'cancelled'] },
-            operator: { type: 'string', enum: ['vodacash', 'orange', 'airtel', 'afrimoney', 'usdt'] },
+            operator: { type: 'string', enum: ['orange', 'airtel', 'afrimoney', 'usdt'] },
             direction: { type: 'string', enum: ['collect', 'payout'] },
           },
         },
