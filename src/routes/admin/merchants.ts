@@ -793,6 +793,279 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       });
     },
   );
+
+  /* ── GET /v1/admin/merchants/revenue ────────────────────────── */
+  /* Per-merchant revenue breakdown with period filters. */
+  interface RevenueQuery {
+    from?: string;
+    to?: string;
+    sort?: string;
+  }
+
+  const AVADA_FEE_RATE = 0.03;
+  const CLIENT_FEE_RATE = 0.04;
+  const MARGIN_RATE = CLIENT_FEE_RATE - AVADA_FEE_RATE; // 0.01
+
+  fastify.get<{ Querystring: RevenueQuery }>(
+    '/admin/merchants/revenue',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            from:  { type: 'string', format: 'date' },
+            to:    { type: 'string', format: 'date' },
+            sort:  { type: 'string', enum: ['volume', 'margin', 'tx_count'], default: 'margin' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required', statusCode: 403 });
+      }
+
+      const now = new Date();
+      const toDate = request.query.to
+        ? new Date(request.query.to + 'T23:59:59.999Z')
+        : new Date(now.toISOString());
+      const fromDate = request.query.from
+        ? new Date(request.query.from + 'T00:00:00.000Z')
+        : new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+      if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
+        return reply.status(400).send({ error: 'Invalid date format', statusCode: 400 });
+      }
+
+      // Fetch all successful collect transactions in the period
+      const { data: txs, error } = await fastify.supabase
+        .from('transactions')
+        .select('merchant_id, amount, fee, net_amount, currency')
+        .eq('status', 'success')
+        .eq('direction', 'collect')
+        .not('merchant_id', 'is', null)
+        .gte('created_at', fromDate.toISOString())
+        .lte('created_at', toDate.toISOString())
+        .limit(100000);
+
+      if (error) {
+        fastify.log.error({ err: error }, '[admin/merchants/revenue] query failed');
+        return reply.status(500).send({ error: 'Internal Server Error', statusCode: 500 });
+      }
+
+      // Fetch merchant names
+      const merchantIds = [...new Set((txs ?? []).map((t: { merchant_id: string }) => t.merchant_id))];
+      const { data: merchants } = await fastify.supabase
+        .from('merchants')
+        .select('id, name')
+        .in('id', merchantIds);
+
+      const merchantNames = new Map<string, string>(
+        (merchants ?? []).map((m: { id: string; name: string }) => [m.id, m.name]),
+      );
+
+      // Aggregate per merchant
+      const perMerchant = new Map<string, {
+        merchant_id: string;
+        name: string;
+        transaction_count: number;
+        volume_collected: number;
+        client_fees: number;
+        avada_cost: number;
+        net_margin: number;
+        net_amount_owed: number;
+      }>();
+
+      for (const tx of txs ?? []) {
+        const mid = tx.merchant_id as string;
+        if (!perMerchant.has(mid)) {
+          perMerchant.set(mid, {
+            merchant_id: mid,
+            name: merchantNames.get(mid) ?? 'Unknown',
+            transaction_count: 0,
+            volume_collected: 0,
+            client_fees: 0,
+            avada_cost: 0,
+            net_margin: 0,
+            net_amount_owed: 0,
+          });
+        }
+        const entry = perMerchant.get(mid)!;
+        const amount = Number(tx.amount ?? 0);
+        const fee = Number(tx.fee ?? 0);
+        const netAmount = Number(tx.net_amount ?? 0);
+
+        entry.transaction_count += 1;
+        entry.volume_collected += amount;
+        entry.client_fees += fee;
+        entry.avada_cost += amount * AVADA_FEE_RATE;
+        entry.net_margin += amount * MARGIN_RATE;
+        entry.net_amount_owed += netAmount;
+      }
+
+      // Round values
+      let merchants_array = Array.from(perMerchant.values()).map((e) => ({
+        ...e,
+        volume_collected: Math.round(e.volume_collected * 100) / 100,
+        client_fees: Math.round(e.client_fees * 100) / 100,
+        avada_cost: Math.round(e.avada_cost * 100) / 100,
+        net_margin: Math.round(e.net_margin * 100) / 100,
+        net_amount_owed: Math.round(e.net_amount_owed * 100) / 100,
+      }));
+
+      // Sort
+      const sortBy = request.query.sort ?? 'margin';
+      merchants_array.sort((a, b) => {
+        if (sortBy === 'volume') return b.volume_collected - a.volume_collected;
+        if (sortBy === 'tx_count') return b.transaction_count - a.transaction_count;
+        return b.net_margin - a.net_margin; // default: margin
+      });
+
+      // Totals
+      const totals = {
+        transaction_count: merchants_array.reduce((s, e) => s + e.transaction_count, 0),
+        volume_collected: Math.round(merchants_array.reduce((s, e) => s + e.volume_collected, 0) * 100) / 100,
+        client_fees: Math.round(merchants_array.reduce((s, e) => s + e.client_fees, 0) * 100) / 100,
+        avada_cost: Math.round(merchants_array.reduce((s, e) => s + e.avada_cost, 0) * 100) / 100,
+        net_margin: Math.round(merchants_array.reduce((s, e) => s + e.net_margin, 0) * 100) / 100,
+        net_amount_owed: Math.round(merchants_array.reduce((s, e) => s + e.net_amount_owed, 0) * 100) / 100,
+        merchant_count: merchants_array.length,
+      };
+
+      return reply.send({
+        period: {
+          from: fromDate.toISOString(),
+          to: toDate.toISOString(),
+        },
+        totals,
+        merchants: merchants_array,
+      });
+    },
+  );
+
+  /* ── GET /v1/admin/merchants/revenue/export ─────────────────── */
+  fastify.get<{ Querystring: RevenueQuery }>(
+    '/admin/merchants/revenue/export',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            from:  { type: 'string', format: 'date' },
+            to:    { type: 'string', format: 'date' },
+            sort:  { type: 'string', enum: ['volume', 'margin', 'tx_count'], default: 'margin' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required', statusCode: 403 });
+      }
+
+      const now = new Date();
+      const toDate = request.query.to
+        ? new Date(request.query.to + 'T23:59:59.999Z')
+        : new Date(now.toISOString());
+      const fromDate = request.query.from
+        ? new Date(request.query.from + 'T00:00:00.000Z')
+        : new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+      const { data: txs, error } = await fastify.supabase
+        .from('transactions')
+        .select('merchant_id, amount, fee, net_amount')
+        .eq('status', 'success')
+        .eq('direction', 'collect')
+        .not('merchant_id', 'is', null)
+        .gte('created_at', fromDate.toISOString())
+        .lte('created_at', toDate.toISOString())
+        .limit(100000);
+
+      if (error) {
+        return reply.status(500).send({ error: 'Internal Server Error', statusCode: 500 });
+      }
+
+      const merchantIds = [...new Set((txs ?? []).map((t: { merchant_id: string }) => t.merchant_id))];
+      const { data: merchants } = await fastify.supabase
+        .from('merchants')
+        .select('id, name')
+        .in('id', merchantIds);
+
+      const merchantNames = new Map<string, string>(
+        (merchants ?? []).map((m: { id: string; name: string }) => [m.id, m.name]),
+      );
+
+      const perMerchant = new Map<string, {
+        name: string;
+        transaction_count: number;
+        volume_collected: number;
+        client_fees: number;
+        avada_cost: number;
+        net_margin: number;
+        net_amount_owed: number;
+      }>();
+
+      for (const tx of txs ?? []) {
+        const mid = tx.merchant_id as string;
+        if (!perMerchant.has(mid)) {
+          perMerchant.set(mid, {
+            name: merchantNames.get(mid) ?? 'Unknown',
+            transaction_count: 0,
+            volume_collected: 0,
+            client_fees: 0,
+            avada_cost: 0,
+            net_margin: 0,
+            net_amount_owed: 0,
+          });
+        }
+        const entry = perMerchant.get(mid)!;
+        const amount = Number(tx.amount ?? 0);
+        entry.transaction_count += 1;
+        entry.volume_collected += amount;
+        entry.client_fees += Number(tx.fee ?? 0);
+        entry.avada_cost += amount * AVADA_FEE_RATE;
+        entry.net_margin += amount * MARGIN_RATE;
+        entry.net_amount_owed += Number(tx.net_amount ?? 0);
+      }
+
+      const sortBy = request.query.sort ?? 'margin';
+      const rows = Array.from(perMerchant.entries()).map(([id, e]) => ({
+        merchant_id: id,
+        ...e,
+        volume_collected: Math.round(e.volume_collected * 100) / 100,
+        client_fees: Math.round(e.client_fees * 100) / 100,
+        avada_cost: Math.round(e.avada_cost * 100) / 100,
+        net_margin: Math.round(e.net_margin * 100) / 100,
+        net_amount_owed: Math.round(e.net_amount_owed * 100) / 100,
+      }));
+
+      rows.sort((a, b) => {
+        if (sortBy === 'volume') return b.volume_collected - a.volume_collected;
+        if (sortBy === 'tx_count') return b.transaction_count - a.transaction_count;
+        return b.net_margin - a.net_margin;
+      });
+
+      // Build CSV
+      const headers = ['merchant_id', 'name', 'transaction_count', 'volume_collected', 'client_fees', 'avada_cost', 'net_margin', 'net_amount_owed'];
+      const csvLines = [headers.join(',')];
+      for (const r of rows) {
+        csvLines.push([
+          r.merchant_id,
+          `"${r.name.replace(/"/g, '""')}"`,
+          r.transaction_count,
+          r.volume_collected,
+          r.client_fees,
+          r.avada_cost,
+          r.net_margin,
+          r.net_amount_owed,
+        ].join(','));
+      }
+
+      reply.header('Content-Type', 'text/csv');
+      reply.header('Content-Disposition', `attachment; filename="merchant-revenue-${fromDate.toISOString().slice(0,10)}-to-${toDate.toISOString().slice(0,10)}.csv"`);
+      return reply.send(csvLines.join('\n'));
+    },
+  );
 };
 
 export default adminMerchantsRoute;
