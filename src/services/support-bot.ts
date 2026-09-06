@@ -22,8 +22,27 @@ FORMAT:
 - Utilise le contexte fourni pour répondre précisément
 - Si tu ne sais pas, dis-le — ne invente jamais d'informations`;
 
+// Use the latest model known to the installed SDK (0.124.0).
+// claude-sonnet-4-20250514 was the original Sonnet 4 release and may be deprecated.
+// claude-sonnet-4-5-20250929 is the current Sonnet 4.5 release.
+const MODEL = 'claude-sonnet-4-5-20250929';
+
+let keyPresenceLogged = false;
+
 function getClient(): Anthropic | null {
-  if (!env.ANTHROPIC_API_KEY) return null;
+  if (!env.ANTHROPIC_API_KEY) {
+    // Log the absence once at startup, then silently return null on subsequent calls.
+    // We log the boolean presence, NEVER the key value itself.
+    if (!keyPresenceLogged) {
+      console.log('[support-bot] ANTHROPIC_API_KEY: absent — bot will escalate all messages');
+      keyPresenceLogged = true;
+    }
+    return null;
+  }
+  if (!keyPresenceLogged) {
+    console.log('[support-bot] ANTHROPIC_API_KEY: present — bot will attempt API calls');
+    keyPresenceLogged = true;
+  }
   return new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
 }
 
@@ -87,9 +106,11 @@ export async function generateBotReply(
     content: m.content,
   }));
 
+  console.log(`[support-bot] Attempting Anthropic API call — model: ${MODEL}, messages: ${messages.length}`);
+
   try {
     const response = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: MODEL,
       max_tokens: 1024,
       system: `${SYSTEM_PROMPT}\n\n${buildContextBlock(merchantContext)}`,
       messages,
@@ -101,9 +122,24 @@ export async function generateBotReply(
     const escalated = content.startsWith('[ESCALATE]');
     const cleanContent = escalated ? content.replace('[ESCALATE]', '').trim() : content;
 
+    console.log(`[support-bot] API call succeeded — escalated: ${escalated}, response length: ${content.length}`);
     return { content: cleanContent, escalated };
   } catch (err) {
-    console.error('[support-bot] Anthropic API error:', err);
+    // Log the FULL error details — never swallow silently.
+    // This is the critical diagnostic path: if the API call fails, we need
+    // to see the exact error code, message, and SDK details.
+    const errorDetails = {
+      name: err instanceof Error ? err.name : 'Unknown',
+      message: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+      // Anthropic SDK errors include status, error.code, error.message, error.type
+      status: (err as { status?: number }).status,
+      error: (err as { error?: { type?: string; code?: string; message?: string } }).error,
+      // Log the model that was attempted, to catch deprecation issues
+      model: MODEL,
+    };
+    console.error('[support-bot] Anthropic API call FAILED:', JSON.stringify(errorDetails, null, 2));
+
     return {
       content: 'Une erreur technique est survenue. Un membre de notre équipe va prendre le relais et vous répondre sous peu.',
       escalated: true,
