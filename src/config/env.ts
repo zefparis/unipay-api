@@ -122,8 +122,14 @@ const envSchema = z.object({
   // PayGuard (Hybrid Vector API) — server-to-server API key for KYC enroll/verify
   PAYGUARD_API_KEY: z.string().min(16).optional(),
 
+  // Anthropic — LLM for merchant support bot
+  ANTHROPIC_API_KEY: z.string().min(1).optional(),
+
   // Admin access — comma-separated list of allowed emails for admin routes
   ADMIN_EMAILS: z.string().default('b.barrere@congogaming.com'),
+
+  // Support escalation recipient
+  SUPPORT_ESCALATION_EMAIL: z.string().email().default('contact@ia-solution.fr'),
 
   // Coinbase CDP — EVM server accounts (one per wallet user, Base network)
   CDP_API_KEY_ID:     z.string().min(1).optional(),

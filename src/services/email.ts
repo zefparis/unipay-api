@@ -481,6 +481,53 @@ export async function sendApiKeyRotationEmail(
   });
 }
 
+/* ── sendSupportEscalationEmail ─────────────────────────────── */
+export async function sendSupportEscalationEmail(
+  merchantName: string,
+  merchantEmail: string,
+  conversationId: string,
+  messagePreview: string,
+): Promise<void> {
+  const api = getClient();
+  if (!api) {
+    console.warn('[email] BREVO_API_KEY not set — escalation email skipped');
+    return;
+  }
+
+  const escalationEmail = env.SUPPORT_ESCALATION_EMAIL;
+  const adminUrl = `https://unipaycongo.com/fr/dashboard/admin/merchants/support`;
+
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:24px;font-weight:700;color:#dc2626;">
+      Escalade support marchand
+    </h2>
+    <p style="margin:0 0 20px;font-size:15px;color:#475569;line-height:1.6;">
+      Une conversation de support a été escaladée et nécessite votre intervention.
+    </p>
+    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px 20px;margin-bottom:20px;">
+      <p style="margin:0 0 6px;font-size:13px;font-weight:600;color:#64748b;">Marchand</p>
+      <p style="margin:0 0 12px;font-size:15px;color:#0f172a;">${merchantName} (${merchantEmail})</p>
+      <p style="margin:0 0 6px;font-size:13px;font-weight:600;color:#64748b;">Message</p>
+      <p style="margin:0 0 12px;font-size:14px;color:#0f172a;">${messagePreview}</p>
+      <p style="margin:0;font-size:12px;color:#94a3b8;">Conversation ID: ${conversationId}</p>
+    </div>
+    <a href="${adminUrl}"
+       style="display:inline-block;background:#1D9E75;color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;">
+      Voir la conversation →
+    </a>`;
+
+  try {
+    await api.transactionalEmails.sendTransacEmail({
+      subject: `Escalade support — ${merchantName}`,
+      htmlContent: layout(body),
+      sender: { name: env.BREVO_SENDER_NAME, email: env.BREVO_SENDER_EMAIL },
+      to: [{ email: escalationEmail }],
+    });
+  } catch (err) {
+    console.error('[email] support escalation email failed:', err);
+  }
+}
+
 /* ── sendAdminNewMerchantEmail ──────────────────────────────── */
 export async function sendAdminNewMerchantEmail(
   merchantName: string,
