@@ -161,7 +161,7 @@ const merchantSupportRoute: FastifyPluginAsync = async (fastify) => {
         fastify.log.error({ err: botMsgError, conversationId }, '[support] bot message save failed');
       }
 
-      // Handle escalation
+      // Handle escalation / status update
       let conversationStatus = 'open';
       if (botReply.escalated) {
         conversationStatus = 'escalated';
@@ -179,6 +179,17 @@ const merchantSupportRoute: FastifyPluginAsync = async (fastify) => {
         ).catch((err: unknown) => {
           fastify.log.error({ err, conversationId }, '[support] escalation email failed');
         });
+      } else {
+        // Bot replied successfully without escalation.
+        // If the conversation was previously 'escalated' (e.g. due to a
+        // transient API error that has since been fixed), revert it to
+        // 'open' so the "a human will respond" banner disappears from
+        // the merchant UI. 'resolved' conversations are blocked earlier
+        // (line 58-60) and never reach this point.
+        await fastify.supabase
+          .from('support_conversations')
+          .update({ status: 'open', updated_at: new Date().toISOString() })
+          .eq('id', conversationId!);
       }
 
       return reply.send({
