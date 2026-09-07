@@ -67,7 +67,7 @@ BEGIN
       RAISE NOTICE 'EXPOSED: %() is executable by %', offending_record.function_name, offending_record.exposed_to;
     END LOOP;
 
-    RAISE EXCEPTION 'GUARD TEST FAILED: % SECURITY DEFINER function(s) matching financial whitelist are executable by anon or authenticated. Run REVOKE ALL ON FUNCTION ... FROM PUBLIC; for each.';
+    RAISE EXCEPTION 'GUARD TEST FAILED: % SECURITY DEFINER function(s) matching financial whitelist are executable by anon or authenticated. Run REVOKE ALL ON FUNCTION ... FROM PUBLIC; for each.', offending_count;
   END IF;
 
   RAISE NOTICE 'GUARD TEST PASSED: No SECURITY DEFINER financial function is executable by anon or authenticated.';
