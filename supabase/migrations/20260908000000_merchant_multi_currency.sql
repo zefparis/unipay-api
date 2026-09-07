@@ -55,6 +55,8 @@ ALTER TABLE public.transactions
 -- ── 4. process_merchant_settlement — add p_currency param ──────
 -- Now filters balance by currency and stores currency on the
 -- settlement request + ledger entry.
+-- DROP the old 6-param signature first to avoid ambiguity (42725).
+DROP FUNCTION IF EXISTS public.process_merchant_settlement(UUID, NUMERIC, TEXT, TEXT, NUMERIC, NUMERIC);
 CREATE OR REPLACE FUNCTION public.process_merchant_settlement(
   p_merchant_id UUID,
   p_amount NUMERIC,
