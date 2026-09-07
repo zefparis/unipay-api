@@ -51,12 +51,32 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
         }
       }
 
-      const balances = Object.entries(byCurrency).map(([cur, v]) => ({
-        currency: cur,
-        balance: Math.round((v.credits - v.settlements) * 100) / 100,
-        total_credits: Math.round(v.credits * 100) / 100,
-        total_settlements: Math.round(v.settlements * 100) / 100,
-      }));
+      // Always-visible Mobile Money currencies: CDF and USD are shown even at 0
+      // so merchants can see the service exists. USDT only appears if ledger
+      // entries already exist for it (crypto settlement is not auto-exposed).
+      const ALWAYS_VISIBLE_CURRENCIES = ['CDF', 'USD'];
+      for (const cur of ALWAYS_VISIBLE_CURRENCIES) {
+        if (!byCurrency[cur]) {
+          byCurrency[cur] = { credits: 0, settlements: 0 };
+        }
+      }
+
+      // Build balances array with CDF first, USD second, then any others (USDT)
+      const currencyOrder = ['CDF', 'USD', 'USDT'];
+      const allCurrencies = [
+        ...currencyOrder.filter((c) => byCurrency[c]),
+        ...Object.keys(byCurrency).filter((c) => !currencyOrder.includes(c)).sort(),
+      ];
+
+      const balances = allCurrencies.map((cur) => {
+        const v = byCurrency[cur];
+        return {
+          currency: cur,
+          balance: Math.round((v.credits - v.settlements) * 100) / 100,
+          total_credits: Math.round(v.credits * 100) / 100,
+          total_settlements: Math.round(v.settlements * 100) / 100,
+        };
+      });
 
       // Backward compat: also include a top-level balance (sum of all currencies,
       // but labeled as "mixed" if more than one currency exists)

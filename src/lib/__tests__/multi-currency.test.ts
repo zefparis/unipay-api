@@ -190,6 +190,45 @@ describe('B6 — settlement balance returns balances[] per currency', () => {
       'balance entries must have currency and balance',
     );
   });
+
+  it('always includes CDF and USD even with no ledger entries', () => {
+    // The ALWAYS_VISIBLE_CURRENCIES array guarantees CDF + USD are present
+    // even when no ledger rows exist for that currency.
+    assert.match(
+      SRC,
+      /ALWAYS_VISIBLE_CURRENCIES = \['CDF', 'USD'\]/,
+      'must declare CDF and USD as always-visible currencies',
+    );
+    assert.match(
+      SRC,
+      /for \(const cur of ALWAYS_VISIBLE_CURRENCIES\)/,
+      'must iterate over ALWAYS_VISIBLE_CURRENCIES to seed zero balances',
+    );
+    assert.match(
+      SRC,
+      /if \(!byCurrency\[cur\]\)/,
+      'must seed zero-balance entry if currency is missing from ledger',
+    );
+  });
+
+  it('USDT is NOT always visible (only appears if ledger entries exist)', () => {
+    // USDT should not be in the always-visible list
+    const alwaysVisibleMatch = SRC.match(/ALWAYS_VISIBLE_CURRENCIES = \[([^\]]+)\]/);
+    assert.ok(alwaysVisibleMatch, 'ALWAYS_VISIBLE_CURRENCIES array must exist');
+    assert.doesNotMatch(
+      alwaysVisibleMatch[1],
+      /USDT/,
+      'USDT must not be in ALWAYS_VISIBLE_CURRENCIES (crypto is opt-in only)',
+    );
+  });
+
+  it('balances are ordered CDF first, USD second, then USDT', () => {
+    assert.match(
+      SRC,
+      /currencyOrder = \['CDF', 'USD', 'USDT'\]/,
+      'must define currency order with CDF first, USD second, USDT third',
+    );
+  });
 });
 
 // ─── B7: Settlement request accepts currency ──────────────────
