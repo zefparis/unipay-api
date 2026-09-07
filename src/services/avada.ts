@@ -63,10 +63,12 @@ function requireUnipesaEnv(): { publicId: string; merchantId: string; secretKey:
   const publicId    = env.UNIPESA_PUBLIC_ID;
   const merchantId  = env.UNIPESA_MERCHANT_ID;
   const secretKey   = env.UNIPESA_SECRET_KEY;
-  const callbackUrl = env.UNIPESA_CALLBACK_URL;
+  // Merchant flow uses a dedicated callback URL (/v1/payment/callback).
+  // Fall back to UNIPESA_CALLBACK_URL for backward compatibility.
+  const callbackUrl = env.UNIPESA_MERCHANT_CALLBACK_URL ?? env.UNIPESA_CALLBACK_URL;
   if (!publicId || !merchantId || !secretKey || !callbackUrl) {
     throw new Error(
-      'Unipesa integration not configured: UNIPESA_PUBLIC_ID, UNIPESA_MERCHANT_ID, UNIPESA_SECRET_KEY, UNIPESA_CALLBACK_URL required',
+      'Unipesa integration not configured: UNIPESA_PUBLIC_ID, UNIPESA_MERCHANT_ID, UNIPESA_SECRET_KEY, UNIPESA_MERCHANT_CALLBACK_URL (or UNIPESA_CALLBACK_URL) required',
     );
   }
   return { publicId, merchantId, secretKey, callbackUrl };

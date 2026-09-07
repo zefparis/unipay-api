@@ -15,7 +15,11 @@ const envSchema = z.object({
   UNIPESA_PUBLIC_ID: z.string().optional(),
   UNIPESA_MERCHANT_ID: z.string().optional(),
   UNIPESA_SECRET_KEY: z.string().optional(),
+  // Wallet flow callback (USD deposits/withdrawals via /v1/wallet/unipesa/callback)
   UNIPESA_CALLBACK_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
+  // Merchant flow callback (CDF/USD collections/payouts via /v1/payment/callback)
+  // Falls back to UNIPESA_CALLBACK_URL for backward compatibility if not set.
+  UNIPESA_MERCHANT_CALLBACK_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
 
   // Fixie proxy — whitelisted IP for Unipesa API calls
   FIXIE_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),

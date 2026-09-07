@@ -20,6 +20,8 @@ services:
         generateValue: true
       - key: OPERATOR_WEBHOOK_SECRET
         generateValue: true
+      - key: UNIPESA_MERCHANT_CALLBACK_URL
+        sync: false
       - key: BRIDGE_API_URL
         sync: false
       - key: BRIDGE_API_KEY
