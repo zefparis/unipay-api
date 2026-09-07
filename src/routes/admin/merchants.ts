@@ -1112,6 +1112,8 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       };
 
       // Totals per currency (never mixed)
+      // CDF and USD are always included even at 0, so the admin sees parity
+      // with the merchant portal. USDT only if ledger entries exist.
       const byCurrencyTotals: Record<string, {
         currency: string;
         transaction_count: number;
@@ -1121,6 +1123,20 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         net_margin: number;
         net_amount_owed: number;
       }> = {};
+
+      // Seed always-visible currencies at 0
+      for (const cur of ['CDF', 'USD']) {
+        byCurrencyTotals[cur] = {
+          currency: cur,
+          transaction_count: 0,
+          volume_collected: 0,
+          client_fees: 0,
+          avada_cost: 0,
+          net_margin: 0,
+          net_amount_owed: 0,
+        };
+      }
+
       for (const m of merchants_array) {
         for (const c of m.by_currency) {
           if (!byCurrencyTotals[c.currency]) {
@@ -1142,14 +1158,25 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
           byCurrencyTotals[c.currency].net_amount_owed += c.net_amount_owed;
         }
       }
-      const totals_by_currency = Object.values(byCurrencyTotals).map((c) => ({
-        ...c,
-        volume_collected: Math.round(c.volume_collected * 100) / 100,
-        client_fees: Math.round(c.client_fees * 100) / 100,
-        avada_cost: Math.round(c.avada_cost * 100) / 100,
-        net_margin: Math.round(c.net_margin * 100) / 100,
-        net_amount_owed: Math.round(c.net_amount_owed * 100) / 100,
-      }));
+
+      // Order: CDF first, USD second, then any others (USDT) sorted
+      const currencyOrder = ['CDF', 'USD', 'USDT'];
+      const totalsByCurrencySorted = [
+        ...currencyOrder.filter((c) => byCurrencyTotals[c]),
+        ...Object.keys(byCurrencyTotals).filter((c) => !currencyOrder.includes(c)).sort(),
+      ];
+
+      const totals_by_currency = totalsByCurrencySorted.map((cur) => {
+        const c = byCurrencyTotals[cur];
+        return {
+          ...c,
+          volume_collected: Math.round(c.volume_collected * 100) / 100,
+          client_fees: Math.round(c.client_fees * 100) / 100,
+          avada_cost: Math.round(c.avada_cost * 100) / 100,
+          net_margin: Math.round(c.net_margin * 100) / 100,
+          net_amount_owed: Math.round(c.net_amount_owed * 100) / 100,
+        };
+      });
 
       return reply.send({
         period: {
@@ -1284,6 +1311,55 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
           r.avada_cost,
           r.net_margin,
           r.net_amount_owed,
+        ].join(','));
+      }
+
+      // ── Totals per currency at the bottom (CDF + USD always, even at 0) ──
+      // Compute from the rows we already have (per merchant + currency)
+      const csvTotalsByCurrency: Record<string, {
+        transaction_count: number;
+        volume_collected: number;
+        client_fees: number;
+        avada_cost: number;
+        net_margin: number;
+        net_amount_owed: number;
+      }> = {};
+      for (const cur of ['CDF', 'USD']) {
+        csvTotalsByCurrency[cur] = {
+          transaction_count: 0, volume_collected: 0, client_fees: 0,
+          avada_cost: 0, net_margin: 0, net_amount_owed: 0,
+        };
+      }
+      for (const r of rows) {
+        if (!csvTotalsByCurrency[r.currency]) {
+          csvTotalsByCurrency[r.currency] = {
+            transaction_count: 0, volume_collected: 0, client_fees: 0,
+            avada_cost: 0, net_margin: 0, net_amount_owed: 0,
+          };
+        }
+        csvTotalsByCurrency[r.currency].transaction_count += r.transaction_count;
+        csvTotalsByCurrency[r.currency].volume_collected += r.volume_collected;
+        csvTotalsByCurrency[r.currency].client_fees += r.client_fees;
+        csvTotalsByCurrency[r.currency].avada_cost += r.avada_cost;
+        csvTotalsByCurrency[r.currency].net_margin += r.net_margin;
+        csvTotalsByCurrency[r.currency].net_amount_owed += r.net_amount_owed;
+      }
+
+      // Add a blank separator line then total rows
+      csvLines.push('');
+      for (const cur of ['CDF', 'USD', 'USDT']) {
+        if (!csvTotalsByCurrency[cur]) continue;
+        const t = csvTotalsByCurrency[cur];
+        csvLines.push([
+          `"TOTAL ${cur}"`,
+          `"Total ${cur}"`,
+          cur,
+          t.transaction_count,
+          Math.round(t.volume_collected * 100) / 100,
+          Math.round(t.client_fees * 100) / 100,
+          Math.round(t.avada_cost * 100) / 100,
+          Math.round(t.net_margin * 100) / 100,
+          Math.round(t.net_amount_owed * 100) / 100,
         ].join(','));
       }
 
