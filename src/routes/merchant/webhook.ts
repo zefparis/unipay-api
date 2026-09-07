@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env.js';
-import { verifyToken } from '../../utils/jwt.js';
+import { requireActiveMerchant, merchantIdFromRequest } from '../../lib/merchant-auth.js';
 
 /* ── SSRF guard ─────────────────────────────────────────────── */
 function isSafeWebhookUrl(raw: string): boolean {
@@ -16,13 +16,6 @@ function isSafeWebhookUrl(raw: string): boolean {
     ];
     return !blocked.some((re) => re.test(host));
   } catch { return false; }
-}
-
-/* ── JWT helper ─────────────────────────────────────────────── */
-function requireMerchant(auth: string | undefined, secret: string): string | null {
-  if (!auth?.startsWith('Bearer ')) return null;
-  const payload = verifyToken(auth.slice(7), secret);
-  return payload?.merchant_id ?? null;
 }
 
 interface WebhookBody { webhook_url: string }
@@ -48,8 +41,9 @@ const merchantWebhookRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth not configured', statusCode: 500 });
-      const merchantId = requireMerchant(request.headers.authorization, env.JWT_SECRET);
-      if (!merchantId) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
+      const auth = await requireActiveMerchant(request, fastify.supabase);
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const merchantId = auth.payload.merchant_id;
 
       const { data } = await fastify.supabase
         .from('merchants')
@@ -91,8 +85,9 @@ const merchantWebhookRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth not configured', statusCode: 500 });
-      const merchantId = requireMerchant(request.headers.authorization, env.JWT_SECRET);
-      if (!merchantId) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
+      const auth = await requireActiveMerchant(request, fastify.supabase);
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const merchantId = auth.payload.merchant_id;
 
       const { webhook_url } = request.body;
 
@@ -135,8 +130,9 @@ const merchantWebhookRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth not configured', statusCode: 500 });
-      const merchantId = requireMerchant(request.headers.authorization, env.JWT_SECRET);
-      if (!merchantId) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
+      const auth = await requireActiveMerchant(request, fastify.supabase);
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const merchantId = auth.payload.merchant_id;
 
       await fastify.supabase
         .from('merchants')
@@ -164,11 +160,19 @@ const merchantWebhookRoute: FastifyPluginAsync = async (fastify) => {
           },
         },
       },
+      config: {
+        rateLimit: {
+          max: 5,
+          timeWindow: '1 hour',
+          keyGenerator: (req) => merchantIdFromRequest(req) ?? req.ip,
+        },
+      },
     },
     async (request, reply) => {
       if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth not configured', statusCode: 500 });
-      const merchantId = requireMerchant(request.headers.authorization, env.JWT_SECRET);
-      if (!merchantId) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
+      const auth = await requireActiveMerchant(request, fastify.supabase);
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const merchantId = auth.payload.merchant_id;
 
       const { data: merchant } = await fastify.supabase
         .from('merchants')

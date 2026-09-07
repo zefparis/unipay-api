@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
-import { verifyToken } from '../../utils/jwt';
+import { requireActiveMerchant } from '../../lib/merchant-auth';
 
 interface TransactionQuery {
   page: number;
@@ -32,13 +32,9 @@ const merchantTransactionsRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(500).send({ error: 'Auth service not configured', statusCode: 500 });
       }
 
-      const auth = request.headers.authorization;
-      if (!auth?.startsWith('Bearer ')) {
-        return reply.status(401).send({ error: 'Missing bearer token', statusCode: 401 });
-      }
-      const payload = verifyToken(auth.slice(7), env.JWT_SECRET);
-      if (!payload) {
-        return reply.status(401).send({ error: 'Invalid or expired token', statusCode: 401 });
+      const auth = await requireActiveMerchant(request, fastify.supabase);
+      if (!auth.ok) {
+        return reply.status(auth.status).send(auth.error);
       }
 
       const { page, limit, status, operator, direction } = request.query;
@@ -47,7 +43,7 @@ const merchantTransactionsRoute: FastifyPluginAsync = async (fastify) => {
       let query = fastify.supabase
         .from('transactions')
         .select('id, operator, direction, amount, fee, net_amount, currency, phone, reference, avada_transaction_id, status, created_at, updated_at', { count: 'exact' })
-        .eq('merchant_id', payload.merchant_id)
+        .eq('merchant_id', auth.payload.merchant_id)
         .order('created_at', { ascending: false })
         .range(offset, offset + limit - 1);
 
@@ -58,7 +54,7 @@ const merchantTransactionsRoute: FastifyPluginAsync = async (fastify) => {
       const { data, error, count } = await query;
 
       if (error) {
-        fastify.log.error({ err: error, merchantId: payload.merchant_id }, 'Merchant transactions query failed');
+        fastify.log.error({ err: error, merchantId: auth.payload.merchant_id }, 'Merchant transactions query failed');
         return reply.status(500).send({ error: 'Internal Server Error', statusCode: 500 });
       }
 

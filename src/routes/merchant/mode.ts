@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env.js';
-import { verifyToken } from '../../utils/jwt.js';
+import { requireActiveMerchant } from '../../lib/merchant-auth.js';
 
 type MerchantMode = 'sandbox' | 'live';
 interface ModeBody { mode: MerchantMode }
@@ -12,12 +12,6 @@ interface SandboxTestBody {
   amount: number;
   currency?: string;
   phone: string;
-}
-
-function requireMerchant(auth: string | undefined, secret: string): string | null {
-  if (!auth?.startsWith('Bearer ')) return null;
-  const payload = verifyToken(auth.slice(7), secret);
-  return payload?.merchant_id ?? null;
 }
 
 const merchantModeRoute: FastifyPluginAsync = async (fastify) => {
@@ -40,13 +34,13 @@ const merchantModeRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth not configured', statusCode: 500 });
-      const merchantId = requireMerchant(request.headers.authorization, env.JWT_SECRET);
-      if (!merchantId) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
+      const auth = await requireActiveMerchant(request, fastify.supabase);
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
 
       const { data } = await fastify.supabase
         .from('merchants')
         .select('mode, kyc_status')
-        .eq('id', merchantId)
+        .eq('id', auth.payload.merchant_id)
         .maybeSingle();
 
       return reply.send({
@@ -81,8 +75,8 @@ const merchantModeRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth not configured', statusCode: 500 });
-      const merchantId = requireMerchant(request.headers.authorization, env.JWT_SECRET);
-      if (!merchantId) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
+      const auth = await requireActiveMerchant(request, fastify.supabase);
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
 
       const { mode } = request.body;
 
@@ -91,7 +85,7 @@ const merchantModeRoute: FastifyPluginAsync = async (fastify) => {
         const { data } = await fastify.supabase
           .from('merchants')
           .select('kyc_status')
-          .eq('id', merchantId)
+          .eq('id', auth.payload.merchant_id)
           .maybeSingle();
 
         if (data?.kyc_status !== 'approved') {
@@ -106,14 +100,14 @@ const merchantModeRoute: FastifyPluginAsync = async (fastify) => {
       const { error } = await fastify.supabase
         .from('merchants')
         .update({ mode })
-        .eq('id', merchantId);
+        .eq('id', auth.payload.merchant_id);
 
       if (error) {
-        fastify.log.error({ err: error, merchantId }, 'Mode update failed');
+        fastify.log.error({ err: error, merchantId: auth.payload.merchant_id }, 'Mode update failed');
         return reply.status(500).send({ error: 'Mode update failed', statusCode: 500 });
       }
 
-      fastify.log.info({ merchantId, mode }, 'Merchant mode updated');
+      fastify.log.info({ merchantId: auth.payload.merchant_id, mode }, 'Merchant mode updated');
       return reply.send({ mode, ok: true });
     },
   );
@@ -138,9 +132,10 @@ const merchantModeRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth not configured', statusCode: 500 });
-      const merchantId = requireMerchant(request.headers.authorization, env.JWT_SECRET);
-      if (!merchantId) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
+      const auth = await requireActiveMerchant(request, fastify.supabase);
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
 
+      const merchantId = auth.payload.merchant_id;
       const { operator, direction, amount, currency = 'CDF', phone } = request.body;
       const FEE_RATE = 0.03;
       const fee = Math.round(amount * FEE_RATE * 100) / 100;

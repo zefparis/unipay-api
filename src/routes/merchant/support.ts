@@ -1,19 +1,12 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env.js';
-import { verifyToken, type JwtPayload } from '../../utils/jwt.js';
 import { generateBotReply, type MerchantContext } from '../../services/support-bot.js';
 import { sendSupportEscalationEmail } from '../../services/email.js';
+import { requireActiveMerchant, merchantIdFromRequest } from '../../lib/merchant-auth.js';
 
 interface MessageBody {
   conversation_id?: string;
   message: string;
-}
-
-function requireMerchantAuth(request: { headers: Record<string, string | string[] | undefined> }): JwtPayload | null {
-  if (!env.JWT_SECRET) return null;
-  const auth = request.headers.authorization;
-  if (!auth || typeof auth !== 'string' || !auth.startsWith('Bearer ')) return null;
-  return verifyToken(auth.slice(7), env.JWT_SECRET);
 }
 
 const merchantSupportRoute: FastifyPluginAsync = async (fastify) => {
@@ -31,14 +24,19 @@ const merchantSupportRoute: FastifyPluginAsync = async (fastify) => {
           },
         },
       },
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: '1 hour',
+          keyGenerator: (req) => merchantIdFromRequest(req) ?? req.ip,
+        },
+      },
     },
     async (request, reply) => {
-      const payload = requireMerchantAuth(request);
-      if (!payload) {
-        return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
-      }
+      const auth = await requireActiveMerchant(request, fastify.supabase);
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
 
-      const merchantId = payload.merchant_id;
+      const merchantId = auth.payload.merchant_id;
       const { message, conversation_id } = request.body;
 
       // Find or create conversation — ALWAYS scoped to this merchant
@@ -203,15 +201,13 @@ const merchantSupportRoute: FastifyPluginAsync = async (fastify) => {
 
   /* ── GET /v1/merchant/support/conversations ────────────────── */
   fastify.get('/merchant/support/conversations', async (request, reply) => {
-    const payload = requireMerchantAuth(request);
-    if (!payload) {
-      return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
-    }
+    const auth = await requireActiveMerchant(request, fastify.supabase);
+    if (!auth.ok) return reply.status(auth.status).send(auth.error);
 
     const { data, error } = await fastify.supabase
       .from('support_conversations')
       .select('id, status, created_at, updated_at')
-      .eq('merchant_id', payload.merchant_id) // CRITICAL: only own conversations
+      .eq('merchant_id', auth.payload.merchant_id) // CRITICAL: only own conversations
       .order('updated_at', { ascending: false });
 
     if (error) return reply.status(500).send({ error: error.message });
@@ -223,10 +219,8 @@ const merchantSupportRoute: FastifyPluginAsync = async (fastify) => {
   fastify.get<{ Params: { id: string } }>(
     '/merchant/support/conversations/:id/messages',
     async (request, reply) => {
-      const payload = requireMerchantAuth(request);
-      if (!payload) {
-        return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
-      }
+      const auth = await requireActiveMerchant(request, fastify.supabase);
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
 
       const { id } = request.params;
 
@@ -235,7 +229,7 @@ const merchantSupportRoute: FastifyPluginAsync = async (fastify) => {
         .from('support_conversations')
         .select('id, merchant_id, status')
         .eq('id', id)
-        .eq('merchant_id', payload.merchant_id) // prevents cross-merchant access
+        .eq('merchant_id', auth.payload.merchant_id) // prevents cross-merchant access
         .maybeSingle();
 
       if (convError || !conv) {

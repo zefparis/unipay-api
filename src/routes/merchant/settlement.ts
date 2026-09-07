@@ -1,17 +1,10 @@
 import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env.js';
-import { verifyToken, type JwtPayload } from '../../utils/jwt.js';
 import { initiatePayout } from '../../services/avada.js';
 import { normalizePhoneForOperator, isValidDrcPhone } from '../../lib/phone-normalization.js';
 import { markSettlementSuccess, markSettlementFailed } from './settlement-rpc-helpers.js';
-
-function requireMerchantAuth(request: { headers: Record<string, string | string[] | undefined> }): JwtPayload | null {
-  if (!env.JWT_SECRET) return null;
-  const auth = request.headers.authorization;
-  if (!auth || typeof auth !== 'string' || !auth.startsWith('Bearer ')) return null;
-  return verifyToken(auth.slice(7), env.JWT_SECRET);
-}
+import { requireActiveMerchant } from '../../lib/merchant-auth.js';
 
 const AUTO_MAX_PER_REQUEST = Number(env.SETTLEMENT_AUTO_MAX_PER_REQUEST);
 const AUTO_MAX_DAILY = Number(env.SETTLEMENT_AUTO_MAX_DAILY);
@@ -22,15 +15,13 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
   fastify.get(
     '/merchant/settlement/balance',
     async (request, reply) => {
-      const payload = requireMerchantAuth(request);
-      if (!payload) {
-        return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
-      }
+      const auth = await requireActiveMerchant(request, fastify.supabase);
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
 
       const { data: merchant } = await fastify.supabase
         .from('merchants')
         .select('settlement_phone, kyc_status, mode')
-        .eq('id', payload.merchant_id)
+        .eq('id', auth.payload.merchant_id)
         .maybeSingle();
 
       if (!merchant) {
@@ -41,7 +32,7 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
       const { data: entries, error } = await fastify.supabase
         .from('merchant_ledger_entries')
         .select('type, amount')
-        .eq('merchant_id', payload.merchant_id);
+        .eq('merchant_id', auth.payload.merchant_id);
 
       if (error) {
         fastify.log.error({ err: error }, '[settlement/balance] ledger query failed');
@@ -81,15 +72,13 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      const payload = requireMerchantAuth(request);
-      if (!payload) {
-        return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
-      }
+      const auth = await requireActiveMerchant(request, fastify.supabase);
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
 
       const { data: merchant } = await fastify.supabase
         .from('merchants')
         .select('settlement_phone, kyc_status, mode')
-        .eq('id', payload.merchant_id)
+        .eq('id', auth.payload.merchant_id)
         .maybeSingle();
 
       if (!merchant) {
@@ -138,7 +127,7 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
       const { data: rpcResult, error: rpcError } = await fastify.supabase.rpc(
         'process_merchant_settlement',
         {
-          p_merchant_id: payload.merchant_id,
+          p_merchant_id: auth.payload.merchant_id,
           p_amount: requestedAmount > 0 ? requestedAmount : null,
           p_phone: merchant.settlement_phone,
           p_idempotency_key: idempotencyKey,
@@ -189,7 +178,7 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
           const normalizedPhone = normalizePhoneForOperator(merchant.settlement_phone, operator);
 
           fastify.log.info(
-            { requestId: result.request_id, merchantId: payload.merchant_id, amount: result.amount, phone: normalizedPhone, operator },
+            { requestId: result.request_id, merchantId: auth.payload.merchant_id, amount: result.amount, phone: normalizedPhone, operator },
             '[settlement/request] auto-payout via Unipesa B2C',
           );
 
@@ -254,10 +243,8 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      const payload = requireMerchantAuth(request);
-      if (!payload) {
-        return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
-      }
+      const auth = await requireActiveMerchant(request, fastify.supabase);
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
 
       const page = request.query.page ?? 1;
       const limit = request.query.limit ?? 20;
@@ -266,7 +253,7 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
       const { data: requests, error, count } = await fastify.supabase
         .from('merchant_settlement_requests')
         .select('id, amount, phone, status, provider_ref, reject_reason, created_at, updated_at', { count: 'exact' })
-        .eq('merchant_id', payload.merchant_id)
+        .eq('merchant_id', auth.payload.merchant_id)
         .order('created_at', { ascending: false })
         .range(offset, offset + limit - 1);
 
@@ -309,10 +296,8 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      const payload = requireMerchantAuth(request);
-      if (!payload) {
-        return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
-      }
+      const auth = await requireActiveMerchant(request, fastify.supabase);
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
 
       const { phone } = request.body;
 
@@ -331,14 +316,14 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
       const { error } = await fastify.supabase
         .from('merchants')
         .update({ settlement_phone: normalized, updated_at: new Date().toISOString() })
-        .eq('id', payload.merchant_id);
+        .eq('id', auth.payload.merchant_id);
 
       if (error) {
-        fastify.log.error({ err: error, merchantId: payload.merchant_id }, '[settlement/phone] update failed');
+        fastify.log.error({ err: error, merchantId: auth.payload.merchant_id }, '[settlement/phone] update failed');
         return reply.status(500).send({ error: 'Failed to update phone', statusCode: 500 });
       }
 
-      fastify.log.info({ merchantId: payload.merchant_id, phone: normalized }, '[settlement/phone] phone updated');
+      fastify.log.info({ merchantId: auth.payload.merchant_id, phone: normalized }, '[settlement/phone] phone updated');
 
       return reply.send({ ok: true, settlement_phone: normalized });
     },

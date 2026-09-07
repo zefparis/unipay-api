@@ -542,7 +542,7 @@ export async function sendAdminDirectEmail(
 
   const html = layout(`
     <h2 style="margin:0 0 16px;font-size:20px;font-weight:700;color:#0f172a;">
-      ${subject}
+      ${subject.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}
     </h2>
     <div style="font-size:15px;color:#475569;line-height:1.7;white-space:pre-wrap;">
       ${body.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>')}

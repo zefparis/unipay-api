@@ -30,7 +30,7 @@ describe('merchant support — cross-merchant isolation', () => {
   it('GET conversations filters by merchant_id from JWT', () => {
     assert.match(
       SUPPORT_SOURCE,
-      /merchant\/support\/conversations[\s\S]*?\.eq\('merchant_id', payload\.merchant_id\)/,
+      /merchant\/support\/conversations[\s\S]*?\.eq\('merchant_id', auth\.payload\.merchant_id\)/,
       'conversations list must filter by merchant_id',
     );
   });
@@ -38,7 +38,7 @@ describe('merchant support — cross-merchant isolation', () => {
   it('GET messages verifies conversation belongs to merchant before returning', () => {
     assert.match(
       SUPPORT_SOURCE,
-      /conversations\/:id\/messages[\s\S]*?\.eq\('merchant_id', payload\.merchant_id\)/,
+      /conversations\/:id\/messages[\s\S]*?\.eq\('merchant_id', auth\.payload\.merchant_id\)/,
       'messages route must verify conversation ownership',
     );
   });
@@ -77,9 +77,9 @@ describe('merchant support — cross-merchant isolation', () => {
     }
   });
 
-  it('requireMerchantAuth extracts merchant_id from JWT, not from body or query', () => {
-    assert.ok(SUPPORT_SOURCE.includes('verifyToken'), 'uses verifyToken');
-    assert.ok(SUPPORT_SOURCE.includes('payload.merchant_id'), 'uses payload.merchant_id');
+  it('requireActiveMerchant extracts merchant_id from JWT, not from body or query', () => {
+    assert.ok(SUPPORT_SOURCE.includes('requireActiveMerchant'), 'uses requireActiveMerchant');
+    assert.ok(SUPPORT_SOURCE.includes('auth.payload.merchant_id'), 'uses auth.payload.merchant_id');
     // Ensure merchant_id is never taken from request.body
     assert.ok(
       !SUPPORT_SOURCE.includes('body.merchant_id') && !SUPPORT_SOURCE.includes('request.body.merchant_id'),

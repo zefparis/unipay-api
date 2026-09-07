@@ -105,7 +105,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
             mode:       { type: 'string', enum: ['sandbox', 'live'] },
             kyc_status: { type: 'string', enum: ['pending', 'submitted', 'approved', 'rejected'] },
             status:     { type: 'string', enum: ['active', 'suspended', 'pending'] },
-            search:     { type: 'string' },
+            search:     { type: 'string', maxLength: 128 },
           },
         },
       },
@@ -349,6 +349,21 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
   /* ── GET /v1/admin/merchants/transactions/export ───────────── */
   fastify.get<{ Querystring: MerchantTransactionsQuery }>(
     '/admin/merchants/transactions/export',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            merchant_id: { type: 'string', format: 'uuid' },
+            status:      { type: 'string', enum: ['pending', 'processing', 'success', 'failed', 'cancelled'] },
+            operator:    { type: 'string', enum: ['orange', 'airtel', 'afrimoney', 'usdt'] },
+            direction:   { type: 'string', enum: ['collect', 'payout'] },
+            date_from:   { type: 'string', format: 'date-time' },
+            date_to:     { type: 'string', format: 'date-time' },
+          },
+        },
+      },
+    },
     async (request, reply) => {
       if (!requireAdmin(request.isAdmin)) {
         return reply.status(403).send({ error: 'Admin access required' });

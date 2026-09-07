@@ -82,7 +82,7 @@ describe('API key auth round-trip (register → hmac verification)', () => {
   it('apikey.ts uses merchant_id (not operator_id) for api_keys table', () => {
     const apikey = source('src/routes/merchant/apikey.ts');
     assert.match(apikey, /\.eq\('merchant_id'/, 'apikey.ts deactivate must use merchant_id');
-    assert.match(apikey, /merchant_id:\s*payload\.merchant_id/, 'apikey.ts insert must use merchant_id');
+    assert.match(apikey, /merchant_id:\s*auth\.payload\.merchant_id/, 'apikey.ts insert must use merchant_id');
     assert.doesNotMatch(
       apikey,
       /operator_id/,

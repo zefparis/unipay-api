@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
-import { verifyToken } from '../../utils/jwt';
+import { requireActiveMerchant } from '../../lib/merchant-auth';
 
 interface ApikeyBody {
   label?: string;
@@ -37,13 +37,9 @@ const merchantApikeyRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(500).send({ error: 'Auth service not configured', statusCode: 500 });
       }
 
-      const auth = request.headers.authorization;
-      if (!auth?.startsWith('Bearer ')) {
-        return reply.status(401).send({ error: 'Missing bearer token', statusCode: 401 });
-      }
-      const payload = verifyToken(auth.slice(7), env.JWT_SECRET);
-      if (!payload) {
-        return reply.status(401).send({ error: 'Invalid or expired token', statusCode: 401 });
+      const auth = await requireActiveMerchant(request, fastify.supabase);
+      if (!auth.ok) {
+        return reply.status(auth.status).send(auth.error);
       }
 
       const label = request.body?.label ?? 'default';
@@ -52,7 +48,7 @@ const merchantApikeyRoute: FastifyPluginAsync = async (fastify) => {
       await fastify.supabase
         .from('api_keys')
         .update({ is_active: false })
-        .eq('merchant_id', payload.merchant_id)
+        .eq('merchant_id', auth.payload.merchant_id)
         .eq('label', label);
 
       // Generate new key: upk_live_ prefix + 32 random hex chars
@@ -61,7 +57,7 @@ const merchantApikeyRoute: FastifyPluginAsync = async (fastify) => {
       const keyHash = await bcrypt.hash(rawKey, 10);
 
       const { error } = await fastify.supabase.from('api_keys').insert({
-        merchant_id: payload.merchant_id,
+        merchant_id: auth.payload.merchant_id,
         key_prefix: keyPrefix,
         key_hash: keyHash,
         label,
@@ -69,11 +65,11 @@ const merchantApikeyRoute: FastifyPluginAsync = async (fastify) => {
       });
 
       if (error) {
-        fastify.log.error({ err: error, merchantId: payload.merchant_id }, 'API key generation failed');
+        fastify.log.error({ err: error, merchantId: auth.payload.merchant_id }, 'API key generation failed');
         return reply.status(500).send({ error: 'Key generation failed', statusCode: 500 });
       }
 
-      fastify.log.info({ merchantId: payload.merchant_id, label }, 'API key generated');
+      fastify.log.info({ merchantId: auth.payload.merchant_id, label }, 'API key generated');
 
       return reply.status(201).send({
         api_key: rawKey,

@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
-import { verifyToken } from '../../utils/jwt';
 import { getBalance } from '../../services/avada';
+import { requireActiveMerchant } from '../../lib/merchant-auth';
 
 const merchantBalanceRoute: FastifyPluginAsync = async (fastify) => {
   fastify.get(
@@ -25,19 +25,15 @@ const merchantBalanceRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(500).send({ error: 'Auth service not configured', statusCode: 500 });
       }
 
-      const auth = request.headers.authorization;
-      if (!auth?.startsWith('Bearer ')) {
-        return reply.status(401).send({ error: 'Missing bearer token', statusCode: 401 });
-      }
-      const payload = verifyToken(auth.slice(7), env.JWT_SECRET);
-      if (!payload) {
-        return reply.status(401).send({ error: 'Invalid or expired token', statusCode: 401 });
+      const auth = await requireActiveMerchant(request, fastify.supabase);
+      if (!auth.ok) {
+        return reply.status(auth.status).send(auth.error);
       }
 
       const { data, error } = await fastify.supabase
         .from('merchants')
         .select('id, name, email, mode')
-        .eq('id', payload.merchant_id)
+        .eq('id', auth.payload.merchant_id)
         .maybeSingle();
 
       if (error || !data) {
@@ -49,10 +45,10 @@ const merchantBalanceRoute: FastifyPluginAsync = async (fastify) => {
         const avadaBalance = await getBalance();
         balance = avadaBalance.balance;
       } catch (e) {
-        fastify.log.warn({ err: e, merchantId: payload.merchant_id }, '[balance] getBalance() failed, returning 0');
+        fastify.log.warn({ err: e, merchantId: auth.payload.merchant_id }, '[balance] getBalance() failed, returning 0');
       }
 
-      fastify.log.info({ merchantId: payload.merchant_id, balance, mode: data.mode }, '[balance] returned');
+      fastify.log.info({ merchantId: auth.payload.merchant_id, balance, mode: data.mode }, '[balance] returned');
 
       return reply.send({
         balance,
