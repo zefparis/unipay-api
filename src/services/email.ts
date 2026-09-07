@@ -731,3 +731,53 @@ export async function sendSecurityNotificationEmail(
     console.error(`[email] security notification (${type}) → failed:`, err);
   }
 }
+
+/* ── sendPasswordResetEmail ─────────────────────────────────── */
+export async function sendPasswordResetEmail(
+  to: string,
+  name: string,
+  resetUrl: string,
+): Promise<void> {
+  const api = getClient();
+  if (!api) {
+    console.warn('[email] BREVO_API_KEY not set — password reset email skipped');
+    return;
+  }
+
+  const body = `
+    <h2 style="margin:0 0 16px;font-size:22px;font-weight:700;color:#0f172a;">Réinitialisation de votre mot de passe 🔑</h2>
+    <p style="margin:0 0 16px;font-size:15px;color:#475569;line-height:1.6;">
+      Bonjour <strong>${name}</strong>,<br/>
+      Vous avez demandé la réinitialisation du mot de passe de votre compte marchand <strong>UniPay Congo</strong>.
+    </p>
+    <p style="margin:0 0 20px;font-size:15px;color:#475569;line-height:1.6;">
+      Cliquez sur le bouton ci-dessous pour définir un nouveau mot de passe. Ce lien est valable pendant <strong>30 minutes</strong>.
+    </p>
+    <div style="text-align:center;margin-bottom:24px;">
+      <a href="${resetUrl}"
+         style="display:inline-block;background:#1D9E75;color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;padding:14px 36px;border-radius:10px;">
+        Réinitialiser mon mot de passe
+      </a>
+    </div>
+    <p style="margin:0 0 16px;font-size:13px;color:#94a3b8;line-height:1.6;word-break:break-all;">
+      Si le bouton ne fonctionne pas, copiez ce lien :<br/>
+      <a href="${resetUrl}" style="color:#1D9E75;text-decoration:none;font-size:12px;">${resetUrl}</a>
+    </p>
+    <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:16px;margin-bottom:20px;">
+      <p style="margin:0;font-size:14px;color:#0c4a6e;">
+        ℹ️ Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet email en toute sécurité.
+        Votre compte reste inchangé tant que le lien n'est pas utilisé.
+      </p>
+    </div>`;
+
+  try {
+    await api.transactionalEmails.sendTransacEmail({
+      subject: 'Réinitialisation de votre mot de passe — UniPay Congo',
+      htmlContent: layout(body),
+      sender: { name: env.BREVO_SENDER_NAME, email: env.BREVO_SENDER_EMAIL },
+      to: [{ email: to, name }],
+    });
+  } catch (err) {
+    console.error('[email] password reset → failed:', err);
+  }
+}

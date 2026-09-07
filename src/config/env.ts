@@ -110,6 +110,9 @@ const envSchema = z.object({
   // Public app URL (used to build Transak redirectURL)
   APP_URL: z.string().url().default('https://app.unipaycongo.com'),
 
+  // Merchant portal URL (used for password reset links)
+  MERCHANT_PORTAL_URL: z.string().url().default('https://unipaycongo.com'),
+
   // Web Push (VAPID) — generate with: npx web-push generate-vapid-keys
   VAPID_PUBLIC_KEY:  z.string().min(1).optional(),
   VAPID_PRIVATE_KEY: z.string().min(1).optional(),
