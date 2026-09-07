@@ -1000,7 +1000,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         (merchants ?? []).map((m: { id: string; name: string }) => [m.id, m.name]),
       );
 
-      // Aggregate per merchant
+      // Aggregate per merchant + per currency
       const perMerchant = new Map<string, {
         merchant_id: string;
         name: string;
@@ -1010,10 +1010,20 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         avada_cost: number;
         net_margin: number;
         net_amount_owed: number;
+        currencies: Map<string, {
+          currency: string;
+          transaction_count: number;
+          volume_collected: number;
+          client_fees: number;
+          avada_cost: number;
+          net_margin: number;
+          net_amount_owed: number;
+        }>;
       }>();
 
       for (const tx of txs ?? []) {
         const mid = tx.merchant_id as string;
+        const cur = (tx.currency ?? 'CDF') as string;
         if (!perMerchant.has(mid)) {
           perMerchant.set(mid, {
             merchant_id: mid,
@@ -1024,6 +1034,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
             avada_cost: 0,
             net_margin: 0,
             net_amount_owed: 0,
+            currencies: new Map(),
           });
         }
         const entry = perMerchant.get(mid)!;
@@ -1031,22 +1042,54 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         const fee = Number(tx.fee ?? 0);
         const netAmount = Number(tx.net_amount ?? 0);
 
+        // Per-merchant totals (mixed currency — for backward compat sorting)
         entry.transaction_count += 1;
         entry.volume_collected += amount;
         entry.client_fees += fee;
         entry.avada_cost += amount * AVADA_FEE_RATE;
         entry.net_margin += amount * MARGIN_RATE;
         entry.net_amount_owed += netAmount;
+
+        // Per-currency breakdown
+        if (!entry.currencies.has(cur)) {
+          entry.currencies.set(cur, {
+            currency: cur,
+            transaction_count: 0,
+            volume_collected: 0,
+            client_fees: 0,
+            avada_cost: 0,
+            net_margin: 0,
+            net_amount_owed: 0,
+          });
+        }
+        const curEntry = entry.currencies.get(cur)!;
+        curEntry.transaction_count += 1;
+        curEntry.volume_collected += amount;
+        curEntry.client_fees += fee;
+        curEntry.avada_cost += amount * AVADA_FEE_RATE;
+        curEntry.net_margin += amount * MARGIN_RATE;
+        curEntry.net_amount_owed += netAmount;
       }
 
-      // Round values
+      // Round values + convert currencies map to array
       let merchants_array = Array.from(perMerchant.values()).map((e) => ({
-        ...e,
+        merchant_id: e.merchant_id,
+        name: e.name,
+        transaction_count: e.transaction_count,
         volume_collected: Math.round(e.volume_collected * 100) / 100,
         client_fees: Math.round(e.client_fees * 100) / 100,
         avada_cost: Math.round(e.avada_cost * 100) / 100,
         net_margin: Math.round(e.net_margin * 100) / 100,
         net_amount_owed: Math.round(e.net_amount_owed * 100) / 100,
+        by_currency: Array.from(e.currencies.values()).map((c) => ({
+          currency: c.currency,
+          transaction_count: c.transaction_count,
+          volume_collected: Math.round(c.volume_collected * 100) / 100,
+          client_fees: Math.round(c.client_fees * 100) / 100,
+          avada_cost: Math.round(c.avada_cost * 100) / 100,
+          net_margin: Math.round(c.net_margin * 100) / 100,
+          net_amount_owed: Math.round(c.net_amount_owed * 100) / 100,
+        })),
       }));
 
       // Sort
@@ -1057,7 +1100,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         return b.net_margin - a.net_margin; // default: margin
       });
 
-      // Totals
+      // Totals (mixed currency — for backward compat)
       const totals = {
         transaction_count: merchants_array.reduce((s, e) => s + e.transaction_count, 0),
         volume_collected: Math.round(merchants_array.reduce((s, e) => s + e.volume_collected, 0) * 100) / 100,
@@ -1068,12 +1111,53 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         merchant_count: merchants_array.length,
       };
 
+      // Totals per currency (never mixed)
+      const byCurrencyTotals: Record<string, {
+        currency: string;
+        transaction_count: number;
+        volume_collected: number;
+        client_fees: number;
+        avada_cost: number;
+        net_margin: number;
+        net_amount_owed: number;
+      }> = {};
+      for (const m of merchants_array) {
+        for (const c of m.by_currency) {
+          if (!byCurrencyTotals[c.currency]) {
+            byCurrencyTotals[c.currency] = {
+              currency: c.currency,
+              transaction_count: 0,
+              volume_collected: 0,
+              client_fees: 0,
+              avada_cost: 0,
+              net_margin: 0,
+              net_amount_owed: 0,
+            };
+          }
+          byCurrencyTotals[c.currency].transaction_count += c.transaction_count;
+          byCurrencyTotals[c.currency].volume_collected += c.volume_collected;
+          byCurrencyTotals[c.currency].client_fees += c.client_fees;
+          byCurrencyTotals[c.currency].avada_cost += c.avada_cost;
+          byCurrencyTotals[c.currency].net_margin += c.net_margin;
+          byCurrencyTotals[c.currency].net_amount_owed += c.net_amount_owed;
+        }
+      }
+      const totals_by_currency = Object.values(byCurrencyTotals).map((c) => ({
+        ...c,
+        volume_collected: Math.round(c.volume_collected * 100) / 100,
+        client_fees: Math.round(c.client_fees * 100) / 100,
+        avada_cost: Math.round(c.avada_cost * 100) / 100,
+        net_margin: Math.round(c.net_margin * 100) / 100,
+        net_amount_owed: Math.round(c.net_amount_owed * 100) / 100,
+      }));
+
       return reply.send({
         period: {
           from: fromDate.toISOString(),
           to: toDate.toISOString(),
         },
         totals,
+        totals_by_currency,
         merchants: merchants_array,
       });
     },
@@ -1109,7 +1193,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data: txs, error } = await fastify.supabase
         .from('transactions')
-        .select('merchant_id, amount, fee, net_amount')
+        .select('merchant_id, amount, fee, net_amount, currency')
         .eq('status', 'success')
         .eq('direction', 'collect')
         .not('merchant_id', 'is', null)
@@ -1131,8 +1215,10 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         (merchants ?? []).map((m: { id: string; name: string }) => [m.id, m.name]),
       );
 
-      const perMerchant = new Map<string, {
+      // Aggregate per merchant + per currency (never mix currencies in a row)
+      const perMerchantCurrency = new Map<string, {
         name: string;
+        currency: string;
         transaction_count: number;
         volume_collected: number;
         client_fees: number;
@@ -1143,9 +1229,12 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
 
       for (const tx of txs ?? []) {
         const mid = tx.merchant_id as string;
-        if (!perMerchant.has(mid)) {
-          perMerchant.set(mid, {
+        const cur = (tx.currency ?? 'CDF') as string;
+        const key = `${mid}:${cur}`;
+        if (!perMerchantCurrency.has(key)) {
+          perMerchantCurrency.set(key, {
             name: merchantNames.get(mid) ?? 'Unknown',
+            currency: cur,
             transaction_count: 0,
             volume_collected: 0,
             client_fees: 0,
@@ -1154,7 +1243,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
             net_amount_owed: 0,
           });
         }
-        const entry = perMerchant.get(mid)!;
+        const entry = perMerchantCurrency.get(key)!;
         const amount = Number(tx.amount ?? 0);
         entry.transaction_count += 1;
         entry.volume_collected += amount;
@@ -1165,8 +1254,8 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       const sortBy = request.query.sort ?? 'margin';
-      const rows = Array.from(perMerchant.entries()).map(([id, e]) => ({
-        merchant_id: id,
+      const rows = Array.from(perMerchantCurrency.entries()).map(([key, e]) => ({
+        merchant_id: key.split(':')[0],
         ...e,
         volume_collected: Math.round(e.volume_collected * 100) / 100,
         client_fees: Math.round(e.client_fees * 100) / 100,
@@ -1181,13 +1270,14 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         return b.net_margin - a.net_margin;
       });
 
-      // Build CSV
-      const headers = ['merchant_id', 'name', 'transaction_count', 'volume_collected', 'client_fees', 'avada_cost', 'net_margin', 'net_amount_owed'];
+      // Build CSV — one row per merchant + currency
+      const headers = ['merchant_id', 'name', 'currency', 'transaction_count', 'volume_collected', 'client_fees', 'avada_cost', 'net_margin', 'net_amount_owed'];
       const csvLines = [headers.join(',')];
       for (const r of rows) {
         csvLines.push([
           r.merchant_id,
           `"${r.name.replace(/"/g, '""')}"`,
+          r.currency,
           r.transaction_count,
           r.volume_collected,
           r.client_fees,

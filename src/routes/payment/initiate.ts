@@ -31,7 +31,7 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
             operator: { type: 'string', enum: ['orange', 'airtel', 'afrimoney', 'usdt'] },
             direction: { type: 'string', enum: ['collect', 'payout'] },
             amount: { type: 'number', minimum: 1 },
-            currency: { type: 'string', minLength: 3, maxLength: 3 },
+            currency: { type: 'string', enum: ['CDF', 'USD', 'USDT'] },
             phone: { type: 'string', pattern: '^\\+?[1-9]\\d{7,14}$' },
             reference: { type: 'string', maxLength: 128 },
             metadata: { type: 'object', additionalProperties: true },
@@ -55,6 +55,24 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const { operator, direction, amount, currency, phone, reference, metadata } = request.body;
       const merchantId = request.operatorId;
+
+      // ── Currency ↔ operator validation ────────────────────────
+      // USDT operator must use USDT currency; Mobile Money operators
+      // (orange/airtel/afrimoney) accept CDF or USD.
+      if (operator === 'usdt' && currency !== 'USDT') {
+        return reply.status(400).send({
+          error: 'INVALID_CURRENCY',
+          message: "L'opérateur USDT nécessite currency: 'USDT'",
+          statusCode: 400,
+        });
+      }
+      if (operator !== 'usdt' && currency === 'USDT') {
+        return reply.status(400).send({
+          error: 'INVALID_CURRENCY',
+          message: "USDT n'est supporté qu'avec l'opérateur 'usdt'",
+          statusCode: 400,
+        });
+      }
 
       // ── Phone validation (reject before hitting provider) ──────
       // USDT doesn't use a phone number, skip validation for it

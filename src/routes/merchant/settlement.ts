@@ -28,10 +28,10 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(404).send({ error: 'Merchant not found', statusCode: 404 });
       }
 
-      // Compute balance from ledger entries
+      // Compute balance from ledger entries, grouped by currency
       const { data: entries, error } = await fastify.supabase
         .from('merchant_ledger_entries')
-        .select('type, amount')
+        .select('type, amount, currency')
         .eq('merchant_id', auth.payload.merchant_id);
 
       if (error) {
@@ -39,17 +39,32 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(500).send({ error: 'Internal server error', statusCode: 500 });
       }
 
-      const credits = (entries ?? [])
-        .filter((e: { type: string }) => e.type === 'credit')
-        .reduce((s: number, e: { amount: number }) => s + Number(e.amount), 0);
-      const settlements = (entries ?? [])
-        .filter((e: { type: string }) => e.type === 'settlement')
-        .reduce((s: number, e: { amount: number }) => s + Number(e.amount), 0);
+      // Group by currency
+      const byCurrency: Record<string, { credits: number; settlements: number }> = {};
+      for (const e of entries ?? []) {
+        const cur = (e as { currency: string }).currency ?? 'CDF';
+        if (!byCurrency[cur]) byCurrency[cur] = { credits: 0, settlements: 0 };
+        if ((e as { type: string }).type === 'credit') {
+          byCurrency[cur].credits += Number((e as { amount: number }).amount);
+        } else {
+          byCurrency[cur].settlements += Number((e as { amount: number }).amount);
+        }
+      }
+
+      const balances = Object.entries(byCurrency).map(([cur, v]) => ({
+        currency: cur,
+        balance: Math.round((v.credits - v.settlements) * 100) / 100,
+        total_credits: Math.round(v.credits * 100) / 100,
+        total_settlements: Math.round(v.settlements * 100) / 100,
+      }));
+
+      // Backward compat: also include a top-level balance (sum of all currencies,
+      // but labeled as "mixed" if more than one currency exists)
+      const totalBalance = balances.reduce((s, b) => s + b.balance, 0);
 
       return reply.send({
-        balance: Math.round((credits - settlements) * 100) / 100,
-        total_credits: Math.round(credits * 100) / 100,
-        total_settlements: Math.round(settlements * 100) / 100,
+        balance: Math.round(totalBalance * 100) / 100,  // deprecated — use balances[]
+        balances,
         settlement_phone: merchant.settlement_phone ?? null,
         kyc_status: merchant.kyc_status,
         mode: merchant.mode,
@@ -58,7 +73,7 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
   );
 
   /* ── POST /v1/merchant/settlement/request ──────────────────── */
-  fastify.post<{ Body: { amount?: number } }>(
+  fastify.post<{ Body: { amount?: number; currency?: string } }>(
     '/merchant/settlement/request',
     {
       schema: {
@@ -66,6 +81,7 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
           type: 'object',
           properties: {
             amount: { type: 'number', minimum: 0 },  // 0 or absent = full balance
+            currency: { type: 'string', enum: ['CDF', 'USD'] },  // USDT settlements not supported via Mobile Money
           },
           additionalProperties: false,
         },
@@ -74,6 +90,8 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const auth = await requireActiveMerchant(request, fastify.supabase);
       if (!auth.ok) return reply.status(auth.status).send(auth.error);
+
+      const settlementCurrency = request.body.currency ?? 'CDF';
 
       const { data: merchant } = await fastify.supabase
         .from('merchants')
@@ -133,6 +151,7 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
           p_idempotency_key: idempotencyKey,
           p_auto_max_per_request: AUTO_MAX_PER_REQUEST,
           p_auto_max_daily: AUTO_MAX_DAILY,
+          p_currency: settlementCurrency,
         },
       );
 
@@ -187,7 +206,7 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
             normalizedPhone,
             Number(result.amount),
             `STL-${result.request_id.slice(0, 8).toUpperCase()}`,
-            'CDF',
+            settlementCurrency,
           );
 
           // Mark settlement as success
@@ -197,6 +216,7 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
             request_id: result.request_id,
             status: 'success',
             amount: result.amount,
+            currency: settlementCurrency,
             provider_ref: payoutRes.avada_transaction_id,
             balance_after: result.balance_after,
             auto_payout: true,
@@ -252,7 +272,7 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data: requests, error, count } = await fastify.supabase
         .from('merchant_settlement_requests')
-        .select('id, amount, phone, status, provider_ref, reject_reason, created_at, updated_at', { count: 'exact' })
+        .select('id, amount, currency, phone, status, provider_ref, reject_reason, created_at, updated_at', { count: 'exact' })
         .eq('merchant_id', auth.payload.merchant_id)
         .order('created_at', { ascending: false })
         .range(offset, offset + limit - 1);

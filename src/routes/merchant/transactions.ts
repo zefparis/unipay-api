@@ -8,6 +8,7 @@ interface TransactionQuery {
   status?: string;
   operator?: string;
   direction?: string;
+  currency?: string;
 }
 
 const merchantTransactionsRoute: FastifyPluginAsync = async (fastify) => {
@@ -23,6 +24,7 @@ const merchantTransactionsRoute: FastifyPluginAsync = async (fastify) => {
             status: { type: 'string', enum: ['pending', 'processing', 'success', 'failed', 'cancelled'] },
             operator: { type: 'string', enum: ['orange', 'airtel', 'afrimoney', 'usdt'] },
             direction: { type: 'string', enum: ['collect', 'payout'] },
+            currency: { type: 'string', enum: ['CDF', 'USD', 'USDT'] },
           },
         },
       },
@@ -37,7 +39,7 @@ const merchantTransactionsRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(auth.status).send(auth.error);
       }
 
-      const { page, limit, status, operator, direction } = request.query;
+      const { page, limit, status, operator, direction, currency } = request.query;
       const offset = (page - 1) * limit;
 
       let query = fastify.supabase
@@ -50,6 +52,7 @@ const merchantTransactionsRoute: FastifyPluginAsync = async (fastify) => {
       if (status) query = query.eq('status', status);
       if (operator) query = query.eq('operator', operator);
       if (direction) query = query.eq('direction', direction);
+      if (currency) query = query.eq('currency', currency);
 
       const { data, error, count } = await query;
 
