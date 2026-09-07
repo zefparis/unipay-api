@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { sendAdminDirectEmail } from '../../services/email.js';
 import { env } from '../../config/env.js';
+import { logAdminAction } from '../../lib/admin-action-log.js';
 
 function requireAdmin(isAdmin: boolean): boolean {
   return isAdmin;
@@ -449,6 +450,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         { merchantId: id, keyId: key_id, adminAction: 'revoke_api_key' },
         '[admin] API key revoked',
       );
+      void logAdminAction(fastify.supabase, 'merchant.api_key_revoke', 'merchant', id, { key_id, key_prefix: data.key_prefix }, fastify.log);
       return reply.send({ ok: true, key: data });
     },
   );
@@ -513,6 +515,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         { merchantId: id, merchantEmail: (merchant as { email: string }).email, adminAction: 'regenerate_api_key' },
         '[admin] API key regenerated',
       );
+      void logAdminAction(fastify.supabase, 'merchant.api_key_regenerate', 'merchant', id, { key_prefix: keyPrefix, label: label ?? null }, fastify.log);
 
       return reply.send({
         ok: true,
@@ -584,6 +587,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       if (error) return reply.status(500).send({ error: error.message });
       if (!data) return reply.status(404).send({ error: 'Merchant not found' });
       fastify.log.info({ merchantId: id }, '[admin] KYC approved, mode set to live');
+      void logAdminAction(fastify.supabase, 'merchant.kyc_approve', 'merchant', id, { previous_mode: 'sandbox', new_mode: 'live' }, fastify.log);
       return reply.send({ ok: true, merchant: data });
     },
   );
@@ -619,6 +623,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       if (error) return reply.status(500).send({ error: error.message });
       if (!data) return reply.status(404).send({ error: 'Merchant not found' });
       fastify.log.info({ merchantId: id, notes }, '[admin] KYC rejected');
+      void logAdminAction(fastify.supabase, 'merchant.kyc_reject', 'merchant', id, { notes: notes ?? null }, fastify.log);
       return reply.send({ ok: true, merchant: data });
     },
   );
@@ -647,6 +652,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         { merchantId: id, adminAction: 'suspend_merchant' },
         '[admin] Merchant suspended',
       );
+      void logAdminAction(fastify.supabase, 'merchant.suspend', 'merchant', id, {}, fastify.log);
       return reply.send({ ok: true, merchant: data });
     },
   );
@@ -675,6 +681,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         { merchantId: id, adminAction: 'reactivate_merchant' },
         '[admin] Merchant reactivated',
       );
+      void logAdminAction(fastify.supabase, 'merchant.reactivate', 'merchant', id, {}, fastify.log);
       return reply.send({ ok: true, merchant: data });
     },
   );

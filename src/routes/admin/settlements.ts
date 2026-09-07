@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { initiatePayout } from '../../services/avada.js';
 import { normalizePhoneForOperator, isValidDrcPhone } from '../../lib/phone-normalization.js';
 import { markSettlementSuccess, markSettlementFailed, rejectSettlement } from '../merchant/settlement-rpc-helpers.js';
+import { logAdminAction } from '../../lib/admin-action-log.js';
 
 function requireAdmin(isAdmin: boolean): boolean {
   return isAdmin;
@@ -145,6 +146,8 @@ const adminSettlementRoute: FastifyPluginAsync = async (fastify) => {
 
         await markSettlementSuccess(fastify.supabase, id, payoutRes.avada_transaction_id);
 
+        void logAdminAction(fastify.supabase, 'settlement.approve', 'settlement', id, { merchant_id: settlement.merchant_id, amount: settlement.amount, operator, phone: normalizedPhone }, fastify.log);
+
         return reply.send({
           approved: true,
           request_id: id,
@@ -199,6 +202,7 @@ const adminSettlementRoute: FastifyPluginAsync = async (fastify) => {
 
       try {
         const result = await rejectSettlement(fastify.supabase, id, reason);
+        void logAdminAction(fastify.supabase, 'settlement.reject', 'settlement', id, { reason }, fastify.log);
         return reply.send({
           rejected: true,
           request_id: id,

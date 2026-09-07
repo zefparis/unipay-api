@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { env } from '../../config/env';
 import { sendAdminDirectEmail } from '../../services/email';
+import { logAdminAction } from '../../lib/admin-action-log';
 
 function requireAdmin(isAdmin: boolean): boolean {
   return isAdmin;
@@ -286,6 +287,7 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
 
     if (error) return reply.status(500).send({ error: error.message });
     fastify.log.info({ userId: id }, 'wallet user blocked');
+    void logAdminAction(fastify.supabase, 'wallet_user.block', 'wallet_user', id, {}, fastify.log);
     return reply.send({ ok: true, is_active: false });
   });
 
@@ -303,6 +305,7 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
 
     if (error) return reply.status(500).send({ error: error.message });
     fastify.log.info({ userId: id }, 'wallet user unblocked');
+    void logAdminAction(fastify.supabase, 'wallet_user.unblock', 'wallet_user', id, {}, fastify.log);
     return reply.send({ ok: true, is_active: true });
   });
 
@@ -324,6 +327,7 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
     if (!data) return reply.status(404).send({ error: 'Wallet user not found' });
 
     fastify.log.info({ userId: id }, '[wallet-user-kyc-approved]');
+    void logAdminAction(fastify.supabase, 'wallet_user.kyc_approve', 'wallet_user', id, { kyc_level: 1 }, fastify.log);
     return reply.send({ ok: true, user: data });
   });
 
@@ -377,6 +381,7 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
     });
 
     fastify.log.info({ wallet_user_id, amount, reason, newBalance }, 'admin balance adjustment');
+    void logAdminAction(fastify.supabase, 'wallet_user.balance_adjust', 'wallet_user', wallet_user_id, { amount, reason, new_balance_cdf: newBalance }, fastify.log);
     return reply.send({ ok: true, new_balance_cdf: newBalance });
   });
 
@@ -487,6 +492,7 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
     if (userRes.error) return reply.status(500).send({ error: userRes.error.message });
 
     fastify.log.info({ submissionId: id, walletUserId: sub.wallet_user_id }, '[kyc-admin-approved]');
+    void logAdminAction(fastify.supabase, 'wallet_kyc.approve', 'kyc_submission', id, { wallet_user_id: sub.wallet_user_id }, fastify.log);
     return reply.send({ ok: true });
   });
 

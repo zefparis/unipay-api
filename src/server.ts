@@ -27,6 +27,7 @@ import merchantSupportRoute from './routes/merchant/support';
 import merchantSettlementRoute from './routes/merchant/settlement';
 import adminKycRoute from './routes/admin/kyc';
 import adminSettlementRoute from './routes/admin/settlements';
+import adminActionLogRoute from './routes/admin/action-log';
 import walletAuthRoute from './routes/wallet/auth';
 import walletBalanceRoute from './routes/wallet/balance';
 import walletDepositRoute from './routes/wallet/deposit';
@@ -162,6 +163,7 @@ export async function buildServer() {
       v1.register(merchantSettlementRoute);
       v1.register(adminKycRoute);
       v1.register(adminSettlementRoute);
+      v1.register(adminActionLogRoute);
       v1.register(walletAuthRoute);
       v1.register(walletBalanceRoute);
       v1.register(walletDepositRoute);

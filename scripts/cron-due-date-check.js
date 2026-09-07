@@ -3,16 +3,17 @@
  *
  * Calls GET /v1/admin/dev-expenses/upcoming and logs any invoice
  * due within the next 7 days (with emphasis on J+3 or less).
- * Auth: x-admin-secret (ADMIN_SECRET env var).
+ * Auth: x-admin-secret (CRON_SERVICE_SECRET env var — separate from
+ * ADMIN_SECRET so cron rotations never break the admin dashboard).
  *
  * Node 18+ native fetch — no dependencies.
  */
 
-const API_URL      = process.env.API_URL      || 'https://unipay-api.onrender.com';
-const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
+const API_URL     = process.env.API_URL      || 'https://unipay-api.onrender.com';
+const CRON_SECRET = process.env.CRON_SERVICE_SECRET || process.env.ADMIN_SECRET || '';
 
-if (!ADMIN_SECRET) {
-  console.error('[cron-due-check] ADMIN_SECRET is not set — aborting');
+if (!CRON_SECRET) {
+  console.error('[cron-due-check] CRON_SERVICE_SECRET is not set — aborting');
   process.exit(1);
 }
 
@@ -21,7 +22,7 @@ const url = `${API_URL}/v1/admin/dev-expenses/upcoming`;
 console.log(`[cron-due-check] checking upcoming payments via ${url}`);
 
 fetch(url, {
-  headers: { 'x-admin-secret': ADMIN_SECRET },
+  headers: { 'x-admin-secret': CRON_SECRET },
 })
   .then((r) => {
     if (!r.ok) {

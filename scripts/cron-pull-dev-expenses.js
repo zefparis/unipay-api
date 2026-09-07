@@ -2,17 +2,17 @@
  * Render Cron job — 1st of month, 06:00 UTC
  *
  * Calls POST /v1/admin/dev-expenses/pull-automated for the current month.
- * Auth: x-admin-secret header (ADMIN_SECRET env var — same mechanism as all
- * server-to-server admin calls in this project, no separate CRON_SECRET needed).
+ * Auth: x-admin-secret header (CRON_SERVICE_SECRET env var — separate from
+ * ADMIN_SECRET so cron rotations never break the admin dashboard).
  *
  * Node 18+ native fetch — no dependencies.
  */
 
 const API_URL = process.env.API_URL || 'https://unipay-api.onrender.com';
-const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
+const CRON_SECRET = process.env.CRON_SERVICE_SECRET || process.env.ADMIN_SECRET || '';
 
-if (!ADMIN_SECRET) {
-  console.error('[cron] ADMIN_SECRET is not set — aborting');
+if (!CRON_SECRET) {
+  console.error('[cron] CRON_SERVICE_SECRET is not set — aborting');
   process.exit(1);
 }
 
@@ -27,7 +27,7 @@ console.log(`[cron] pulling dev expenses for ${month} via ${url}`);
 fetch(url, {
   method: 'POST',
   headers: {
-    'x-admin-secret': ADMIN_SECRET,
+    'x-admin-secret': CRON_SECRET,
     'Content-Type': 'application/json',
   },
   body: JSON.stringify({ month }),

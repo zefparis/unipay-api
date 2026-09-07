@@ -36,9 +36,9 @@ services:
         value: https://dev-expenses.netlify.app
 
   # ── Cron: 1st of month 06:00 UTC — auto-pull Anthropic + Vercel costs ──
-  # Auth: x-admin-secret: ADMIN_SECRET (same mechanism as all server-to-server
-  # admin calls). RENDER_EXTERNAL_URL is NOT available on cron services —
-  # API_URL is declared explicitly below.
+  # Auth: x-admin-secret: CRON_SERVICE_SECRET (separate from ADMIN_SECRET
+  # so each can be rotated independently). RENDER_EXTERNAL_URL is NOT
+  # available on cron services — API_URL is declared explicitly below.
   - type: cron
     name: dev-expenses-monthly-pull
     env: node
@@ -50,7 +50,7 @@ services:
     envVars:
       - key: API_URL
         value: https://unipay-api.onrender.com
-      - key: ADMIN_SECRET
+      - key: CRON_SERVICE_SECRET
         sync: false
 
   # ── Cron: daily 08:00 UTC — check invoices due within 7 days ──
@@ -65,5 +65,5 @@ services:
     envVars:
       - key: API_URL
         value: https://unipay-api.onrender.com
-      - key: ADMIN_SECRET
+      - key: CRON_SERVICE_SECRET
         sync: false

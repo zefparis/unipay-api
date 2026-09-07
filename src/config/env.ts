@@ -66,8 +66,14 @@ const envSchema = z.object({
   // Merchant JWT
   JWT_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(32).optional()),
 
-  // Admin secret (plain header — internal tooling only)
+  // Admin secret (plain header — interactive admin dashboard access via unipay-congo)
+  // Rotate if you suspect a leak. Independent from CRON_SERVICE_SECRET.
   ADMIN_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(16).optional()),
+
+  // Cron service secret (plain header — automated Render cron jobs only)
+  // Separate from ADMIN_SECRET so cron rotations never break the admin dashboard
+  // and vice versa. Accepted as equivalent admin auth in hmac.ts.
+  CRON_SERVICE_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(16).optional()),
 
   // Congo Gaming ↔ UniPay shared secret — LEGACY, kept for dual-key rotation only
   GAMING_API_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(8).optional()),

@@ -137,8 +137,11 @@ const walletInternalRoute: FastifyPluginAsync = async (fastify) => {
     '/internal/backfill-cdp-wallets',
     { config: { rateLimit: { max: 3, timeWindow: '1 minute' } } },
     async (request, reply) => {
+      // Accept either ADMIN_SECRET or CRON_SERVICE_SECRET (same as hmac.ts)
       const adminSecret = process.env.ADMIN_SECRET;
-      if (!safeSecretEqual(request.headers['x-admin-secret'], adminSecret)) {
+      const cronSecret = process.env.CRON_SERVICE_SECRET;
+      if (!safeSecretEqual(request.headers['x-admin-secret'], adminSecret) &&
+          !safeSecretEqual(request.headers['x-admin-secret'], cronSecret)) {
         return reply.status(403).send({ error: 'Forbidden' });
       }
 

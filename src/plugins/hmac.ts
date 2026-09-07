@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import type { FastifyPluginAsync } from 'fastify';
 import type { ApiKeyWithOperator } from '../types/operator';
 import { env } from '../config/env';
-import { safeSecretEqual } from '../security/secret-compare';
+import { safeSecretEqual, matchesAnySecret } from '../security/secret-compare';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -29,10 +29,12 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
     // Dev Expenses public report — token-protected, no admin auth
     if (urlPath.startsWith('/dev-expenses/report/')) return;
 
-    // Admin secret bypass — avoids API key requirement for admin tooling
-    // Trust boundary 4: uses constant-time comparison via safeSecretEqual.
+    // Admin secret bypass — accepts either ADMIN_SECRET (interactive dashboard)
+    // or CRON_SERVICE_SECRET (automated cron jobs). Both grant the same admin
+    // privileges but are independent secrets so each can be rotated without
+    // affecting the other. Uses constant-time comparison via matchesAnySecret.
     const adminSecretHeader = request.headers['x-admin-secret'];
-    if (safeSecretEqual(adminSecretHeader, env.ADMIN_SECRET)) {
+    if (matchesAnySecret(adminSecretHeader, [env.ADMIN_SECRET, env.CRON_SERVICE_SECRET])) {
       request.isAdmin = true;
       request.operatorId = 'admin';
       return;
@@ -91,18 +93,6 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
     // Attach to request
     request.operatorId = matched.merchant_id;
     request.isAdmin = false; // merchants table has no is_admin column
-
-    // If admin via API key, verify email is in allowed list
-    if (request.isAdmin && matched.merchants.email) {
-      const allowedEmails = env.ADMIN_EMAILS.split(',').map(e => e.trim().toLowerCase());
-      if (!allowedEmails.includes(matched.merchants.email.toLowerCase())) {
-        fastify.log.warn(
-          { email: matched.merchants.email, merchantId: matched.merchant_id },
-          'Admin access denied: email not in ADMIN_EMAILS list',
-        );
-        request.isAdmin = false;
-      }
-    }
 
     // Update last_used_at — non-blocking
     void Promise.resolve(
