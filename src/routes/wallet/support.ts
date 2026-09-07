@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
-import { generateWalletBotReply, type WalletContext } from '../../services/support-bot.js';
+import { generateWalletBotReply, detectPromptInjection, type WalletContext } from '../../services/support-bot.js';
 import { sendSupportEscalationEmail } from '../../services/email.js';
 import { requireActiveWallet, walletIdFromRequest } from '../../lib/wallet-auth.js';
 
@@ -132,6 +132,13 @@ const walletSupportRoute: FastifyPluginAsync = async (fastify) => {
       }));
 
       // Generate bot reply
+      const injectionCheck = detectPromptInjection(message);
+      if (injectionCheck.detected) {
+        fastify.log.warn(
+          { conversationId, walletUserId, message: message.slice(0, 500), labels: injectionCheck.labels },
+          '[wallet-support] potential prompt injection detected — message still forwarded to LLM',
+        );
+      }
       const botReply = await generateWalletBotReply(history, context);
 
       // Save bot message

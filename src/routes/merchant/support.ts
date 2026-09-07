@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env.js';
-import { generateBotReply, type MerchantContext } from '../../services/support-bot.js';
+import { generateBotReply, detectPromptInjection, type MerchantContext } from '../../services/support-bot.js';
 import { sendSupportEscalationEmail } from '../../services/email.js';
 import { requireActiveMerchant, merchantIdFromRequest } from '../../lib/merchant-auth.js';
 
@@ -144,6 +144,13 @@ const merchantSupportRoute: FastifyPluginAsync = async (fastify) => {
       }));
 
       // Generate bot reply
+      const injectionCheck = detectPromptInjection(message);
+      if (injectionCheck.detected) {
+        fastify.log.warn(
+          { conversationId, merchantId, message: message.slice(0, 500), labels: injectionCheck.labels },
+          '[support] potential prompt injection detected — message still forwarded to LLM',
+        );
+      }
       const botReply = await generateBotReply(history, context);
 
       // Save bot message
