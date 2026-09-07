@@ -13,7 +13,7 @@
 import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
-import { requireWallet } from '../../utils/wallet-jwt';
+import { requireActiveWallet, walletIdFromRequest } from '../../lib/wallet-auth';
 import {
   depositUSD,
   withdrawUSD,
@@ -23,6 +23,7 @@ import {
 } from '../../lib/unipesa';
 import { normalizePhoneForOperator, isValidDrcPhone } from '../../lib/phone-normalization';
 import { sendWalletDepositEmail } from '../../services/email';
+import { getLimits } from '../../utils/kyc-limits';
 
 const FEE_RATE       = 0.03;
 const USD_OPERATORS  = ['orange', 'airtel', 'africell'] as const;
@@ -38,6 +39,7 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: { phone: string; operator: string; amount: number } }>(
     '/wallet/unipesa/deposit',
     {
+      config: { rateLimit: { max: 20, timeWindow: '1 hour', keyGenerator: walletIdFromRequest } },
       schema: {
         body: {
           type:       'object',
@@ -51,9 +53,10 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth not configured' });
-      const authPayload = requireWallet(request.headers.authorization, env.JWT_SECRET);
-      if (!authPayload) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
+      const auth = await requireActiveWallet(request, fastify.supabase, 'id, is_active, kyc_level');
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const { payload: authPayload } = auth;
+      const wallet = auth.wallet as { id: string; is_active: boolean; kyc_level: number };
 
       const { phone, operator, amount: amount_usd } = request.body;
       const walletId = authPayload.wallet_id;
@@ -67,14 +70,26 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       }
       const normalizedPhone = normalizePhoneForOperator(phone, operator as 'orange' | 'airtel' | 'africell');
 
-      const { data: wallet } = await fastify.supabase
-        .from('wallet_users')
-        .select('id, is_active, kyc_level')
-        .eq('id', walletId)
-        .maybeSingle();
-
-      if (!wallet?.is_active) {
-        return reply.status(403).send({ error: 'Account is suspended', statusCode: 403 });
+      // ── KYC daily deposit limit check (USD) ─────────────────
+      const kycLevel = Number(wallet.kyc_level ?? 0);
+      const limits   = getLimits(kycLevel);
+      const dayStart = new Date(); dayStart.setUTCHours(0, 0, 0, 0);
+      const { data: todayRows } = await fastify.supabase
+        .from('transactions')
+        .select('amount')
+        .eq('wallet_user_id', walletId)
+        .eq('direction', 'collect')
+        .in('status', ['processing', 'success'])
+        .gte('created_at', dayStart.toISOString());
+      const dailyUsed = (todayRows ?? []).reduce((s, r) => s + Number(r.amount), 0);
+      if (dailyUsed + amount_usd > limits.deposit_daily) {
+        return reply.status(403).send({
+          error:      'KYC_LIMIT_EXCEEDED',
+          limit:      limits.deposit_daily,
+          daily_used: dailyUsed,
+          kyc_level:  kycLevel,
+          statusCode: 403,
+        });
       }
 
       const fee        = Math.round(amount_usd * FEE_RATE * 100) / 100;
@@ -159,6 +174,7 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: { phone: string; operator: string; amount: number } }>(
     '/wallet/unipesa/withdraw',
     {
+      config: { rateLimit: { max: 20, timeWindow: '1 hour', keyGenerator: walletIdFromRequest } },
       schema: {
         body: {
           type:       'object',
@@ -172,9 +188,10 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth not configured' });
-      const authPayload = requireWallet(request.headers.authorization, env.JWT_SECRET);
-      if (!authPayload) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
+      const auth = await requireActiveWallet(request, fastify.supabase, 'id, is_active, usd_balance, kyc_level');
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const { payload: authPayload } = auth;
+      const wallet = auth.wallet as { id: string; is_active: boolean; usd_balance: number; kyc_level: number };
 
       const { phone, operator, amount: amount_usd } = request.body;
       const walletId = authPayload.wallet_id;
@@ -188,14 +205,26 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       }
       const normalizedPhone = normalizePhoneForOperator(phone, operator as 'orange' | 'airtel' | 'africell');
 
-      const { data: wallet } = await fastify.supabase
-        .from('wallet_users')
-        .select('id, is_active, usd_balance')
-        .eq('id', walletId)
-        .maybeSingle();
-
-      if (!wallet?.is_active) {
-        return reply.status(403).send({ error: 'Account is suspended', statusCode: 403 });
+      // ── KYC daily withdrawal limit check (USD) ──────────────
+      const kycLevel = Number(wallet.kyc_level ?? 0);
+      const limits   = getLimits(kycLevel);
+      const dayStart = new Date(); dayStart.setUTCHours(0, 0, 0, 0);
+      const { data: todayRows } = await fastify.supabase
+        .from('transactions')
+        .select('amount')
+        .eq('wallet_user_id', walletId)
+        .eq('direction', 'payout')
+        .in('status', ['processing', 'success'])
+        .gte('created_at', dayStart.toISOString());
+      const dailyUsed = (todayRows ?? []).reduce((s, r) => s + Number(r.amount), 0);
+      if (dailyUsed + amount_usd > limits.withdraw_daily) {
+        return reply.status(403).send({
+          error:      'KYC_LIMIT_EXCEEDED',
+          limit:      limits.withdraw_daily,
+          daily_used: dailyUsed,
+          kyc_level:  kycLevel,
+          statusCode: 403,
+        });
       }
 
       const usdBalance = Number(wallet.usd_balance ?? 0);

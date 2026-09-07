@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
-import { requireWallet } from '../../utils/wallet-jwt';
+import { requireActiveWallet, walletIdFromRequest } from '../../lib/wallet-auth';
 import { getProviderService } from '../../services/index';
 import { sendWalletWithdrawalEmail } from '../../services/email';
 import { notify } from '../../utils/push';
@@ -25,6 +25,7 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: WithdrawBody }>(
     '/wallet/withdraw',
     {
+      config: { rateLimit: { max: 20, timeWindow: '1 hour', keyGenerator: walletIdFromRequest } },
       schema: {
         body: {
           type: 'object',
@@ -53,14 +54,10 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      if (!env.JWT_SECRET) {
-        return reply.status(500).send({ error: 'Auth service not configured', statusCode: 500 });
-      }
-
-      const walletPayload = requireWallet(request.headers.authorization, env.JWT_SECRET);
-      if (!walletPayload) {
-        return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
-      }
+      const auth = await requireActiveWallet(request, fastify.supabase, 'id, is_active, balance_cdf, kyc_level, blockchain_address, email, full_name, lang');
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const { payload: walletPayload } = auth;
+      const wallet = auth.wallet as { id: string; is_active: boolean; balance_cdf: number; kyc_level: number; blockchain_address: string; email: string; full_name: string; lang: string };
 
       const { phone_mm, operator, amount, currency = 'CDF' } = request.body;
       const walletId = walletPayload.wallet_id;
@@ -71,17 +68,6 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
           error: 'INVALID_PHONE',
           message: 'Invalid DRC number. Required format: +243XXXXXXXXX (9 digits after +243)',
         });
-      }
-
-      // Fetch wallet with current balance
-      const { data: wallet } = await fastify.supabase
-        .from('wallet_users')
-        .select('id, is_active, balance_cdf, kyc_level, blockchain_address, email, full_name, lang')
-        .eq('id', walletId)
-        .maybeSingle();
-
-      if (!wallet?.is_active) {
-        return reply.status(403).send({ error: 'Account is suspended', statusCode: 403 });
       }
 
       // ── KYC daily withdrawal limit check ─────────────────

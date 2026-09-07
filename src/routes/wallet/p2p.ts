@@ -1,8 +1,7 @@
 import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { getLimits } from '../../utils/kyc-limits';
-import { env } from '../../config/env';
-import { requireWallet } from '../../utils/wallet-jwt';
+import { requireActiveWallet, walletIdFromRequest } from '../../lib/wallet-auth';
 import { sendWalletTransferEmail } from '../../services/email';
 import { notify } from '../../utils/push';
 
@@ -46,34 +45,22 @@ const walletP2PRoute: FastifyPluginAsync = async (fastify) => {
           },
         },
       },
+      config: {
+        rateLimit: { max: 20, timeWindow: '1 hour', keyGenerator: walletIdFromRequest },
+      },
     },
     async (request, reply) => {
-      if (!env.JWT_SECRET) {
-        return reply.status(500).send({ error: 'Auth service not configured', statusCode: 500 });
-      }
-
-      const walletPayload = requireWallet(request.headers.authorization, env.JWT_SECRET);
-      if (!walletPayload) {
-        return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
-      }
+      const auth = await requireActiveWallet(request, fastify.supabase, 'id, phone, is_active, balance_cdf, kyc_level, email, full_name, lang');
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const { payload } = auth;
+      const sender = auth.wallet as { id: string; phone: string; is_active: boolean; balance_cdf: number; kyc_level: number; email?: string; full_name?: string; lang?: string };
 
       const { recipient_phone, amount, note } = request.body;
-      const senderWalletId = walletPayload.wallet_id;
+      const senderWalletId = payload.wallet_id;
 
       // Prevent self-transfer
-      if (walletPayload.phone === recipient_phone) {
+      if (payload.phone === recipient_phone) {
         return reply.status(400).send({ error: 'Cannot send to yourself', statusCode: 400 });
-      }
-
-      // Fetch sender wallet
-      const { data: sender } = await fastify.supabase
-        .from('wallet_users')
-        .select('id, phone, balance_cdf, is_active, kyc_level, email, full_name, lang')
-        .eq('id', senderWalletId)
-        .maybeSingle();
-
-      if (!sender?.is_active) {
-        return reply.status(403).send({ error: 'Sender account is suspended', statusCode: 403 });
       }
 
       // ── KYC P2P single transfer limit ────────────────────
@@ -231,33 +218,21 @@ const walletP2PRoute: FastifyPluginAsync = async (fastify) => {
           },
         },
       },
+      config: {
+        rateLimit: { max: 20, timeWindow: '1 hour', keyGenerator: walletIdFromRequest },
+      },
     },
     async (request, reply) => {
-      if (!env.JWT_SECRET) {
-        return reply.status(500).send({ error: 'Auth service not configured', statusCode: 500 });
-      }
-
-      const walletPayload = requireWallet(request.headers.authorization, env.JWT_SECRET);
-      if (!walletPayload) {
-        return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
-      }
+      const auth = await requireActiveWallet(request, fastify.supabase, 'id, phone, is_active, usdt_balance, kyc_level');
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const { payload } = auth;
+      const sender = auth.wallet as { id: string; phone: string; is_active: boolean; usdt_balance: number; kyc_level: number };
 
       const { phone, amount } = request.body;
-      const senderWalletId = walletPayload.wallet_id;
+      const senderWalletId = payload.wallet_id;
 
-      if (walletPayload.phone === phone) {
+      if (payload.phone === phone) {
         return reply.status(400).send({ error: 'Cannot send to yourself', statusCode: 400 });
-      }
-
-      // Fetch sender wallet
-      const { data: sender } = await fastify.supabase
-        .from('wallet_users')
-        .select('id, phone, usdt_balance, is_active')
-        .eq('id', senderWalletId)
-        .maybeSingle();
-
-      if (!sender?.is_active) {
-        return reply.status(403).send({ error: 'Sender account is suspended', statusCode: 403 });
       }
 
       const senderUsdt = Number(sender.usdt_balance ?? 0);

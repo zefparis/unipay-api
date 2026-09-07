@@ -3,7 +3,7 @@ import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { env } from '../../config/env';
 import { mintCGLT, getSwapRate } from '../../services/blockchain';
 import { BridgeOutcomeUnknownError, mintWCGLT } from '../../services/bridge';
-import { requireWallet } from '../../utils/wallet-jwt';
+import { requireActiveWallet, walletIdFromRequest } from '../../lib/wallet-auth';
 import { findOrCreateWalletByPhone } from '../../utils/wallet-provision';
 import { isCgltBlockchainWriteEnabled } from '../../config/cglt-blockchain-mode';
 import { matchesAnySecret } from '../../security/secret-compare';
@@ -408,23 +408,18 @@ const cgltGamingRoute: FastifyPluginAsync = async (fastify) => {
           },
         },
       },
+      config: {
+        rateLimit: { max: 20, timeWindow: '1 hour', keyGenerator: walletIdFromRequest },
+      },
     },
     async (request, reply) => {
-      if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth not configured' });
-      const jwtPayload = requireWallet(request.headers.authorization, env.JWT_SECRET);
-      if (!jwtPayload) return reply.status(401).send({ error: 'Unauthorized' });
+      const auth = await requireActiveWallet(request, fastify.supabase, 'id, phone, is_active, cglt_balance');
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const { payload } = auth;
+      const wallet = auth.wallet as { id: string; phone: string; is_active: boolean; cglt_balance: number };
 
       const { amount, bsc_address } = request.body;
-      const phone = jwtPayload.phone;
-
-      const { data: wallet } = await fastify.supabase
-        .from('wallet_users')
-        .select('id, phone, is_active, cglt_balance')
-        .eq('phone', phone)
-        .maybeSingle();
-
-      if (!wallet) return reply.status(404).send({ error: 'WALLET_NOT_FOUND' });
-      if (!wallet.is_active) return reply.status(403).send({ error: 'ACCOUNT_SUSPENDED' });
+      const phone = payload.phone;
 
       const cgltBalance = Number(wallet.cglt_balance ?? 0);
       if (cgltBalance < amount) {

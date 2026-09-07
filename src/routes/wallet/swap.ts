@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
-import { requireWallet } from '../../utils/wallet-jwt';
+import { requireActiveWallet, walletIdFromRequest } from '../../lib/wallet-auth';
 import { notify } from '../../utils/push';
 import { getHotWalletBalances } from '../../lib/bsc-withdrawal';
 
@@ -71,30 +71,20 @@ const walletSwapRoute: FastifyPluginAsync = async (fastify) => {
           },
         },
       },
+      config: {
+        rateLimit: { max: 20, timeWindow: '1 hour', keyGenerator: walletIdFromRequest },
+      },
     },
     async (request, reply) => {
-      if (!env.JWT_SECRET) {
-        return reply.status(500).send({ error: 'Auth service not configured', statusCode: 500 });
-      }
-
-      const payload = requireWallet(request.headers.authorization, env.JWT_SECRET);
-      if (!payload) {
-        return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
-      }
+      const auth = await requireActiveWallet(request, fastify.supabase, 'id, phone, lang, is_active, balance_cdf, cglt_balance, usdt_balance, usd_balance');
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const { payload } = auth;
+      const wallet = auth.wallet as { id: string; phone: string; lang?: string; is_active: boolean; balance_cdf: number; cglt_balance: number; usdt_balance: number; usd_balance: number };
 
       const { direction, amount } = request.body;
       if (!amount || amount <= 0) {
         return reply.status(400).send({ error: 'Invalid amount', statusCode: 400 });
       }
-
-      const { data: wallet } = await fastify.supabase
-        .from('wallet_users')
-        .select('id, phone, lang, is_active, balance_cdf, cglt_balance, usdt_balance, usd_balance')
-        .eq('id', payload.wallet_id)
-        .maybeSingle();
-
-      if (!wallet)          return reply.status(404).send({ error: 'Wallet not found',      statusCode: 404 });
-      if (!wallet.is_active) return reply.status(403).send({ error: 'Account is suspended', statusCode: 403 });
 
       const cdfBal  = Number(wallet.balance_cdf ?? 0);
       const cgltBal = Number(wallet.cglt_balance ?? 0);

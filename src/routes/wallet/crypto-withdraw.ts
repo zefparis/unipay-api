@@ -8,7 +8,7 @@
 import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
-import { requireWallet } from '../../utils/wallet-jwt';
+import { requireActiveWallet, walletIdFromRequest } from '../../lib/wallet-auth';
 import {
   OnchainConfirmationPendingError,
   OnchainExecutionFailedError,
@@ -49,17 +49,18 @@ const walletCryptoWithdrawRoute: FastifyPluginAsync = async (fastify) => {
           },
         },
       },
+      config: {
+        rateLimit: { max: 20, timeWindow: '1 hour', keyGenerator: walletIdFromRequest },
+      },
     },
     async (request, reply) => {
-      if (!env.JWT_SECRET) {
-        return reply.status(500).send({ error: 'Auth service not configured' });
-      }
-
-      const wp = requireWallet(request.headers.authorization, env.JWT_SECRET);
-      if (!wp) return reply.status(401).send({ error: 'Unauthorized' });
+      const auth = await requireActiveWallet(request, fastify.supabase, 'id, is_active, usdt_balance, blockchain_address');
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const { payload } = auth;
+      const wallet = auth.wallet as { id: string; is_active: boolean; usdt_balance: number; blockchain_address?: string };
 
       const { amount, network, destination_address } = request.body;
-      const walletId = wp.wallet_id;
+      const walletId = payload.wallet_id;
 
       /* ── 1. Network guard ────────────────────────────────────────────── */
       if (!SUPPORTED_NETWORKS.includes(network)) {
@@ -94,17 +95,7 @@ const walletCryptoWithdrawRoute: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      /* ── 3. Fetch wallet + balance ───────────────────────────────────── */
-      const { data: wallet } = await fastify.supabase
-        .from('wallet_users')
-        .select('id, is_active, usdt_balance, email, full_name, lang')
-        .eq('id', walletId)
-        .maybeSingle();
-
-      if (!wallet?.is_active) {
-        return reply.status(403).send({ error: 'Account is suspended' });
-      }
-
+      /* ── 3. Wallet + balance (from auth) ─────────────────────────────── */
       const currentUsdt = Number(wallet.usdt_balance ?? 0);
 
       if (currentUsdt < amount) {
@@ -228,10 +219,9 @@ const walletCryptoWithdrawRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth service not configured' });
-
-      const wp = requireWallet(request.headers.authorization, env.JWT_SECRET);
-      if (!wp) return reply.status(401).send({ error: 'Unauthorized' });
+      const auth = await requireActiveWallet(request, fastify.supabase, 'id, is_active');
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const { payload } = auth;
 
       const page     = Number(request.query.page ?? 1);
       const pageSize = 20;
@@ -244,12 +234,12 @@ const walletCryptoWithdrawRoute: FastifyPluginAsync = async (fastify) => {
           'id, amount, network, destination_address, fee, status, binance_withdraw_id, tx_hash, failure_reason, created_at, updated_at',
           { count: 'exact' },
         )
-        .eq('user_id', wp.wallet_id)
+        .eq('user_id', payload.wallet_id)
         .order('created_at', { ascending: false })
         .range(from, to);
 
       if (error) {
-        fastify.log.error({ err: error, walletId: wp.wallet_id }, 'Failed to list withdrawals');
+        fastify.log.error({ err: error, walletId: payload.wallet_id }, 'Failed to list withdrawals');
         return reply.status(500).send({ error: 'Failed to list withdrawals' });
       }
 

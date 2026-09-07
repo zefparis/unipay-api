@@ -1,7 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import '@fastify/multipart';
-import { env } from '../../config/env';
-import { requireWallet } from '../../utils/wallet-jwt';
+import { requireActiveWallet } from '../../lib/wallet-auth';
 import { enrollPayGuard, type CognitiveBaseline } from '../../services/payguard';
 import { fetchImageAsBase64 } from '../../utils/storage';
 
@@ -15,11 +14,11 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/wallet/kyc/submit',
     async (request, reply) => {
-      if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth service not configured' });
-      const wp = requireWallet(request.headers.authorization, env.JWT_SECRET);
-      if (!wp) return reply.status(401).send({ error: 'Unauthorized' });
+      const auth = await requireActiveWallet(request, fastify.supabase, 'id, phone, kyc_level, is_active');
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const { payload } = auth;
 
-      const walletId = wp.wallet_id;
+      const walletId = payload.wallet_id;
 
       // Check if already approved
       const { data: existing } = await fastify.supabase
@@ -198,28 +197,23 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
   fastify.get(
     '/wallet/kyc/status',
     async (request, reply) => {
-      if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth service not configured' });
-      const wp = requireWallet(request.headers.authorization, env.JWT_SECRET);
-      if (!wp) return reply.status(401).send({ error: 'Unauthorized' });
+      const auth = await requireActiveWallet(request, fastify.supabase, 'id, kyc_level, is_verified, kyc_submitted_at');
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const { payload } = auth;
+      const wallet = auth.wallet as { id: string; kyc_level: number; is_verified: boolean; kyc_submitted_at: string | null };
 
       const { data: sub } = await fastify.supabase
         .from('kyc_submissions')
         .select('id, status, doc_type, full_name, reviewer_note, submitted_at, reviewed_at')
-        .eq('wallet_user_id', wp.wallet_id)
+        .eq('wallet_user_id', payload.wallet_id)
         .order('submitted_at', { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      const { data: user } = await fastify.supabase
-        .from('wallet_users')
-        .select('kyc_level, is_verified')
-        .eq('id', wp.wallet_id)
-        .maybeSingle();
-
       return reply.send({
         submission:  sub ?? null,
-        kyc_level:   Number(user?.kyc_level ?? 0),
-        is_verified: Boolean(user?.is_verified),
+        kyc_level:   Number(wallet.kyc_level ?? 0),
+        is_verified: Boolean(wallet.is_verified),
       });
     },
   );
@@ -232,20 +226,14 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/wallet/kyc/upgrade-cognitive',
     async (request, reply) => {
-      if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth service not configured' });
-      const wp = requireWallet(request.headers.authorization, env.JWT_SECRET);
-      if (!wp) return reply.status(401).send({ error: 'Unauthorized' });
+      const auth = await requireActiveWallet(request, fastify.supabase, 'id, phone, kyc_level, is_active');
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const { payload } = auth;
+      const wallet = auth.wallet as { id: string; phone: string; kyc_level: number; is_active: boolean };
 
-      const walletId = wp.wallet_id;
+      const walletId = payload.wallet_id;
 
-      const { data: user } = await fastify.supabase
-        .from('wallet_users')
-        .select('kyc_level, is_verified')
-        .eq('id', walletId)
-        .maybeSingle();
-
-      if (!user) return reply.status(404).send({ error: 'User not found' });
-      if (user.kyc_level !== 1) {
+      if (wallet.kyc_level !== 1) {
         return reply.status(409).send({ error: 'Cognitive upgrade is only available for KYC level 1 users' });
       }
 

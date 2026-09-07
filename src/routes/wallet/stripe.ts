@@ -1,7 +1,6 @@
 import Stripe from 'stripe';
 import type { FastifyPluginAsync } from 'fastify';
-import { env } from '../../config/env';
-import { requireWallet } from '../../utils/wallet-jwt';
+import { requireActiveWallet, walletIdFromRequest } from '../../lib/wallet-auth';
 
 const MIN_USD = 5;
 
@@ -30,6 +29,7 @@ const walletStripeRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: { amount_usd: number } }>(
     '/wallet/deposit/stripe/create-intent',
     {
+      config: { rateLimit: { max: 20, timeWindow: '1 hour', keyGenerator: walletIdFromRequest } },
       schema: {
         body: {
           type:       'object',
@@ -41,20 +41,12 @@ const walletStripeRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth service not configured' });
-      const payload = requireWallet(request.headers.authorization, env.JWT_SECRET);
-      if (!payload) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
+      const auth = await requireActiveWallet(request, fastify.supabase, 'id, phone');
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const wallet = auth.wallet as { id: string; phone: string };
 
       const { amount_usd } = request.body;
       const amountCents = Math.round(amount_usd * 100);
-
-      const { data: wallet } = await fastify.supabase
-        .from('wallet_users')
-        .select('id, phone')
-        .eq('id', payload.wallet_id)
-        .maybeSingle();
-
-      if (!wallet) return reply.status(404).send({ error: 'wallet_not_found' });
 
       const intent = await stripe.paymentIntents.create({
         amount:   amountCents,
@@ -89,6 +81,7 @@ const walletStripeRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: { amount_usd: number; success_url: string; cancel_url: string } }>(
     '/wallet/deposit/stripe/create-checkout',
     {
+      config: { rateLimit: { max: 20, timeWindow: '1 hour', keyGenerator: walletIdFromRequest } },
       schema: {
         body: {
           type:       'object',
@@ -102,19 +95,11 @@ const walletStripeRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth service not configured' });
-      const payload = requireWallet(request.headers.authorization, env.JWT_SECRET);
-      if (!payload) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
+      const auth = await requireActiveWallet(request, fastify.supabase, 'id, phone');
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const wallet = auth.wallet as { id: string; phone: string };
 
       const { amount_usd, success_url, cancel_url } = request.body;
-
-      const { data: wallet } = await fastify.supabase
-        .from('wallet_users')
-        .select('id, phone')
-        .eq('id', payload.wallet_id)
-        .maybeSingle();
-
-      if (!wallet) return reply.status(404).send({ error: 'wallet_not_found' });
 
       const session = await stripe.checkout.sessions.create({
         mode:                 'payment',

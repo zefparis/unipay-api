@@ -1,7 +1,7 @@
 import { HDNodeWallet, Mnemonic } from 'ethers';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
-import { requireWallet } from '../../utils/wallet-jwt';
+import { requireActiveWallet } from '../../lib/wallet-auth';
 
 export const SUPPORTED_TOKENS = [
   {
@@ -39,9 +39,9 @@ const walletCryptoDepositRoute: FastifyPluginAsync = async (fastify) => {
     '/wallet/deposit-address',
     { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
     async (request, reply) => {
-      if (!env.JWT_SECRET) return reply.status(500).send({ error: 'auth_not_configured' });
-      const payload = requireWallet(request.headers.authorization, env.JWT_SECRET);
-      if (!payload) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
+      const auth = await requireActiveWallet(request, fastify.supabase, 'id, phone');
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const { payload } = auth;
 
       if (!process.env.UNIPAY_HD_WALLET_MNEMONIC) {
         return reply.status(503).send({ error: 'crypto_deposits_not_configured' });
@@ -99,9 +99,9 @@ const walletCryptoDepositRoute: FastifyPluginAsync = async (fastify) => {
   fastify.get(
     '/wallet/deposits',
     async (request, reply) => {
-      if (!env.JWT_SECRET) return reply.status(500).send({ error: 'auth_not_configured' });
-      const payload = requireWallet(request.headers.authorization, env.JWT_SECRET);
-      if (!payload) return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
+      const auth = await requireActiveWallet(request, fastify.supabase, 'id, phone');
+      if (!auth.ok) return reply.status(auth.status).send(auth.error);
+      const { payload } = auth;
 
       const { data: deposits } = await fastify.supabase
         .from('crypto_deposits')
