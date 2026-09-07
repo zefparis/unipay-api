@@ -4,6 +4,7 @@ import { verifyCallbackSignature, normalizeCallback } from '../../services/avada
 import type { AvadaCallbackPayload } from '../../services/avada';
 import { sendWalletDepositEmail } from '../../services/email';
 import { validateProviderCallbackProof } from '../../lib/provider-callback-proof';
+import { sendWebhookWithRetry } from '../../lib/webhook-delivery';
 
 // SSRF guard: only HTTPS to non-private/loopback hosts
 function isSafeWebhookUrl(raw: string): boolean {
@@ -213,8 +214,10 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
           const sig = crypto.createHmac('sha256', webhookSecret).update(payload).digest('hex');
           headers['X-UniPay-Signature'] = `sha256=${sig}`;
         }
-        fetch(webhookUrl, { method: 'POST', headers, body: payload }).catch((err: unknown) => {
-          fastify.log.warn({ err, webhookUrl }, 'Merchant webhook delivery failed');
+        // Fire retries in the background — do NOT await, so the callback
+        // response to Avada is not delayed by webhook delivery attempts.
+        sendWebhookWithRetry(webhookUrl, payload, headers, fastify.log).catch((err: unknown) => {
+          fastify.log.error({ err, webhookUrl }, 'Webhook retry loop threw unexpectedly');
         });
       }
 
