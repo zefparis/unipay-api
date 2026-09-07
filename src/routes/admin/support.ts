@@ -11,6 +11,7 @@ interface ReplyBody {
 
 interface ConversationsQuery {
   status?: string;
+  type?: 'merchant' | 'wallet';
   page?: number;
   limit?: number;
 }
@@ -25,6 +26,7 @@ const adminSupportRoute: FastifyPluginAsync = async (fastify) => {
           type: 'object',
           properties: {
             status: { type: 'string', enum: ['open', 'escalated', 'resolved'] },
+            type:   { type: 'string', enum: ['merchant', 'wallet'] },
             page:   { type: 'integer', minimum: 1, default: 1 },
             limit:  { type: 'integer', minimum: 1, maximum: 100, default: 50 },
           },
@@ -43,7 +45,7 @@ const adminSupportRoute: FastifyPluginAsync = async (fastify) => {
       let q = fastify.supabase
         .from('support_conversations')
         .select(
-          'id, merchant_id, status, created_at, updated_at, merchants(name, email)',
+          'id, merchant_id, wallet_user_id, status, created_at, updated_at, merchants(name, email), wallet_users(phone, full_name, email)',
           { count: 'exact' },
         )
         .order('updated_at', { ascending: false });
@@ -52,13 +54,42 @@ const adminSupportRoute: FastifyPluginAsync = async (fastify) => {
         q = q.eq('status', request.query.status);
       }
 
+      // Filter by type: merchant conversations have merchant_id set,
+      // wallet conversations have wallet_user_id set.
+      if (request.query.type === 'merchant') {
+        q = q.not('merchant_id', 'is', null);
+      } else if (request.query.type === 'wallet') {
+        q = q.not('wallet_user_id', 'is', null);
+      }
+
       q = q.range(offset, offset + limit - 1);
 
       const { data, error, count } = await q;
       if (error) return reply.status(500).send({ error: error.message });
 
+      // Add a discriminant `type` field and normalize the owner info
+      const enriched = (data ?? []).map((row) => {
+        const r = row as Record<string, unknown>;
+        const isMerchant = r.merchant_id !== null && r.merchant_id !== undefined;
+        const merchant = r.merchants as Record<string, unknown> | null;
+        const walletUser = r.wallet_users as Record<string, unknown> | null;
+        return {
+          ...r,
+          type: isMerchant ? 'merchant' : 'wallet',
+          owner_name: isMerchant
+            ? (merchant?.name as string ?? '—')
+            : (walletUser?.full_name as string ?? walletUser?.phone as string ?? '—'),
+          owner_email: isMerchant
+            ? (merchant?.email as string ?? null)
+            : (walletUser?.email as string ?? null),
+          owner_phone: isMerchant
+            ? null
+            : (walletUser?.phone as string ?? null),
+        };
+      });
+
       return reply.send({
-        data: data ?? [],
+        data: enriched,
         pagination: {
           page,
           limit,
@@ -82,7 +113,7 @@ const adminSupportRoute: FastifyPluginAsync = async (fastify) => {
       const [convRes, msgRes] = await Promise.all([
         fastify.supabase
           .from('support_conversations')
-          .select('id, merchant_id, status, created_at, updated_at, merchants(name, email)')
+          .select('id, merchant_id, wallet_user_id, status, created_at, updated_at, merchants(name, email), wallet_users(phone, full_name, email)')
           .eq('id', id)
           .maybeSingle(),
         fastify.supabase
@@ -97,8 +128,13 @@ const adminSupportRoute: FastifyPluginAsync = async (fastify) => {
       }
       if (msgRes.error) return reply.status(500).send({ error: msgRes.error.message });
 
+      // Add discriminant type field
+      const conv = convRes.data as Record<string, unknown>;
+      const isMerchant = conv.merchant_id !== null && conv.merchant_id !== undefined;
+      conv.type = isMerchant ? 'merchant' : 'wallet';
+
       return reply.send({
-        conversation: convRes.data,
+        conversation: conv,
         messages: msgRes.data ?? [],
       });
     },
@@ -130,7 +166,7 @@ const adminSupportRoute: FastifyPluginAsync = async (fastify) => {
       // Verify conversation exists
       const { data: conv, error: convError } = await fastify.supabase
         .from('support_conversations')
-        .select('id, status, merchant_id')
+        .select('id, status, merchant_id, wallet_user_id')
         .eq('id', id)
         .maybeSingle();
 
@@ -153,8 +189,10 @@ const adminSupportRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       // Update status if requested
-      const newStatus = resolve ? 'resolved' : conv.status === 'escalated' ? 'open' : conv.status;
-      if (newStatus !== conv.status) {
+      const convRow = conv as Record<string, unknown>;
+      const currentStatus = convRow.status as string;
+      const newStatus = resolve ? 'resolved' : currentStatus === 'escalated' ? 'open' : currentStatus;
+      if (newStatus !== currentStatus) {
         await fastify.supabase
           .from('support_conversations')
           .update({ status: newStatus, updated_at: new Date().toISOString() })

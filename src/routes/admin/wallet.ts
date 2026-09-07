@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { env } from '../../config/env';
+import { sendAdminDirectEmail } from '../../services/email';
 
 function requireAdmin(isAdmin: boolean): boolean {
   return isAdmin;
@@ -684,6 +685,252 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
           pages: Math.ceil((usersRes.count ?? 0) / limit),
         },
       });
+    },
+  );
+
+  /* ── GET /v1/admin/wallet-users/:id/support-templates ──────── */
+  fastify.get<{ Params: { id: string } }>(
+    '/admin/wallet-users/:id/support-templates',
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required' });
+      }
+
+      const { id } = request.params;
+
+      const { data: user, error } = await fastify.supabase
+        .from('wallet_users')
+        .select('phone, full_name, email, kyc_level, is_verified, is_active')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (error || !user) {
+        return reply.status(404).send({ error: 'Wallet user not found' });
+      }
+
+      const u = user as {
+        phone: string; full_name: string | null; email: string | null;
+        kyc_level: number; is_verified: boolean; is_active: boolean;
+      };
+      const name = u.full_name ?? u.phone;
+
+      const templates: Array<{ label: string; subject: string; body: string }> = [];
+
+      // KYC level 0 → encourage upgrade to level 1
+      if (u.kyc_level === 0) {
+        templates.push({
+          label: 'Relance KYC niveau 1',
+          subject: 'Vérifiez votre compte UniPay pour augmenter vos limites',
+          body: `Bonjour ${name},\n\nVotre compte UniPay est actuellement au niveau KYC 0, ce qui limite vos transactions à 5 000 CDF par jour.\n\nPour augmenter vos limites (jusqu'à 500 000 CDF/jour en dépôt et 200 000 CDF/jour en retrait), soumettez votre pièce d'identité dans l'application :\n  1. Onglet Profil → Vérification KYC\n  2. Photo de votre pièce d'identité (recto/verso)\n  3. Selfie de vérification\n\nLa validation prend généralement 24 à 48 heures.\n\nCordialement,\nL'équipe UniPay Congo`,
+        });
+      }
+
+      // KYC level 1 → encourage cognitive upgrade to level 2
+      if (u.kyc_level === 1) {
+        templates.push({
+          label: 'Upgrade KYC niveau 2',
+          subject: 'Débloquez toutes les fonctionnalités avec le KYC niveau 2',
+          body: `Bonjour ${name},\n\nVotre compte est au niveau KYC 1. Pour accéder aux limites maximales (transactions illimitées) et à toutes les fonctionnalités UniPay, vous pouvez passer au niveau 2 en complétant le test cognitif dans l'application :\n  1. Onglet Profil → Vérification KYC → Upgrade\n  2. Complétez le test cognitif (Stroop, mémoire, etc.)\n\nCordialement,\nL'équipe UniPay Congo`,
+        });
+      }
+
+      // Account suspended
+      if (!u.is_active) {
+        templates.push({
+          label: 'Compte suspendu',
+          subject: 'Votre compte UniPay est suspendu',
+          body: `Bonjour ${name},\n\nVotre compte UniPay a été suspendu pour des raisons de sécurité. Pour lever la suspension, veuillez contacter notre équipe de support en répondant à cet email ou via l'application.\n\nCordialement,\nL'équipe UniPay Congo`,
+        });
+      }
+
+      // Generic template — always available
+      templates.push({
+        label: 'Réponse à votre demande',
+        subject: '',
+        body: `Bonjour ${name},\n\n`,
+      });
+
+      return reply.send({ templates });
+    },
+  );
+
+  /* ── POST /v1/admin/wallet-users/:id/email ─────────────────── */
+  fastify.post<{ Params: { id: string }; Body: { subject: string; body: string; conversation_id?: string; template_label?: string } }>(
+    '/admin/wallet-users/:id/email',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['subject', 'body'],
+          properties: {
+            subject:        { type: 'string', minLength: 1, maxLength: 256 },
+            body:           { type: 'string', minLength: 1, maxLength: 8000 },
+            conversation_id: { type: 'string', format: 'uuid' },
+            template_label: { type: 'string', minLength: 1, maxLength: 128 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required' });
+      }
+
+      const { id } = request.params;
+      const { subject, body, conversation_id, template_label } = request.body;
+
+      // Fetch wallet user — CRITICAL: use the user's own email from DB
+      const { data: user, error: userError } = await fastify.supabase
+        .from('wallet_users')
+        .select('id, phone, full_name, email')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (userError || !user) {
+        return reply.status(404).send({ error: 'Wallet user not found' });
+      }
+
+      const u = user as { id: string; phone: string; full_name: string | null; email: string | null };
+
+      if (!u.email) {
+        return reply.status(400).send({ error: 'This wallet user has no email address on file' });
+      }
+
+      // Find or create conversation — always scoped to THIS wallet user
+      let conversationId = conversation_id;
+      if (conversationId) {
+        const { data: conv, error: convError } = await fastify.supabase
+          .from('support_conversations')
+          .select('id, wallet_user_id')
+          .eq('id', conversationId)
+          .eq('wallet_user_id', id) // CRITICAL: verify ownership
+          .maybeSingle();
+
+        if (convError || !conv) {
+          return reply.status(404).send({ error: 'Conversation not found for this wallet user' });
+        }
+      } else {
+        // Reuse most recent open conversation, or create new
+        const { data: recentConv } = await fastify.supabase
+          .from('support_conversations')
+          .select('id')
+          .eq('wallet_user_id', id)
+          .in('status', ['open', 'escalated'])
+          .order('updated_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (recentConv) {
+          conversationId = (recentConv as { id: string }).id;
+        } else {
+          const { data: newConv, error: createError } = await fastify.supabase
+            .from('support_conversations')
+            .insert({ wallet_user_id: id, status: 'open' })
+            .select('id')
+            .single();
+
+          if (createError || !newConv) {
+            fastify.log.error({ err: createError, walletUserId: id }, '[admin-email] conversation creation failed');
+            return reply.status(500).send({ error: 'Failed to create conversation' });
+          }
+          conversationId = newConv.id;
+        }
+      }
+
+      // Send the email to the user's verified address
+      try {
+        await sendAdminDirectEmail(u.email, subject, body);
+      } catch (err) {
+        fastify.log.error({ err, walletUserId: id, to: u.email }, '[admin-email] email send failed');
+        return reply.status(500).send({ error: 'Failed to send email' });
+      }
+
+      // Log the message in support_messages with channel='email'
+      const { error: msgError } = await fastify.supabase
+        .from('support_messages')
+        .insert({
+          conversation_id: conversationId,
+          role: 'admin',
+          channel: 'email',
+          subject,
+          content: body,
+          template_label: template_label ?? null,
+        });
+
+      if (msgError) {
+        fastify.log.error({ err: msgError, conversationId }, '[admin-email] message log failed');
+      }
+
+      fastify.log.info(
+        { walletUserId: id, conversationId, adminAction: 'direct_email', to: u.email, subject },
+        '[admin] Direct email sent to wallet user',
+      );
+
+      return reply.send({
+        ok: true,
+        conversation_id: conversationId,
+        sent_to: u.email,
+      });
+    },
+  );
+
+  /* ── GET /v1/admin/wallet-users/:id/email-history-summary ───── */
+  fastify.get<{ Params: { id: string } }>(
+    '/admin/wallet-users/:id/email-history-summary',
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required' });
+      }
+
+      const { id } = request.params;
+
+      // Get this wallet user's conversation IDs
+      const { data: convs, error: convError } = await fastify.supabase
+        .from('support_conversations')
+        .select('id')
+        .eq('wallet_user_id', id);
+
+      if (convError) {
+        return reply.status(500).send({ error: convError.message });
+      }
+
+      if (!convs || convs.length === 0) {
+        return reply.send({ summaries: [] });
+      }
+
+      const convIds = convs.map((c) => (c as { id: string }).id);
+
+      // Query email messages with template_label, grouped by template_label
+      const { data: messages, error: msgError } = await fastify.supabase
+        .from('support_messages')
+        .select('template_label, created_at')
+        .in('conversation_id', convIds)
+        .eq('channel', 'email')
+        .not('template_label', 'is', null);
+
+      if (msgError) {
+        return reply.status(500).send({ error: msgError.message });
+      }
+
+      // Group by template_label
+      const groups: Record<string, { count: number; last_sent_at: string }> = {};
+      for (const msg of messages ?? []) {
+        const m = msg as { template_label: string; created_at: string };
+        const label = m.template_label;
+        if (!groups[label]) {
+          groups[label] = { count: 0, last_sent_at: m.created_at };
+        }
+        groups[label].count += 1;
+        if (m.created_at > groups[label].last_sent_at) {
+          groups[label].last_sent_at = m.created_at;
+        }
+      }
+
+      const summaries = Object.entries(groups)
+        .map(([template_label, info]) => ({ template_label, ...info }))
+        .sort((a, b) => b.last_sent_at.localeCompare(a.last_sent_at));
+
+      return reply.send({ summaries });
     },
   );
 

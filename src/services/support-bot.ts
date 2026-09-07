@@ -4,15 +4,15 @@ import { env } from '../config/env.js';
 const SYSTEM_PROMPT = `Tu es l'assistant de support UniPay Congo, une plateforme de paiement Mobile Money en RDC.
 
 RÔLE:
-- Répondre aux questions des marchands connectés à leur tableau de bord
-- Aider avec l'utilisation de l'API, le statut KYC, les clés API, les transactions
+- Répondre aux questions des marchands et utilisateurs wallet connectés
+- Aider avec l'utilisation de l'API (marchands), les transactions, le statut KYC, les soldes (wallet)
 - Ton professionnel, courtois, concis — réponds en français par défaut
 
 RÈGLES CRITIQUES:
-- Tu ne vois QUE les données du marchand qui te parle (fournies dans le contexte)
-- Ne JAMAIS mentionner ou révéler des données d'autres marchands
+- Tu ne vois QUE les données de l'utilisateur qui te parle (fournies dans le contexte)
+- Ne JAMAIS mentionner ou révéler des données d'autres marchands ou utilisateurs wallet
 - Si la question dépasse ce que les données fournies permettent de répondre, dis-le clairement
-- Si le marchand demande explicitement un humain, ou si la question nécessite une action manuelle
+- Si l'utilisateur demande explicitement un humain, ou si la question nécessite une action manuelle
   (ex: modification de compte, problème de facturation, litige), réponds:
   "Un membre de notre équipe va prendre le relais et vous répondre sous peu."
   et mets le mot-clé [ESCALATE] au tout début de ta réponse.
@@ -139,6 +139,107 @@ export async function generateBotReply(
       model: MODEL,
     };
     console.error('[support-bot] Anthropic API call FAILED:', JSON.stringify(errorDetails, null, 2));
+
+    return {
+      content: 'Une erreur technique est survenue. Un membre de notre équipe va prendre le relais et vous répondre sous peu.',
+      escalated: true,
+    };
+  }
+}
+
+// ─── Wallet user context ───────────────────────────────────────────
+
+export interface WalletContext {
+  phone: string;
+  full_name: string | null;
+  email: string | null;
+  kyc_level: number;
+  is_verified: boolean;
+  is_active: boolean;
+  balance_cdf: number | string;
+  usd_balance: number | string;
+  usdt_balance: number | string;
+  cglt_balance: number | string;
+  recent_transactions: Array<{
+    direction: string;
+    operator: string;
+    amount: number | string;
+    currency: string;
+    status: string;
+    created_at: string;
+  }>;
+}
+
+function buildWalletContextBlock(ctx: WalletContext): string {
+  const txLines = ctx.recent_transactions.length > 0
+    ? ctx.recent_transactions.map((t) =>
+        `- ${t.created_at}: ${t.direction} ${t.operator} ${t.amount} ${t.currency} (${t.status})`,
+      ).join('\n')
+    : 'Aucune transaction récente';
+
+  const kycLabel = ctx.kyc_level === 0 ? 'Non vérifié (niveau 0)'
+    : ctx.kyc_level === 1 ? 'Niveau 1 (ID vérifié)'
+    : ctx.kyc_level === 2 ? 'Niveau 2 (cognitif)'
+    : `Niveau ${ctx.kyc_level}`;
+
+  return `CONTEXTE DE L'UTILISATEUR WALLET (données privées — ne jamais partager avec d'autres):
+- Téléphone: ${ctx.phone}
+- Nom: ${ctx.full_name ?? 'N/A'}
+- Email: ${ctx.email ?? 'N/A'}
+- Niveau KYC: ${kycLabel}
+- Compte vérifié: ${ctx.is_verified ? 'Oui' : 'Non'}
+- Compte actif: ${ctx.is_active ? 'Oui' : 'Non (suspendu)'}
+- Solde CDF: ${ctx.balance_cdf}
+- Solde USD: ${ctx.usd_balance}
+- Solde USDT: ${ctx.usdt_balance}
+- Solde CGLT: ${ctx.cglt_balance}
+- 10 dernières transactions:
+${txLines}`;
+}
+
+export async function generateWalletBotReply(
+  conversationHistory: Array<{ role: 'wallet' | 'bot' | 'admin'; content: string }>,
+  walletContext: WalletContext,
+): Promise<BotResponse> {
+  const client = getClient();
+  if (!client) {
+    return {
+      content: 'Un membre de notre équipe va prendre le relais et vous répondre sous peu.',
+      escalated: true,
+    };
+  }
+
+  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = conversationHistory.map((m) => ({
+    role: m.role === 'wallet' ? 'user' as const : 'assistant' as const,
+    content: m.content,
+  }));
+
+  console.log(`[support-bot] Wallet bot — model: ${MODEL}, messages: ${messages.length}`);
+
+  try {
+    const response = await client.messages.create({
+      model: MODEL,
+      max_tokens: 1024,
+      system: `${SYSTEM_PROMPT}\n\n${buildWalletContextBlock(walletContext)}`,
+      messages,
+    });
+
+    const textBlock = response.content.find((b) => b.type === 'text');
+    const content = textBlock?.text ?? 'Désolé, je n\'ai pas pu traiter votre demande.';
+
+    const escalated = content.startsWith('[ESCALATE]');
+    const cleanContent = escalated ? content.replace('[ESCALATE]', '').trim() : content;
+
+    console.log(`[support-bot] Wallet bot API call succeeded — escalated: ${escalated}`);
+    return { content: cleanContent, escalated };
+  } catch (err) {
+    const errorDetails = {
+      name: err instanceof Error ? err.name : 'Unknown',
+      message: err instanceof Error ? err.message : String(err),
+      status: (err as { status?: number }).status,
+      model: MODEL,
+    };
+    console.error('[support-bot] Wallet bot API call FAILED:', JSON.stringify(errorDetails, null, 2));
 
     return {
       content: 'Une erreur technique est survenue. Un membre de notre équipe va prendre le relais et vous répondre sous peu.',
