@@ -662,3 +662,72 @@ export async function sendGasAlertEmail(
     to: recipients,
   });
 }
+
+/* ── sendSecurityNotificationEmail ──────────────────────────── */
+export async function sendSecurityNotificationEmail(
+  to: string,
+  name: string,
+  type: 'password_changed' | 'email_changed',
+  extra?: { newEmail?: string },
+): Promise<void> {
+  const api = getClient();
+  if (!api) {
+    console.warn(`[email] BREVO_API_KEY not set — security notification (${type}) skipped`);
+    return;
+  }
+
+  let subject: string;
+  let body: string;
+
+  if (type === 'password_changed') {
+    subject = 'Votre mot de passe a été modifié — UniPay Congo';
+    body = `
+      <h2 style="margin:0 0 16px;font-size:22px;font-weight:700;color:#0f172a;">Mot de passe modifié 🔐</h2>
+      <p style="margin:0 0 16px;font-size:15px;color:#475569;line-height:1.6;">
+        Bonjour <strong>${name}</strong>,<br/>
+        Le mot de passe de votre compte marchand <strong>UniPay Congo</strong> a été modifié avec succès.
+      </p>
+      <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:16px;margin-bottom:20px;">
+        <p style="margin:0;font-size:14px;color:#991b1b;">
+          ⚠️ Si vous n'êtes pas à l'origine de ce changement, contactez notre support immédiatement.
+        </p>
+      </div>
+      <a href="mailto:support@unipaycongo.com"
+         style="display:inline-block;background:#1D9E75;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:12px 28px;border-radius:10px;">
+        Contacter le support
+      </a>`;
+  } else {
+    subject = 'Votre adresse email a été modifiée — UniPay Congo';
+    body = `
+      <h2 style="margin:0 0 16px;font-size:22px;font-weight:700;color:#0f172a;">Email modifié ✉️</h2>
+      <p style="margin:0 0 16px;font-size:15px;color:#475569;line-height:1.6;">
+        Bonjour <strong>${name}</strong>,<br/>
+        L'adresse email associée à votre compte marchand <strong>UniPay Congo</strong> a été modifiée.
+      </p>
+      <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:16px;margin-bottom:20px;">
+        <p style="margin:0;font-size:14px;color:#0c4a6e;">
+          <strong>Nouvelle adresse email :</strong> ${extra?.newEmail ?? '—'}
+        </p>
+      </div>
+      <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:16px;margin-bottom:20px;">
+        <p style="margin:0;font-size:14px;color:#991b1b;">
+          ⚠️ Si vous n'êtes pas à l'origine de ce changement, contactez notre support immédiatement.
+        </p>
+      </div>
+      <a href="mailto:support@unipaycongo.com"
+         style="display:inline-block;background:#1D9E75;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:12px 28px;border-radius:10px;">
+        Contacter le support
+      </a>`;
+  }
+
+  try {
+    await api.transactionalEmails.sendTransacEmail({
+      subject,
+      htmlContent: layout(body),
+      sender: { name: env.BREVO_SENDER_NAME, email: env.BREVO_SENDER_EMAIL },
+      to: [{ email: to, name }],
+    });
+  } catch (err) {
+    console.error(`[email] security notification (${type}) → failed:`, err);
+  }
+}
