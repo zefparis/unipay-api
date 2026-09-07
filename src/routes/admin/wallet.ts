@@ -417,17 +417,35 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
     }
 
     const rows = await Promise.all((data ?? []).map(async (row) => {
-      let selfie_signed_url: string | null = null;
-      if (row.selfie_url) {
-        const { data: signed, error: signedErr } = await fastify.supabase.storage
-          .from('kyc-docs')
-          .createSignedUrl(row.selfie_url, 3600);
-        if (signedErr) {
-          fastify.log.warn({ err: signedErr, submissionId: row.id }, '[admin] kyc selfie signed url failed');
-        }
-        selfie_signed_url = signed?.signedUrl ?? null;
+      // Generate signed URLs for all KYC documents (selfie + ID front/back)
+      const [selfieSigned, docFrontSigned, docBackSigned] = await Promise.all([
+        row.selfie_url
+          ? fastify.supabase.storage.from('kyc-docs').createSignedUrl(row.selfie_url, 3600)
+          : Promise.resolve({ data: null, error: null }),
+        row.doc_front_url
+          ? fastify.supabase.storage.from('kyc-docs').createSignedUrl(row.doc_front_url, 3600)
+          : Promise.resolve({ data: null, error: null }),
+        row.doc_back_url
+          ? fastify.supabase.storage.from('kyc-docs').createSignedUrl(row.doc_back_url, 3600)
+          : Promise.resolve({ data: null, error: null }),
+      ]);
+
+      if (selfieSigned.error) {
+        fastify.log.warn({ err: selfieSigned.error, submissionId: row.id }, '[admin] kyc selfie signed url failed');
       }
-      return { ...row, selfie_signed_url };
+      if (docFrontSigned.error) {
+        fastify.log.warn({ err: docFrontSigned.error, submissionId: row.id }, '[admin] kyc doc_front signed url failed');
+      }
+      if (docBackSigned.error) {
+        fastify.log.warn({ err: docBackSigned.error, submissionId: row.id }, '[admin] kyc doc_back signed url failed');
+      }
+
+      return {
+        ...row,
+        selfie_signed_url: selfieSigned.data?.signedUrl ?? null,
+        doc_front_signed_url: docFrontSigned.data?.signedUrl ?? null,
+        doc_back_signed_url: docBackSigned.data?.signedUrl ?? null,
+      };
     }));
 
     return reply.send({
