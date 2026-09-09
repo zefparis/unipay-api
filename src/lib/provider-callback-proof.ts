@@ -21,16 +21,16 @@ export type ProviderProofResult =
 function normalizePhone(value: string): string {
   // Strip everything except digits
   let digits = value.replace(/\D/g, '');
-  // DRC country code is 243. Unipesa callbacks send the local 9-digit
-  // number (e.g. "970967029") while the DB stores E.164 ("+243970967029").
-  // Normalize both to the 9-digit local number by stripping a leading
-  // "243" when the remaining digits form a valid DRC local number (9 digits
-  // starting with 8 or 9).
-  if (digits.length === 12 && digits.startsWith('243')) {
-    const local = digits.slice(3);
-    if (local.length === 9 && /^[89]/.test(local)) {
-      digits = local;
-    }
+  // DRC country code is 243. Strip it if present.
+  // Unipesa callbacks send local numbers (Airtel: 9 digits no prefix,
+  // Orange/Africell: 10 digits with leading 0). DB stores mixed formats
+  // (E.164 with +243, or local). Normalize everything to the 9-digit
+  // local number by stripping BOTH the country code AND any leading 0.
+  if (digits.startsWith('243')) {
+    digits = digits.slice(3);
+  }
+  if (digits.startsWith('0')) {
+    digits = digits.slice(1);
   }
   return digits;
 }
