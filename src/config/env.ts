@@ -23,6 +23,10 @@ const envSchema = z.object({
 
   // Fixie proxy — whitelisted IP for Unipesa API calls
   FIXIE_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
+  // Explicit bypass for local dev/mock only. When set to '1' or 'true',
+  // Unipesa/Avada calls skip the Fixie proxy requirement. MUST NOT be set in
+  // production — a [WARN] is logged at boot and at each bypassed call.
+  UNIPESA_SKIP_FIXIE_CHECK: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
 
   // Vodacash — direct integration (coming soon)
   VODACASH_API_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),

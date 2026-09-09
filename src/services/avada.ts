@@ -91,8 +91,27 @@ function calculateSignature(data: Record<string, unknown>, secretKey: string): s
 }
 
 let _proxyAgent: ProxyAgent | undefined;
-function getProxyAgent(): ProxyAgent | undefined {
-  if (!env.FIXIE_URL) return undefined;
+let _skipWarned = false;
+
+function isSkipFixieCheck(): boolean {
+  const v = env.UNIPESA_SKIP_FIXIE_CHECK;
+  return v === '1' || v === 'true';
+}
+
+export function getProxyAgent(): ProxyAgent | undefined {
+  if (!env.FIXIE_URL) {
+    // Hard block: no payment may leave without a Fixie proxy unless an
+    // explicit, deliberate bypass flag is set. This check is independent
+    // of NODE_ENV — it applies in all environments.
+    if (isSkipFixieCheck()) {
+      if (!_skipWarned) {
+        _skipWarned = true;
+        console.warn('[WARN] avada.ts: UNIPESA_SKIP_FIXIE_CHECK is set — Unipesa/Avada call bypassing Fixie proxy (direct connection). IP whitelisting is NOT active.');
+      }
+      return undefined;
+    }
+    throw new Error('FIXIE_PROXY_REQUIRED: FIXIE_URL is not set and UNIPESA_SKIP_FIXIE_CHECK is not enabled. Unipesa/Avada calls require the Fixie proxy for IP whitelisting.');
+  }
   if (!_proxyAgent) _proxyAgent = new ProxyAgent(env.FIXIE_URL);
   return _proxyAgent;
 }

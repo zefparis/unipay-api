@@ -17,10 +17,29 @@ const BASE = 'https://api.unipesa.tech';
 
 const PROXY_URL = env.FIXIE_URL;
 const proxyAgent = PROXY_URL ? new ProxyAgent(PROXY_URL) : null;
-const fetchWithProxy: typeof fetch = proxyAgent
+let _skipWarned = false;
+
+function isSkipFixieCheck(): boolean {
+  const v = env.UNIPESA_SKIP_FIXIE_CHECK;
+  return v === '1' || v === 'true';
+}
+
+export const fetchWithProxy: typeof fetch = proxyAgent
   ? ((url: any, opts: any) =>
       undiciFetch(url, { ...(opts ?? {}), dispatcher: proxyAgent }) as any)
-  : fetch;
+  : ((url: any, opts: any) => {
+      // Hard block: no payment may leave without a Fixie proxy unless an
+      // explicit, deliberate bypass flag is set. This check is independent
+      // of NODE_ENV — it applies in all environments.
+      if (isSkipFixieCheck()) {
+        if (!_skipWarned) {
+          _skipWarned = true;
+          console.warn('[WARN] unipesa.ts: UNIPESA_SKIP_FIXIE_CHECK is set — Unipesa call bypassing Fixie proxy (direct connection). IP whitelisting is NOT active.');
+        }
+        return fetch(url, opts) as any;
+      }
+      throw new Error('FIXIE_PROXY_REQUIRED: FIXIE_URL is not set and UNIPESA_SKIP_FIXIE_CHECK is not enabled. Unipesa calls require the Fixie proxy for IP whitelisting.');
+    });
 
 /** Maps mobile-money operator slug to the Unipesa numeric provider_id (CDF flows). */
 export const UNIPESA_PROVIDER_IDS: Record<string, number> = {
