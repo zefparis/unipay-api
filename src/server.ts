@@ -4,8 +4,6 @@ import rateLimit from '@fastify/rate-limit';
 import multipart from '@fastify/multipart';
 import crypto from 'node:crypto';
 import { env } from './config/env';
-import { getTransactionStatusRaw } from './services/avada';
-import { safeSecretEqual } from './security/secret-compare';
 
 import corsPlugin from './plugins/cors';
 import supabasePlugin from './plugins/supabase';
@@ -144,30 +142,6 @@ export async function buildServer() {
       status: 'ok',
       timestamp: new Date().toISOString(),
     }),
-  );
-
-  // ── TEMPORARY diagnostic: query Unipesa /status via Fixie ───────────────
-  // Protected by ADMIN_SECRET. Returns the RAW Unipesa response so we can
-  // verify the real transaction status from a whitelisted IP (Fixie).
-  // Remove after reconciliation is complete.
-  server.get<{ Querystring: { order_id?: string } }>(
-    '/debug/unipesa-status',
-    async (request, reply) => {
-      const provided = request.headers['x-admin-secret'];
-      if (!env.ADMIN_SECRET || !safeSecretEqual(provided, env.ADMIN_SECRET)) {
-        return reply.status(403).send({ error: 'admin secret required' });
-      }
-      const orderId = request.query.order_id;
-      if (!orderId || typeof orderId !== 'string') {
-        return reply.status(400).send({ error: 'order_id query param required' });
-      }
-      try {
-        const raw = await getTransactionStatusRaw(orderId);
-        return { order_id: orderId, unipesa_raw: raw };
-      } catch (e) {
-        return reply.status(502).send({ error: e instanceof Error ? e.message : String(e) });
-      }
-    },
   );
 
   // Versioned routes
