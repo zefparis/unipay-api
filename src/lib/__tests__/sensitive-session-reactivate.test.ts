@@ -42,13 +42,20 @@ function makeMockSupabase(sessionResult: QueryResult, updateResult: QueryResult 
     then: undefined as unknown,
   };
   // Make update() return a thenable that resolves to updateResult
-  builder.update = (_payload: unknown) => {
+  builder.update = (_payload: unknown): typeof builder => {
     calls.push('update');
     const thenable = {
       eq: (_col: string, _val: unknown) => thenable,
+      select: () => thenable,
+      update: (_p: unknown) => thenable,
+      insert: (_p: unknown) => thenable,
+      in: (_col: string, _v: unknown[]) => thenable,
+      order: (_col: string, _o: unknown) => thenable,
+      limit: (_n: number) => thenable,
+      maybeSingle: async () => updateResult,
       then: (resolve: (r: QueryResult) => void) => resolve(updateResult),
     };
-    return thenable;
+    return thenable as typeof builder;
   };
   return { supabase: { from: (_table: string) => builder }, calls };
 }
@@ -214,7 +221,7 @@ describe('sensitive-session PIN reactivation — rate limiting', () => {
     const auth = `Bearer ${mockToken}`;
 
     const token = auth.replace(/^Bearer\s+/i, '');
-    const payload = JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url'));
+    const payload = JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf8'));
     const key = `wallet:${payload.wallet_id ?? 'unknown'}`;
 
     assert.equal(key, `wallet:${WALLET_ID}`);
@@ -261,7 +268,7 @@ describe('sensitive-session PIN reactivation — integration with bcrypt', () =>
   });
 
   it('simulates full reactivate: active session + correct PIN → 409 (not invalidated)', async () => {
-    const sessionStatus = 'active';
+    const sessionStatus: string = 'active';
     const pinMatch = await bcrypt.compare(TEST_PIN, TEST_PIN_HASH);
 
     // The route checks: if session.status !== 'invalidated', return 409

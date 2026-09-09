@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { env } from '../../config/env';
 import { sendAdminDirectEmail } from '../../services/email';
 import { logAdminAction } from '../../lib/admin-action-log';
+import { buildEmailTemplates, type WalletUserTemplateData } from '../../lib/email-templates';
+import { sendTemplateAuto } from '../../lib/email-auto-send';
 
 function requireAdmin(isAdmin: boolean): boolean {
   return isAdmin;
@@ -298,14 +300,31 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
     }
 
     const { id } = request.params;
-    const { error } = await fastify.supabase
+    const { data, error } = await fastify.supabase
       .from('wallet_users')
       .update({ is_active: true })
-      .eq('id', id);
+      .eq('id', id)
+      .select('id, phone, full_name, email, kyc_level, is_verified, is_active, kyc_submitted_at')
+      .maybeSingle();
 
     if (error) return reply.status(500).send({ error: error.message });
+    if (!data) return reply.status(404).send({ error: 'Wallet user not found' });
     fastify.log.info({ userId: id }, 'wallet user unblocked');
     void logAdminAction(fastify.supabase, 'wallet_user.unblock', 'wallet_user', id, {}, fastify.log);
+
+    // Auto-send "Compte réactivé" email (fire-and-forget, non-blocking)
+    const u = data as WalletUserTemplateData;
+    if (u.email) {
+      void sendTemplateAuto('wallet_user', u, u.email, 'Compte réactivé')
+        .then((res) => {
+          if (res.sent) {
+            fastify.log.info({ userId: id, template: res.templateLabel }, '[admin-auto-email] Wallet user reactivation email sent');
+          } else {
+            fastify.log.warn({ userId: id, template: res.templateLabel, error: res.error }, '[admin-auto-email] Wallet user reactivation email NOT sent');
+          }
+        });
+    }
+
     return reply.send({ ok: true, is_active: true });
   });
 
@@ -320,7 +339,7 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
       .from('wallet_users')
       .update({ kyc_level: 1, is_verified: true, updated_at: new Date().toISOString() })
       .eq('id', id)
-      .select('id, phone, full_name, balance_cdf, kyc_level, is_active, is_verified, created_at, updated_at, kyc_submitted_at')
+      .select('id, phone, full_name, email, balance_cdf, kyc_level, is_active, is_verified, created_at, updated_at, kyc_submitted_at')
       .maybeSingle();
 
     if (error) return reply.status(500).send({ error: error.message });
@@ -328,6 +347,20 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
 
     fastify.log.info({ userId: id }, '[wallet-user-kyc-approved]');
     void logAdminAction(fastify.supabase, 'wallet_user.kyc_approve', 'wallet_user', id, { kyc_level: 1 }, fastify.log);
+
+    // Auto-send "KYC niveau 1 validé" email (fire-and-forget, non-blocking)
+    const u = data as WalletUserTemplateData;
+    if (u.email) {
+      void sendTemplateAuto('wallet_user', u, u.email, 'KYC niveau 1 validé')
+        .then((res) => {
+          if (res.sent) {
+            fastify.log.info({ userId: id, template: res.templateLabel }, '[admin-auto-email] Wallet user KYC approved email sent');
+          } else {
+            fastify.log.warn({ userId: id, template: res.templateLabel, error: res.error }, '[admin-auto-email] Wallet user KYC approved email NOT sent');
+          }
+        });
+    }
+
     return reply.send({ ok: true, user: data });
   });
 
@@ -493,6 +526,27 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
 
     fastify.log.info({ submissionId: id, walletUserId: sub.wallet_user_id }, '[kyc-admin-approved]');
     void logAdminAction(fastify.supabase, 'wallet_kyc.approve', 'kyc_submission', id, { wallet_user_id: sub.wallet_user_id }, fastify.log);
+
+    // Auto-send "KYC niveau 1 validé" email (fire-and-forget, non-blocking)
+    const { data: wu } = await fastify.supabase
+      .from('wallet_users')
+      .select('phone, full_name, email, kyc_level, is_verified, is_active, kyc_submitted_at')
+      .eq('id', sub.wallet_user_id)
+      .maybeSingle();
+    if (wu) {
+      const u = wu as WalletUserTemplateData;
+      if (u.email) {
+        void sendTemplateAuto('wallet_user', u, u.email, 'KYC niveau 1 validé')
+          .then((res) => {
+            if (res.sent) {
+              fastify.log.info({ userId: sub.wallet_user_id, template: res.templateLabel }, '[admin-auto-email] Wallet user KYC approved email sent');
+            } else {
+              fastify.log.warn({ userId: sub.wallet_user_id, template: res.templateLabel, error: res.error }, '[admin-auto-email] Wallet user KYC approved email NOT sent');
+            }
+          });
+      }
+    }
+
     return reply.send({ ok: true });
   });
 
@@ -706,7 +760,7 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data: user, error } = await fastify.supabase
         .from('wallet_users')
-        .select('phone, full_name, email, kyc_level, is_verified, is_active')
+        .select('phone, full_name, email, kyc_level, is_verified, is_active, kyc_submitted_at')
         .eq('id', id)
         .maybeSingle();
 
@@ -714,47 +768,8 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(404).send({ error: 'Wallet user not found' });
       }
 
-      const u = user as {
-        phone: string; full_name: string | null; email: string | null;
-        kyc_level: number; is_verified: boolean; is_active: boolean;
-      };
-      const name = u.full_name ?? u.phone;
-
-      const templates: Array<{ label: string; subject: string; body: string }> = [];
-
-      // KYC level 0 → encourage upgrade to level 1
-      if (u.kyc_level === 0) {
-        templates.push({
-          label: 'Relance KYC niveau 1',
-          subject: 'Vérifiez votre compte UniPay pour augmenter vos limites',
-          body: `Bonjour ${name},\n\nVotre compte UniPay est actuellement au niveau KYC 0, ce qui limite vos transactions à 5 000 CDF par jour.\n\nPour augmenter vos limites (jusqu'à 500 000 CDF/jour en dépôt et 200 000 CDF/jour en retrait), soumettez votre pièce d'identité dans l'application :\n  1. Onglet Profil → Vérification KYC\n  2. Photo de votre pièce d'identité (recto/verso)\n  3. Selfie de vérification\n\nLa validation prend généralement 24 à 48 heures.\n\nCordialement,\nL'équipe UniPay Congo`,
-        });
-      }
-
-      // KYC level 1 → encourage cognitive upgrade to level 2
-      if (u.kyc_level === 1) {
-        templates.push({
-          label: 'Upgrade KYC niveau 2',
-          subject: 'Débloquez toutes les fonctionnalités avec le KYC niveau 2',
-          body: `Bonjour ${name},\n\nVotre compte est au niveau KYC 1. Pour accéder aux limites maximales (transactions illimitées) et à toutes les fonctionnalités UniPay, vous pouvez passer au niveau 2 en complétant le test cognitif dans l'application :\n  1. Onglet Profil → Vérification KYC → Upgrade\n  2. Complétez le test cognitif (Stroop, mémoire, etc.)\n\nCordialement,\nL'équipe UniPay Congo`,
-        });
-      }
-
-      // Account suspended
-      if (!u.is_active) {
-        templates.push({
-          label: 'Compte suspendu',
-          subject: 'Votre compte UniPay est suspendu',
-          body: `Bonjour ${name},\n\nVotre compte UniPay a été suspendu pour des raisons de sécurité. Pour lever la suspension, veuillez contacter notre équipe de support en répondant à cet email ou via l'application.\n\nCordialement,\nL'équipe UniPay Congo`,
-        });
-      }
-
-      // Generic template — always available
-      templates.push({
-        label: 'Réponse à votre demande',
-        subject: '',
-        body: `Bonjour ${name},\n\n`,
-      });
+      const u = user as WalletUserTemplateData;
+      const templates = buildEmailTemplates('wallet_user', u);
 
       return reply.send({ templates });
     },

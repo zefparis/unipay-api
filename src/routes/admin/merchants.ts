@@ -4,6 +4,8 @@ import bcrypt from 'bcryptjs';
 import { sendAdminDirectEmail } from '../../services/email.js';
 import { env } from '../../config/env.js';
 import { logAdminAction } from '../../lib/admin-action-log.js';
+import { buildEmailTemplates, type MerchantTemplateData } from '../../lib/email-templates.js';
+import { sendTemplateAuto } from '../../lib/email-auto-send.js';
 
 function requireAdmin(isAdmin: boolean): boolean {
   return isAdmin;
@@ -440,7 +442,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         .update({ is_active: false })
         .eq('id', key_id)
         .eq('merchant_id', id)
-        .select('id, key_prefix, is_active')
+        .select('id, key_prefix, label, is_active')
         .maybeSingle();
 
       if (error) return reply.status(500).send({ error: error.message });
@@ -451,6 +453,28 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         '[admin] API key revoked',
       );
       void logAdminAction(fastify.supabase, 'merchant.api_key_revoke', 'merchant', id, { key_id, key_prefix: data.key_prefix }, fastify.log);
+
+      // Auto-send "Révocation de clé API" email (fire-and-forget, non-blocking)
+      // Fetch merchant data for template generation
+      const { data: merchant } = await fastify.supabase
+        .from('merchants')
+        .select('id, name, email, kyc_status, mode, status, company_name, company_rccm, company_idnat, kyc_notes, kyc_submitted_at, kyc_reviewed_at')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (merchant) {
+        const m = merchant as MerchantTemplateData;
+        const revokedLabel = (data as { label?: string }).label ?? data.key_prefix;
+        void sendTemplateAuto('merchant', m, m.email, 'Révocation de clé API', { api_key_label: revokedLabel })
+          .then((res) => {
+            if (res.sent) {
+              fastify.log.info({ merchantId: id, template: res.templateLabel }, '[admin-auto-email] API key revocation email sent');
+            } else {
+              fastify.log.warn({ merchantId: id, template: res.templateLabel, error: res.error }, '[admin-auto-email] API key revocation email NOT sent');
+            }
+          });
+      }
+
       return reply.send({ ok: true, key: data });
     },
   );
@@ -479,7 +503,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       // Verify merchant exists
       const { data: merchant, error: mError } = await fastify.supabase
         .from('merchants')
-        .select('id, email, name')
+        .select('id, name, email, kyc_status, mode, status, company_name, company_rccm, company_idnat, kyc_notes, kyc_submitted_at, kyc_reviewed_at')
         .eq('id', id)
         .maybeSingle();
 
@@ -516,6 +540,17 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         '[admin] API key regenerated',
       );
       void logAdminAction(fastify.supabase, 'merchant.api_key_regenerate', 'merchant', id, { key_prefix: keyPrefix, label: label ?? null }, fastify.log);
+
+      // Auto-send "Régénération de clé API" email (fire-and-forget, non-blocking)
+      const m = merchant as MerchantTemplateData;
+      void sendTemplateAuto('merchant', m, m.email, 'Régénération de clé API', { api_key_label: label })
+        .then((res) => {
+          if (res.sent) {
+            fastify.log.info({ merchantId: id, template: res.templateLabel }, '[admin-auto-email] API key regeneration email sent');
+          } else {
+            fastify.log.warn({ merchantId: id, template: res.templateLabel, error: res.error }, '[admin-auto-email] API key regeneration email NOT sent');
+          }
+        });
 
       return reply.send({
         ok: true,
@@ -581,13 +616,25 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
           mode:            'live',
         })
         .eq('id', id)
-        .select('id, email, kyc_status, mode')
+        .select('id, name, email, kyc_status, mode, status, company_name, company_rccm, company_idnat, kyc_notes, kyc_submitted_at, kyc_reviewed_at')
         .maybeSingle();
 
       if (error) return reply.status(500).send({ error: error.message });
       if (!data) return reply.status(404).send({ error: 'Merchant not found' });
       fastify.log.info({ merchantId: id }, '[admin] KYC approved, mode set to live');
       void logAdminAction(fastify.supabase, 'merchant.kyc_approve', 'merchant', id, { previous_mode: 'sandbox', new_mode: 'live' }, fastify.log);
+
+      // Auto-send "KYC approuvé" email (fire-and-forget, non-blocking)
+      const m = data as MerchantTemplateData;
+      void sendTemplateAuto('merchant', m, m.email, 'KYC approuvé')
+        .then((res) => {
+          if (res.sent) {
+            fastify.log.info({ merchantId: id, template: res.templateLabel }, '[admin-auto-email] KYC approved email sent');
+          } else {
+            fastify.log.warn({ merchantId: id, template: res.templateLabel, error: res.error }, '[admin-auto-email] KYC approved email NOT sent');
+          }
+        });
+
       return reply.send({ ok: true, merchant: data });
     },
   );
@@ -671,7 +718,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         .from('merchants')
         .update({ status: 'active' })
         .eq('id', id)
-        .select('id, name, email, status')
+        .select('id, name, email, kyc_status, mode, status, company_name, company_rccm, company_idnat, kyc_notes, kyc_submitted_at, kyc_reviewed_at')
         .maybeSingle();
 
       if (error) return reply.status(500).send({ error: error.message });
@@ -682,6 +729,18 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         '[admin] Merchant reactivated',
       );
       void logAdminAction(fastify.supabase, 'merchant.reactivate', 'merchant', id, {}, fastify.log);
+
+      // Auto-send "Compte réactivé" email (fire-and-forget, non-blocking)
+      const m = data as MerchantTemplateData;
+      void sendTemplateAuto('merchant', m, m.email, 'Compte réactivé')
+        .then((res) => {
+          if (res.sent) {
+            fastify.log.info({ merchantId: id, template: res.templateLabel }, '[admin-auto-email] Reactivation email sent');
+          } else {
+            fastify.log.warn({ merchantId: id, template: res.templateLabel, error: res.error }, '[admin-auto-email] Reactivation email NOT sent');
+          }
+        });
+
       return reply.send({ ok: true, merchant: data });
     },
   );
@@ -698,7 +757,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data: merchant, error } = await fastify.supabase
         .from('merchants')
-        .select('name, email, kyc_status, mode')
+        .select('name, email, kyc_status, mode, status, company_name, company_rccm, company_idnat, kyc_notes, kyc_submitted_at, kyc_reviewed_at')
         .eq('id', id)
         .maybeSingle();
 
@@ -706,41 +765,8 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(404).send({ error: 'Merchant not found' });
       }
 
-      const m = merchant as { name: string; email: string; kyc_status: string; mode: string };
-      const name = m.name ?? m.email;
-
-      const templates: Array<{ label: string; subject: string; body: string }> = [];
-
-      if (m.kyc_status === 'pending') {
-        templates.push({
-          label: 'Relance KYC',
-          subject: 'Action requise : finalisation de votre KYC UniPay Congo',
-          body: `Bonjour ${name},\n\nNous avons constaté que votre dossier KYC n'a pas encore été soumis. Sans KYC validé, votre compte reste en mode sandbox et vous ne pouvez pas traiter de paiements réels.\n\nPour soumettre votre dossier, rendez-vous dans votre tableau de bord → section KYC. Vous aurez besoin de :\n  - Votre pièce d'identité (IDNat ou passeport)\n  - Votre registre de commerce (RCCM)\n  - La raison sociale de votre entreprise\n\nUne fois le KYC approuvé, votre compte passera automatiquement en mode live.\n\nCordialement,\nL'équipe UniPay Congo`,
-        });
-      }
-
-      if (m.kyc_status === 'submitted') {
-        templates.push({
-          label: 'KYC en cours de revue',
-          subject: 'Votre dossier KYC est en cours de revue',
-          body: `Bonjour ${name},\n\nNous accusons réception de votre dossier KYC. Notre équipe est actuellement en train de l'examiner. Vous recevrez une notification dès que la revue sera terminée.\n\nCe processus prend généralement 24 à 48 heures ouvrées.\n\nCordialement,\nL'équipe UniPay Congo`,
-        });
-      }
-
-      if (m.kyc_status === 'approved' && m.mode === 'sandbox') {
-        templates.push({
-          label: 'Passage en mode live',
-          subject: 'Votre KYC est approuvé — passez en mode live',
-          body: `Bonjour ${name},\n\nBonne nouvelle : votre dossier KYC a été approuvé. Votre compte est actuellement en mode sandbox. Vous pouvez désormais passer en mode live pour traiter des paiements réels.\n\nPour activer le mode live, rendez-vous dans votre tableau de bord → Paramètres, ou contactez-nous si vous avez besoin d'assistance.\n\nCordialement,\nL'équipe UniPay Congo`,
-        });
-      }
-
-      // Generic template — always available
-      templates.push({
-        label: 'Réponse à votre demande',
-        subject: '',
-        body: `Bonjour ${name},\n\n`,
-      });
+      const m = merchant as MerchantTemplateData;
+      const templates = buildEmailTemplates('merchant', m);
 
       return reply.send({ templates });
     },
