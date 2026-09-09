@@ -252,6 +252,18 @@ export async function getTransactionStatus(avadaTransactionId: string): Promise<
   return (data['status'] as AvadaStatus) ?? 'pending';
 }
 
+// Temporary diagnostic: returns the RAW Unipesa /status response (not just the parsed status)
+// Used by the /debug/unipesa-status endpoint to verify transaction state via Fixie.
+export async function getTransactionStatusRaw(orderId: string): Promise<Record<string, unknown>> {
+  const { publicId, merchantId, secretKey } = requireUnipesaEnv();
+  const payload: Record<string, unknown> = {
+    merchant_id: merchantId,
+    order_id:    orderId,
+  };
+  payload['signature'] = calculateSignature(payload, secretKey);
+  return unipesaPost(publicId, '/status', payload);
+}
+
 export async function getBalance(): Promise<UnipesaBalance> {
   const { publicId, merchantId, secretKey } = requireUnipesaEnv();
   const payload: Record<string, unknown> = {
