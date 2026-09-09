@@ -23,6 +23,7 @@ export interface EmailTemplate {
 export interface MerchantTemplateData {
   name: string;
   email: string;
+  phone: string | null;
   kyc_status: string;          // 'pending' | 'submitted' | 'approved' | 'rejected'
   mode: string;                // 'sandbox' | 'live'
   status: string;              // 'active' | 'suspended'
@@ -72,10 +73,17 @@ function buildMerchantTemplates(
   const templates: EmailTemplate[] = [];
 
   // A — Complément KYC ciblé (pending + identifiable missing fields)
+  // Checks ALL KYC-relevant fields, not just RCCM/ID Nat:
+  //   - company_name  : raison sociale (required in KYC submission form)
+  //   - company_rccm  : registre de commerce
+  //   - company_idnat : ID national
+  //   - phone         : numéro de téléphone de contact
   if (m.kyc_status === 'pending') {
     const missing: string[] = [];
-    if (!m.company_rccm) missing.push('RCCM (Registre de Commerce)');
+    if (!m.company_name)  missing.push('Raison sociale de votre entreprise');
+    if (!m.company_rccm)  missing.push('RCCM (Registre de Commerce)');
     if (!m.company_idnat) missing.push('ID National');
+    if (!m.phone)         missing.push('Numéro de téléphone de contact');
 
     if (missing.length > 0) {
       const missingFields = missing.join(' et ');

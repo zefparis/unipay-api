@@ -458,7 +458,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       // Fetch merchant data for template generation
       const { data: merchant } = await fastify.supabase
         .from('merchants')
-        .select('id, name, email, kyc_status, mode, status, company_name, company_rccm, company_idnat, kyc_notes, kyc_submitted_at, kyc_reviewed_at')
+        .select('id, name, email, phone, kyc_status, mode, status, company_name, company_rccm, company_idnat, kyc_notes, kyc_submitted_at, kyc_reviewed_at')
         .eq('id', id)
         .maybeSingle();
 
@@ -503,7 +503,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       // Verify merchant exists
       const { data: merchant, error: mError } = await fastify.supabase
         .from('merchants')
-        .select('id, name, email, kyc_status, mode, status, company_name, company_rccm, company_idnat, kyc_notes, kyc_submitted_at, kyc_reviewed_at')
+        .select('id, name, email, phone, kyc_status, mode, status, company_name, company_rccm, company_idnat, kyc_notes, kyc_submitted_at, kyc_reviewed_at')
         .eq('id', id)
         .maybeSingle();
 
@@ -616,7 +616,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
           mode:            'live',
         })
         .eq('id', id)
-        .select('id, name, email, kyc_status, mode, status, company_name, company_rccm, company_idnat, kyc_notes, kyc_submitted_at, kyc_reviewed_at')
+        .select('id, name, email, phone, kyc_status, mode, status, company_name, company_rccm, company_idnat, kyc_notes, kyc_submitted_at, kyc_reviewed_at')
         .maybeSingle();
 
       if (error) return reply.status(500).send({ error: error.message });
@@ -718,7 +718,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         .from('merchants')
         .update({ status: 'active' })
         .eq('id', id)
-        .select('id, name, email, kyc_status, mode, status, company_name, company_rccm, company_idnat, kyc_notes, kyc_submitted_at, kyc_reviewed_at')
+        .select('id, name, email, phone, kyc_status, mode, status, company_name, company_rccm, company_idnat, kyc_notes, kyc_submitted_at, kyc_reviewed_at')
         .maybeSingle();
 
       if (error) return reply.status(500).send({ error: error.message });
@@ -757,7 +757,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data: merchant, error } = await fastify.supabase
         .from('merchants')
-        .select('name, email, kyc_status, mode, status, company_name, company_rccm, company_idnat, kyc_notes, kyc_submitted_at, kyc_reviewed_at')
+        .select('name, email, phone, kyc_status, mode, status, company_name, company_rccm, company_idnat, kyc_notes, kyc_submitted_at, kyc_reviewed_at')
         .eq('id', id)
         .maybeSingle();
 

@@ -15,6 +15,7 @@ import {
 const MERCHANT_PENDING_MISSING: MerchantTemplateData = {
   name: 'Lotika Forex',
   email: 'lotika@example.com',
+  phone: '+243880000100',
   kyc_status: 'pending',
   mode: 'sandbox',
   status: 'active',
@@ -29,6 +30,7 @@ const MERCHANT_PENDING_MISSING: MerchantTemplateData = {
 const MERCHANT_PENDING_COMPLETE: MerchantTemplateData = {
   name: 'Completo SARL',
   email: 'completo@example.com',
+  phone: '+243880000101',
   kyc_status: 'pending',
   mode: 'sandbox',
   status: 'active',
@@ -43,6 +45,7 @@ const MERCHANT_PENDING_COMPLETE: MerchantTemplateData = {
 const MERCHANT_PENDING_RCCM_ONLY: MerchantTemplateData = {
   name: 'Partial SARL',
   email: 'partial@example.com',
+  phone: '+243880000102',
   kyc_status: 'pending',
   mode: 'sandbox',
   status: 'active',
@@ -54,9 +57,58 @@ const MERCHANT_PENDING_RCCM_ONLY: MerchantTemplateData = {
   kyc_reviewed_at: null,
 };
 
+// Only phone missing (all KYC doc fields present but no contact phone)
+const MERCHANT_PENDING_PHONE_MISSING: MerchantTemplateData = {
+  name: 'NoPhone SARL',
+  email: 'nophone@example.com',
+  phone: null,              // ← only phone missing
+  kyc_status: 'pending',
+  mode: 'sandbox',
+  status: 'active',
+  company_name: 'NoPhone SARL',
+  company_rccm: 'CD/KIN/2024/999',
+  company_idnat: 'ID-555666',
+  kyc_notes: null,
+  kyc_submitted_at: null,
+  kyc_reviewed_at: null,
+};
+
+// Only company_name missing (rare but possible — registered before KYC fill)
+const MERCHANT_PENDING_NAME_MISSING: MerchantTemplateData = {
+  name: 'NoCoName',
+  email: 'noconame@example.com',
+  phone: '+243880000103',
+  kyc_status: 'pending',
+  mode: 'sandbox',
+  status: 'active',
+  company_name: null,        // ← only company_name missing
+  company_rccm: 'CD/KIN/2024/888',
+  company_idnat: 'ID-777888',
+  kyc_notes: null,
+  kyc_submitted_at: null,
+  kyc_reviewed_at: null,
+};
+
+// Everything missing (fresh registration, never submitted KYC)
+const MERCHANT_PENDING_ALL_MISSING: MerchantTemplateData = {
+  name: 'Fresh Merchant',
+  email: 'fresh@example.com',
+  phone: null,
+  kyc_status: 'pending',
+  mode: 'sandbox',
+  status: 'active',
+  company_name: null,
+  company_rccm: null,
+  company_idnat: null,
+  kyc_notes: null,
+  kyc_submitted_at: null,
+  kyc_reviewed_at: null,
+};
+
 const MERCHANT_REJECTED: MerchantTemplateData = {
   name: 'Rejected Corp',
   email: 'rejected@example.com',
+  phone: '+243880000104',
   kyc_status: 'rejected',
   mode: 'sandbox',
   status: 'active',
@@ -71,6 +123,7 @@ const MERCHANT_REJECTED: MerchantTemplateData = {
 const MERCHANT_APPROVED_LIVE: MerchantTemplateData = {
   name: 'Approved Live',
   email: 'approved@example.com',
+  phone: '+243880000105',
   kyc_status: 'approved',
   mode: 'live',
   status: 'active',
@@ -121,16 +174,18 @@ const WALLET_USER_BLOCKED: WalletUserTemplateData = {
 
 describe('buildEmailTemplates — merchant', () => {
   describe('A — Complément KYC ciblé', () => {
-    it('shows "Complément KYC ciblé" when pending + both RCCM and ID Nat missing', () => {
+    it('lists RCCM and ID National when both missing (phone + company_name present)', () => {
       const templates = buildEmailTemplates('merchant', MERCHANT_PENDING_MISSING);
       const tpl = findTemplateByLabel(templates, 'Complément KYC ciblé');
       assert.ok(tpl, 'targeted template should exist');
       assert.ok(tpl.body.includes('RCCM'), 'mentions RCCM');
       assert.ok(tpl.body.includes('ID National'), 'mentions ID National');
+      assert.ok(!tpl.body.includes('Raison sociale'), 'does not mention company_name (present)');
+      assert.ok(!tpl.body.includes('téléphone'), 'does not mention phone (present)');
       assert.ok(tpl.body.includes('Lotika Forex'), 'uses merchant name');
     });
 
-    it('shows "Complément KYC ciblé" when only ID Nat is missing', () => {
+    it('lists only ID National when RCCM is present but ID Nat is missing', () => {
       const templates = buildEmailTemplates('merchant', MERCHANT_PENDING_RCCM_ONLY);
       const tpl = findTemplateByLabel(templates, 'Complément KYC ciblé');
       assert.ok(tpl, 'targeted template should exist');
@@ -138,11 +193,38 @@ describe('buildEmailTemplates — merchant', () => {
       assert.ok(!tpl.body.includes('RCCM (Registre de Commerce)'), 'does not mention RCCM as missing');
     });
 
-    it('falls back to generic "Relance KYC" when pending but no identifiable missing fields', () => {
+    it('lists only phone when all doc fields are present but phone is missing', () => {
+      const templates = buildEmailTemplates('merchant', MERCHANT_PENDING_PHONE_MISSING);
+      const tpl = findTemplateByLabel(templates, 'Complément KYC ciblé');
+      assert.ok(tpl, 'targeted template should exist');
+      assert.ok(tpl.body.includes('téléphone'), 'mentions phone');
+      assert.ok(!tpl.body.includes('RCCM (Registre de Commerce)'), 'does not mention RCCM (present)');
+      assert.ok(!tpl.body.includes('ID National'), 'does not mention ID National (present)');
+    });
+
+    it('lists only raison sociale when company_name is missing', () => {
+      const templates = buildEmailTemplates('merchant', MERCHANT_PENDING_NAME_MISSING);
+      const tpl = findTemplateByLabel(templates, 'Complément KYC ciblé');
+      assert.ok(tpl, 'targeted template should exist');
+      assert.ok(tpl.body.includes('Raison sociale'), 'mentions company_name');
+      assert.ok(!tpl.body.includes('RCCM (Registre de Commerce)'), 'does not mention RCCM (present)');
+    });
+
+    it('lists ALL four fields when everything is missing (fresh registration)', () => {
+      const templates = buildEmailTemplates('merchant', MERCHANT_PENDING_ALL_MISSING);
+      const tpl = findTemplateByLabel(templates, 'Complément KYC ciblé');
+      assert.ok(tpl, 'targeted template should exist');
+      assert.ok(tpl.body.includes('Raison sociale'), 'mentions company_name');
+      assert.ok(tpl.body.includes('RCCM'), 'mentions RCCM');
+      assert.ok(tpl.body.includes('ID National'), 'mentions ID National');
+      assert.ok(tpl.body.includes('téléphone'), 'mentions phone');
+    });
+
+    it('falls back to generic "Relance KYC" when pending but no fields are missing', () => {
       const templates = buildEmailTemplates('merchant', MERCHANT_PENDING_COMPLETE);
       const targeted = findTemplateByLabel(templates, 'Complément KYC ciblé');
       const generic = findTemplateByLabel(templates, 'Relance KYC');
-      assert.ok(!targeted, 'targeted template should NOT exist when fields are complete');
+      assert.ok(!targeted, 'targeted template should NOT exist when all fields are complete');
       assert.ok(generic, 'generic relance should exist as fallback');
     });
   });
