@@ -24,7 +24,7 @@ function isSkipFixieCheck(): boolean {
   return v === '1' || v === 'true';
 }
 
-export const fetchWithProxy: typeof fetch = proxyAgent
+const fetchWithProxy: typeof fetch = proxyAgent
   ? ((url: any, opts: any) =>
       undiciFetch(url, { ...(opts ?? {}), dispatcher: proxyAgent }) as any)
   : ((url: any, opts: any) => {

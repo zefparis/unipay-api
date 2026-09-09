@@ -98,7 +98,7 @@ function isSkipFixieCheck(): boolean {
   return v === '1' || v === 'true';
 }
 
-export function getProxyAgent(): ProxyAgent | undefined {
+function getProxyAgent(): ProxyAgent | undefined {
   if (!env.FIXIE_URL) {
     // Hard block: no payment may leave without a Fixie proxy unless an
     // explicit, deliberate bypass flag is set. This check is independent

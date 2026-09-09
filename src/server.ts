@@ -144,40 +144,6 @@ export async function buildServer() {
     }),
   );
 
-  // ── TEMPORARY diagnostic: verify Fixie egress IP ────────────────────────
-  // Reuses the EXACT same proxy mechanism as avada.ts (getProxyAgent) and
-  // unipesa.ts (fetchWithProxy) so the test is representative of the real
-  // payment path. Protected by ADMIN_SECRET. Remove after verification.
-  server.get('/debug/egress-ip', async (request, reply) => {
-    const provided = (request.headers['x-admin-secret'] as string | undefined) ?? '';
-    if (!env.ADMIN_SECRET || provided !== env.ADMIN_SECRET) {
-      return reply.status(403).send({ error: 'admin secret required' });
-    }
-    try {
-      // Import the proxy helpers directly from the payment modules
-      const { getProxyAgent } = await import('./services/avada');
-      const { fetchWithProxy } = await import('./lib/unipesa');
-      // Test 1: via avada.ts proxy path
-      const dispatcher = getProxyAgent();
-      const avadaRes = await (dispatcher
-        ? import('undici').then((u) => u.fetch('https://api.ipify.org?format=json', { dispatcher }))
-        : Promise.resolve(fetch('https://api.ipify.org?format=json')));
-      const avadaIp = await (await avadaRes).json();
-      // Test 2: via unipesa.ts proxy path
-      const unipesaRes = await fetchWithProxy('https://api.ipify.org?format=json', {});
-      const unipesaIp = await unipesaRes.json();
-      return {
-        fixie_url_set: !!env.FIXIE_URL,
-        skip_flag_set: env.UNIPESA_SKIP_FIXIE_CHECK === '1' || env.UNIPESA_SKIP_FIXIE_CHECK === 'true',
-        avada_path_ip: avadaIp.ip,
-        unipesa_path_ip: unipesaIp.ip,
-        expected_fixie_ips: ['54.195.3.54', '54.217.142.99'],
-      };
-    } catch (e) {
-      return reply.status(500).send({ error: e instanceof Error ? e.message : String(e) });
-    }
-  });
-
   // Versioned routes
   await server.register(
     async (v1) => {
