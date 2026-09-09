@@ -39,6 +39,20 @@ describe('provider callback proof', () => {
     assert.equal(validateProviderCallbackProof({ ...validCallback, currency: 'USD' }, transaction).valid, false);
   });
 
+  it('accepts a callback where phone lacks the country code (real Unipesa format)', () => {
+    // Unipesa sends customer_id as "970967029" (no +243 prefix);
+    // DB stores "+243970967029". These must match.
+    const callback = { ...validCallback, phone: '970967029' };
+    const tx = { ...transaction, phone: '+243970967029' };
+    assert.deepEqual(validateProviderCallbackProof(callback, tx), { valid: true });
+  });
+
+  it('rejects a genuinely different phone even with country-code normalization', () => {
+    const callback = { ...validCallback, phone: '970967029' };
+    const tx = { ...transaction, phone: '+243811111111' };
+    assert.equal(validateProviderCallbackProof(callback, tx).valid, false);
+  });
+
   it('requires the route to reject an absent signature unconditionally', () => {
     const source = fs.readFileSync(path.resolve(process.cwd(), 'src/routes/payment/callback.ts'), 'utf8');
     assert.match(source, /if \(!request\.body\?\.signature \|\| !verifyCallbackSignature/);

@@ -19,7 +19,20 @@ export type ProviderProofResult =
   | { valid: false; reason: 'REFERENCE_MISMATCH' | 'AMOUNT_MISMATCH' | 'PHONE_MISMATCH' | 'OPERATOR_MISMATCH' | 'CURRENCY_MISMATCH' };
 
 function normalizePhone(value: string): string {
-  return value.replace(/[\s-]/g, '');
+  // Strip everything except digits
+  let digits = value.replace(/\D/g, '');
+  // DRC country code is 243. Unipesa callbacks send the local 9-digit
+  // number (e.g. "970967029") while the DB stores E.164 ("+243970967029").
+  // Normalize both to the 9-digit local number by stripping a leading
+  // "243" when the remaining digits form a valid DRC local number (9 digits
+  // starting with 8 or 9).
+  if (digits.length === 12 && digits.startsWith('243')) {
+    const local = digits.slice(3);
+    if (local.length === 9 && /^[89]/.test(local)) {
+      digits = local;
+    }
+  }
+  return digits;
 }
 
 export function validateProviderCallbackProof(
