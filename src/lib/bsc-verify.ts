@@ -21,7 +21,7 @@ export const BSC_TOKEN_CONTRACTS: Record<string, string> = {
   USDC: '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d',
 };
 
-/* ── Both tokens have 18 decimals on BSC (Binance-Peg wrappers) ─────── */
+/* ── Both tokens have 18 decimals on BSC (BEP-20 wrappers) ─────────── */
 export const BSC_TOKEN_DECIMALS: Record<string, number> = {
   USDT: 18,
   USDC: 18,

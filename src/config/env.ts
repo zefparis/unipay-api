@@ -118,12 +118,6 @@ const envSchema = z.object({
   VAPID_PRIVATE_KEY: z.string().min(1).optional(),
   VAPID_SUBJECT:     z.string().default('mailto:support@unipaycongo.com'),
 
-  // Binance — USDT crypto withdrawals + admin management
-  BINANCE_MAIN_API_KEY:          z.string().min(1).optional(),
-  BINANCE_MAIN_SECRET_KEY:       z.string().min(1).optional(),
-  BINANCE_SUBACCOUNT_API_KEY:    z.string().min(1).optional(),
-  BINANCE_SUBACCOUNT_SECRET_KEY: z.string().min(1).optional(),
-
   // BSC hot wallet — direct USDT on-chain withdrawals
   HOT_WALLET_USDT_PRIVATE_KEY: z.preprocess(
     (v) => (typeof v === 'string' && /^0x[0-9a-fA-F]{64}$/.test(v) ? v : undefined),
@@ -134,7 +128,7 @@ const envSchema = z.object({
     (v) => (typeof v === 'string' && /^0x[0-9a-fA-F]{64}$/.test(v) ? v : undefined),
     z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional(),
   ),
-  BSC_RPC_URL:      z.string().url().default('https://bsc-dataseed.binance.org'),
+  BSC_RPC_URL:      z.string().url().default('https://bsc-rpc.publicnode.com'),
   USDT_BSC_CONTRACT: z.preprocess((v) => (v === '' ? undefined : v), z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional()),
 
   // PayGuard (Hybrid Vector API) — server-to-server API key for KYC enroll/verify

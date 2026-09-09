@@ -1,5 +1,5 @@
 /**
- * USDT crypto withdrawal via Binance.
+ * USDT crypto withdrawal via BSC hot wallet (direct on-chain).
  *
  * POST /v1/wallet/crypto-withdraw
  * GET  /v1/wallet/crypto-withdrawals
@@ -231,7 +231,7 @@ const walletCryptoWithdrawRoute: FastifyPluginAsync = async (fastify) => {
       const { data, error, count } = await fastify.supabase
         .from('withdrawal_requests')
         .select(
-          'id, amount, network, destination_address, fee, status, binance_withdraw_id, tx_hash, failure_reason, created_at, updated_at',
+          'id, amount, network, destination_address, fee, status, tx_hash, failure_reason, created_at, updated_at',
           { count: 'exact' },
         )
         .eq('user_id', payload.wallet_id)
