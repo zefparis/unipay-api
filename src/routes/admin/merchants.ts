@@ -1401,6 +1401,145 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       return reply.send(csvLines.join('\n'));
     },
   );
+
+  /* ── GET /v1/admin/merchants/revenue/daily ──────────────────── */
+  /* Daily evolution of volume collected, UniPay margin, Avada cost, */
+  /* and transaction count over a period. Used by the chart on the */
+  /* revenue page. Aggregation by date is done server-side (GROUP BY */
+  /* date) rather than client-side to avoid shipping raw transactions */
+  /* to the browser on large volumes. */
+  interface DailyRevenueQuery {
+    from?: string;
+    to?: string;
+    merchant_id?: string;
+  }
+
+  fastify.get<{ Querystring: DailyRevenueQuery }>(
+    '/admin/merchants/revenue/daily',
+    {
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            from:        { type: 'string', format: 'date' },
+            to:          { type: 'string', format: 'date' },
+            merchant_id: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required', statusCode: 403 });
+      }
+
+      const now = new Date();
+      const toDate = request.query.to
+        ? new Date(request.query.to + 'T23:59:59.999Z')
+        : new Date(now.toISOString());
+      const fromDate = request.query.from
+        ? new Date(request.query.from + 'T00:00:00.000Z')
+        : new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+      if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
+        return reply.status(400).send({ error: 'Invalid date format', statusCode: 400 });
+      }
+
+      // Fetch successful collect transactions in the period
+      let query = fastify.supabase
+        .from('transactions')
+        .select('amount, currency, created_at')
+        .eq('status', 'success')
+        .eq('direction', 'collect')
+        .not('merchant_id', 'is', null)
+        .gte('created_at', fromDate.toISOString())
+        .lte('created_at', toDate.toISOString())
+        .limit(100000);
+
+      if (request.query.merchant_id) {
+        query = query.eq('merchant_id', request.query.merchant_id);
+      }
+
+      const { data: txs, error } = await query;
+
+      if (error) {
+        fastify.log.error({ err: error }, '[admin/merchants/revenue/daily] query failed');
+        return reply.status(500).send({ error: 'Internal Server Error', statusCode: 500 });
+      }
+
+      // Aggregate by calendar date (UTC, consistent with the main revenue endpoint)
+      const byDate = new Map<string, {
+        date: string;
+        volume_collected: number;
+        net_margin: number;
+        avada_cost: number;
+        transaction_count: number;
+      }>();
+
+      for (const tx of txs ?? []) {
+        const dateStr = (tx.created_at as string).slice(0, 10); // YYYY-MM-DD
+        if (!byDate.has(dateStr)) {
+          byDate.set(dateStr, {
+            date: dateStr,
+            volume_collected: 0,
+            net_margin: 0,
+            avada_cost: 0,
+            transaction_count: 0,
+          });
+        }
+        const entry = byDate.get(dateStr)!;
+        const amount = Number(tx.amount ?? 0);
+        entry.volume_collected += amount;
+        entry.net_margin += amount * MARGIN_RATE;
+        entry.avada_cost += amount * AVADA_FEE_RATE;
+        entry.transaction_count += 1;
+      }
+
+      // Fill missing dates in the range with zeros so the chart has no gaps
+      const daily: Array<{
+        date: string;
+        volume_collected: number;
+        net_margin: number;
+        avada_cost: number;
+        transaction_count: number;
+      }> = [];
+
+      const cursor = new Date(fromDate.toISOString().slice(0, 10) + 'T00:00:00.000Z');
+      const endStr = toDate.toISOString().slice(0, 10);
+      // Guard against an absurdly large range (e.g. bad custom input)
+      let safety = 0;
+      while (cursor.toISOString().slice(0, 10) <= endStr && safety < 400) {
+        const ds = cursor.toISOString().slice(0, 10);
+        const entry = byDate.get(ds);
+        daily.push(entry ?? {
+          date: ds,
+          volume_collected: 0,
+          net_margin: 0,
+          avada_cost: 0,
+          transaction_count: 0,
+        });
+        cursor.setUTCDate(cursor.getUTCDate() + 1);
+        safety += 1;
+      }
+
+      // Round monetary values
+      const dailyRounded = daily.map((d) => ({
+        date: d.date,
+        volume_collected: Math.round(d.volume_collected * 100) / 100,
+        net_margin: Math.round(d.net_margin * 100) / 100,
+        avada_cost: Math.round(d.avada_cost * 100) / 100,
+        transaction_count: d.transaction_count,
+      }));
+
+      return reply.send({
+        period: {
+          from: fromDate.toISOString(),
+          to: toDate.toISOString(),
+        },
+        daily: dailyRounded,
+      });
+    },
+  );
 };
 
 export default adminMerchantsRoute;
