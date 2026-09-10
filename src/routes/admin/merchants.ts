@@ -317,10 +317,16 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       const limit = request.query.limit ?? 50;
       const offset = (page - 1) * limit;
 
+      // Fetch transactions without the PostgREST nested select — the FK
+      // from transactions.merchant_id may point to operators(id) instead
+      // of merchants(id) depending on which migration was applied first
+      // (see 20260719000000_fix_transactions_merchant_id_type.sql). Fetching
+      // merchant names separately is more robust and mirrors the pattern
+      // used by the /admin/merchants/revenue endpoint.
       let q = fastify.supabase
         .from('transactions')
         .select(
-          'id, merchant_id, direction, operator, phone, amount, fee, net_amount, currency, status, reference, avada_transaction_id, created_at, updated_at, merchants(name, email)',
+          'id, merchant_id, direction, operator, phone, amount, fee, net_amount, currency, status, reference, avada_transaction_id, created_at, updated_at',
           { count: 'exact' },
         )
         .not('merchant_id', 'is', null)
@@ -337,8 +343,32 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       const { data, error, count } = await q;
       if (error) return reply.status(500).send({ error: error.message });
 
+      // Fetch merchant names separately and join
+      const txs = (data ?? []) as Array<{ merchant_id: string }>;
+      const merchantIds = [...new Set(txs.map((t) => t.merchant_id))];
+      const merchantMap = new Map<string, { name: string; email: string }>();
+
+      if (merchantIds.length > 0) {
+        const { data: merchants } = await fastify.supabase
+          .from('merchants')
+          .select('id, name, email')
+          .in('id', merchantIds);
+
+        for (const m of (merchants ?? []) as Array<{ id: string; name: string; email: string }>) {
+          merchantMap.set(m.id, { name: m.name, email: m.email });
+        }
+      }
+
+      // Attach merchant info in the format the frontend expects (merchants array)
+      const dataWithMerchants = txs.map((t) => ({
+        ...t,
+        merchants: merchantMap.has(t.merchant_id)
+          ? [merchantMap.get(t.merchant_id)!]
+          : null,
+      }));
+
       return reply.send({
-        data: data ?? [],
+        data: dataWithMerchants,
         pagination: {
           page,
           limit,
@@ -375,7 +405,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       let q = fastify.supabase
         .from('transactions')
         .select(
-          'id, merchant_id, direction, operator, phone, amount, fee, net_amount, currency, status, reference, created_at, merchants(name, email)',
+          'id, merchant_id, direction, operator, phone, amount, fee, net_amount, currency, status, reference, created_at',
         )
         .not('merchant_id', 'is', null)
         .order('created_at', { ascending: false })
@@ -391,17 +421,34 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       const { data, error } = await q;
       if (error) return reply.status(500).send({ error: error.message });
 
+      // Fetch merchant names separately (same fix as the list endpoint)
+      const txs = (data ?? []) as Array<{ merchant_id: string }>;
+      const merchantIds = [...new Set(txs.map((t) => t.merchant_id))];
+      const merchantMap = new Map<string, { name: string; email: string }>();
+
+      if (merchantIds.length > 0) {
+        const { data: merchants } = await fastify.supabase
+          .from('merchants')
+          .select('id, name, email')
+          .in('id', merchantIds);
+
+        for (const m of (merchants ?? []) as Array<{ id: string; name: string; email: string }>) {
+          merchantMap.set(m.id, { name: m.name, email: m.email });
+        }
+      }
+
       const header = 'date,marchand,email,type,operateur,telephone,montant,frais,net,devise,statut,reference\n';
-      const csv = (data ?? [])
+      const csv = txs
         .map((t) => {
           const tx = t as {
-            created_at: string; merchants: { name: string; email: string }[] | null;
+            created_at: string; merchant_id: string;
             direction: string; operator: string; phone: string; amount: string | number;
             fee: string | number; net_amount: string | number; currency: string;
             status: string; reference: string | null;
           };
-          const mName = tx.merchants?.[0]?.name ?? '';
-          const mEmail = tx.merchants?.[0]?.email ?? '';
+          const m = merchantMap.get(tx.merchant_id);
+          const mName = m?.name ?? '';
+          const mEmail = m?.email ?? '';
           return [
             tx.created_at, mName, mEmail, tx.direction, tx.operator, tx.phone,
             tx.amount, tx.fee, tx.net_amount, tx.currency, tx.status, tx.reference ?? '',
