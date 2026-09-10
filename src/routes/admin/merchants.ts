@@ -258,10 +258,10 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
 
       const { id } = request.params;
 
-      const [merchantRes, keysRes, txRes] = await Promise.all([
+      const [merchantRes, keysRes, txRes, ledgerRes, settlementRes] = await Promise.all([
         fastify.supabase
           .from('merchants')
-          .select('id, name, email, phone, country, mode, kyc_status, status, company_name, company_rccm, company_idnat, kyc_submitted_at, kyc_notes, kyc_reviewed_at, created_at, updated_at')
+          .select('id, name, email, phone, country, mode, kyc_status, status, company_name, company_rccm, company_idnat, kyc_submitted_at, kyc_notes, kyc_reviewed_at, created_at, updated_at, settlement_phone')
           .eq('id', id)
           .maybeSingle(),
         fastify.supabase
@@ -275,15 +275,64 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
           .eq('merchant_id', id)
           .order('created_at', { ascending: false })
           .limit(20),
+        // Ledger entries for balance computation (same logic as
+        // GET /merchant/settlement/balance but admin-side, no auth)
+        fastify.supabase
+          .from('merchant_ledger_entries')
+          .select('type, amount, currency')
+          .eq('merchant_id', id),
+        // Settlement requests history (most recent 20)
+        fastify.supabase
+          .from('merchant_settlement_requests')
+          .select('id, amount, currency, phone, status, provider_ref, reject_reason, created_at, updated_at')
+          .eq('merchant_id', id)
+          .order('created_at', { ascending: false })
+          .limit(20),
       ]);
 
       if (merchantRes.error) return reply.status(500).send({ error: merchantRes.error.message });
       if (!merchantRes.data) return reply.status(404).send({ error: 'Merchant not found' });
 
+      // Compute per-currency balance from ledger entries
+      // (mirrors GET /merchant/settlement/balance logic)
+      const byCurrency: Record<string, { credits: number; settlements: number }> = {};
+      for (const e of ledgerRes.data ?? []) {
+        const cur = (e as { currency: string }).currency ?? 'CDF';
+        if (!byCurrency[cur]) byCurrency[cur] = { credits: 0, settlements: 0 };
+        if ((e as { type: string }).type === 'credit') {
+          byCurrency[cur].credits += Number((e as { amount: number }).amount);
+        } else {
+          byCurrency[cur].settlements += Number((e as { amount: number }).amount);
+        }
+      }
+
+      // Always show CDF and USD even at 0
+      for (const cur of ['CDF', 'USD']) {
+        if (!byCurrency[cur]) byCurrency[cur] = { credits: 0, settlements: 0 };
+      }
+
+      const currencyOrder = ['CDF', 'USD', 'USDT'];
+      const allCurrencies = [
+        ...currencyOrder.filter((c) => byCurrency[c]),
+        ...Object.keys(byCurrency).filter((c) => !currencyOrder.includes(c)).sort(),
+      ];
+
+      const balances = allCurrencies.map((cur) => {
+        const v = byCurrency[cur];
+        return {
+          currency: cur,
+          balance: Math.round((v.credits - v.settlements) * 100) / 100,
+          total_credits: Math.round(v.credits * 100) / 100,
+          total_settlements: Math.round(v.settlements * 100) / 100,
+        };
+      });
+
       return reply.send({
         merchant: merchantRes.data,
         api_keys: keysRes.data ?? [],
         transactions: txRes.data ?? [],
+        balances,
+        settlement_requests: settlementRes.data ?? [],
       });
     },
   );
