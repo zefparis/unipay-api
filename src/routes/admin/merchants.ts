@@ -1203,13 +1203,26 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(403).send({ error: 'Admin access required' });
       }
       const { id } = request.params;
+
+      // If the merchant sent their documents by email (no form submission),
+      // kyc_submitted_at is null — stamp it now so the admin validation is
+      // fully traceable.
+      const { data: before } = await fastify.supabase
+        .from('merchants')
+        .select('kyc_submitted_at')
+        .eq('id', id)
+        .maybeSingle();
+      const submittedAt = (before as { kyc_submitted_at?: string | null } | null)?.kyc_submitted_at;
+      const nowIso = new Date().toISOString();
+
       const { data, error } = await fastify.supabase
         .from('merchants')
         .update({
           kyc_status:      'approved',
-          kyc_reviewed_at: new Date().toISOString(),
+          kyc_reviewed_at: nowIso,
           kyc_notes:       null,
           mode:            'live',
+          ...(submittedAt ? {} : { kyc_submitted_at: nowIso }),
         })
         .eq('id', id)
         .select('id, name, email, phone, kyc_status, mode, status, company_name, company_rccm, company_idnat, kyc_notes, kyc_submitted_at, kyc_reviewed_at')
