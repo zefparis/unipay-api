@@ -30,6 +30,7 @@ import merchantPasswordResetRoute from './routes/merchant/password-reset';
 import adminKycRoute from './routes/admin/kyc';
 import adminSettlementRoute from './routes/admin/settlements';
 import adminActionLogRoute from './routes/admin/action-log';
+import statusOperatorsRoute from './routes/status/operators';
 import walletAuthRoute from './routes/wallet/auth';
 import walletBalanceRoute from './routes/wallet/balance';
 import walletDepositRoute from './routes/wallet/deposit';
@@ -143,6 +144,9 @@ export async function buildServer() {
       timestamp: new Date().toISOString(),
     }),
   );
+
+  // Public operator status — no auth (public status page)
+  server.register(statusOperatorsRoute);
 
   // Versioned routes
   await server.register(
