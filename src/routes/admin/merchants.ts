@@ -670,6 +670,62 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
     },
   );
 
+  /* ── PUT /v1/admin/merchants/:id/company-ids ──────────────── */
+  /* Admin-only manual edit of a merchant's RCCM and ID Nat.
+   * Used when a merchant sends their registration documents by email
+   * instead of submitting them through the KYC form. Admin-only — the
+   * merchant self-service PATCH /merchant/profile does NOT expose these
+   * fields, so they cannot be set from the public merchant API. */
+  fastify.put<{ Params: { id: string }; Body: { company_rccm?: string | null; company_idnat?: string | null } }>(
+    '/admin/merchants/:id/company-ids',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+        body: {
+          type: 'object',
+          properties: {
+            company_rccm:  { type: ['string', 'null'], maxLength: 128 },
+            company_idnat: { type: ['string', 'null'], maxLength: 128 },
+          },
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required', statusCode: 403 });
+      }
+      const { id } = request.params;
+      const { company_rccm, company_idnat } = request.body;
+
+      const updates: Record<string, string | null> = {};
+      if (company_rccm !== undefined) updates.company_rccm = company_rccm ? company_rccm.trim() || null : null;
+      if (company_idnat !== undefined) updates.company_idnat = company_idnat ? company_idnat.trim() || null : null;
+
+      if (Object.keys(updates).length === 0) {
+        return reply.status(400).send({ error: 'No fields to update', statusCode: 400 });
+      }
+
+      const { data, error } = await fastify.supabase
+        .from('merchants')
+        .update(updates)
+        .eq('id', id)
+        .select('id, company_rccm, company_idnat')
+        .maybeSingle();
+
+      if (error) return reply.status(500).send({ error: error.message });
+      if (!data) return reply.status(404).send({ error: 'Merchant not found' });
+
+      void logAdminAction(fastify.supabase, 'merchant.company_ids_update', 'merchant', id, updates, fastify.log);
+
+      return reply.send({ ok: true, company_rccm: data.company_rccm, company_idnat: data.company_idnat });
+    },
+  );
+
   /* ── POST /v1/admin/merchants/:id/test-webhook ────────────── */
   /* Send a test POST to the merchant's webhook URL, signed with the
    * merchant's webhook_secret (X-UniPay-Signature header) — exactly
