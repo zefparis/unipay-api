@@ -1,34 +1,9 @@
-import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { verifyCallbackSignature, normalizeCallback } from '../../services/avada';
 import type { AvadaCallbackPayload } from '../../services/avada';
 import { sendWalletDepositEmail } from '../../services/email';
 import { validateProviderCallbackProof } from '../../lib/provider-callback-proof';
-import { sendWebhookWithRetry } from '../../lib/webhook-delivery';
-
-// SSRF guard: only HTTPS to non-private/loopback hosts
-function isSafeWebhookUrl(raw: string): boolean {
-  try {
-    const u = new URL(raw);
-    if (u.protocol !== 'https:') return false;
-    const host = u.hostname;
-    const blocked = [
-      /^localhost$/i,
-      /^127\./,
-      /^0\./,
-      /^10\./,
-      /^172\.(1[6-9]|2\d|3[01])\./,
-      /^192\.168\./,
-      /^169\.254\./,
-      /^::1$/,
-      /^fc00:/i,
-      /^fe80:/i,
-    ];
-    return !blocked.some((re) => re.test(host));
-  } catch {
-    return false;
-  }
-}
+import { notifyMerchantWebhook } from '../../lib/merchant-webhook';
 
 const callbackRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: AvadaCallbackPayload }>(
@@ -189,37 +164,16 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
 
       fastify.log.info({ transactionId: tx.id, avada_transaction_id, status: dbStatus }, 'Transaction updated via Avada callback');
 
-      // Notify merchant webhook — fire and forget, HMAC-signed
-      const { data: merchantWebhook } = await fastify.supabase
-        .from('merchants')
-        .select('webhook_url, webhook_secret')
-        .eq('id', tx.merchant_id)
-        .maybeSingle();
-
-      const webhookUrl = (merchantWebhook as { webhook_url?: string } | null)?.webhook_url;
-      if (webhookUrl && isSafeWebhookUrl(webhookUrl)) {
-        const webhookSecret = (merchantWebhook as { webhook_secret?: string } | null)?.webhook_secret;
-        const payload = JSON.stringify({
-          event: 'payment.status_update',
-          timestamp: new Date().toISOString(),
-          data: {
-            transaction_id: tx.id,
-            avada_transaction_id,
-            reference,
-            status: dbStatus,
-          },
-        });
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (webhookSecret) {
-          const sig = crypto.createHmac('sha256', webhookSecret).update(payload).digest('hex');
-          headers['X-UniPay-Signature'] = `sha256=${sig}`;
-        }
-        // Fire retries in the background — do NOT await, so the callback
-        // response to Avada is not delayed by webhook delivery attempts.
-        sendWebhookWithRetry(webhookUrl, payload, headers, fastify.log).catch((err: unknown) => {
-          fastify.log.error({ err, webhookUrl }, 'Webhook retry loop threw unexpectedly');
-        });
-      }
+      // Notify merchant webhook — fire and forget, HMAC-signed.
+      // Uses the shared notifyMerchantWebhook helper so the payload
+      // shape and signing are identical whether the transaction was
+      // resolved by an inbound callback or by the reconciliation worker.
+      void notifyMerchantWebhook(fastify.supabase, {
+        id: tx.id,
+        merchant_id: tx.merchant_id,
+        reference: tx.reference,
+        avada_transaction_id,
+      }, dbStatus, fastify.log);
 
       return reply.send({ ok: true, idempotent: false });
     },

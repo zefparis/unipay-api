@@ -125,9 +125,23 @@ describe('Unipesa reconciliation — service', () => {
     assert.match(service, /reconcile:\$\{tx\.id\}:\$\{dbStatus\}/);
   });
 
-  it('uses getTransactionStatus from avada.ts (which exempts /status from result.code check)', () => {
+  it('uses getTransactionStatusWithRaw from avada.ts (captures raw diagnostic data)', () => {
     assert.match(service, /from '\.\/avada'/);
-    assert.match(service, /getTransactionStatus/);
+    assert.match(service, /getTransactionStatusWithRaw/);
+  });
+
+  it('notifies the merchant webhook after successful reconciliation', () => {
+    assert.match(service, /from '\.\.\/lib\/merchant-webhook'/);
+    assert.match(service, /notifyMerchantWebhook/);
+    // Only fires when the RPC returned processed: true (not on duplicate/already_terminal)
+    assert.match(service, /if \(tx\.merchant_id\)/);
+  });
+
+  it('captures result.code and provider_result from raw Unipesa /status response', () => {
+    assert.match(service, /rawResponse\['result'\]/);
+    assert.match(service, /rawResponse\['provider_result'\]/);
+    assert.match(service, /reconciledPayload\['result'\]/);
+    assert.match(service, /reconciledPayload\['provider_result'\]/);
   });
 
   it('only resolves terminal statuses (success/failed), skips pending/processing', () => {

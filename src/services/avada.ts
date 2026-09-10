@@ -283,6 +283,25 @@ export async function initiatePayout(
 }
 
 export async function getTransactionStatus(avadaTransactionId: string): Promise<AvadaStatus> {
+  const { status } = await getTransactionStatusWithRaw(avadaTransactionId);
+  return status;
+}
+
+/**
+ * Like getTransactionStatus, but also returns the full raw Unipesa
+ * response so the caller can capture diagnostic metadata (result.code,
+ * provider_result, transaction_id, etc.) for failed transactions.
+ *
+ * The raw response is NOT stored verbatim in the transaction metadata
+ * by the reconciliation worker — only a curated subset is kept to
+ * avoid bloating the metadata column.
+ */
+export interface TransactionStatusResult {
+  status: AvadaStatus;
+  raw: Record<string, unknown>;
+}
+
+export async function getTransactionStatusWithRaw(avadaTransactionId: string): Promise<TransactionStatusResult> {
   const { publicId, merchantId, secretKey } = requireUnipesaEnv();
   const payload: Record<string, unknown> = {
     merchant_id: merchantId,
@@ -296,11 +315,14 @@ export async function getTransactionStatus(avadaTransactionId: string): Promise<
   // -1 (PARENT OPERATION NOT FOUND) as 'failed' so stale transactions
   // that Unipesa no longer knows about can be resolved.
   const rawStatus = data['status'];
+  let status: AvadaStatus;
   if (typeof rawStatus === 'number') {
-    if (rawStatus === -1) return 'failed';
-    return CALLBACK_STATUS_MAP[rawStatus] ?? 'pending';
+    if (rawStatus === -1) status = 'failed';
+    else status = CALLBACK_STATUS_MAP[rawStatus] ?? 'pending';
+  } else {
+    status = (rawStatus as AvadaStatus) ?? 'pending';
   }
-  return (rawStatus as AvadaStatus) ?? 'pending';
+  return { status, raw: data };
 }
 
 export async function getBalance(): Promise<UnipesaBalance> {

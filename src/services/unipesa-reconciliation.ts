@@ -31,7 +31,8 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { getTransactionStatus, type AvadaStatus } from './avada';
+import { getTransactionStatusWithRaw, type AvadaStatus } from './avada';
+import { notifyMerchantWebhook } from '../lib/merchant-webhook';
 
 const WORKER_NAME = 'unipay_unipesa_reconciliation';
 const LOCK_TTL_SECONDS = 120;
@@ -140,8 +141,11 @@ async function reconcileOne(
   // but be defensive — the callback stores avada_transaction_id).
   const statusKey = tx.reference ?? tx.avada_transaction_id ?? tx.id;
   let remoteStatusRaw: AvadaStatus;
+  let rawResponse: Record<string, unknown> = {};
   try {
-    remoteStatusRaw = await getTransactionStatus(statusKey);
+    const statusResult = await getTransactionStatusWithRaw(statusKey);
+    remoteStatusRaw = statusResult.status;
+    rawResponse = statusResult.raw;
   } catch (err) {
     log.warn(
       {
@@ -206,6 +210,30 @@ async function reconcileOne(
   // refund on payout failure). A concurrent inbound callback would
   // fail the UNIQUE insert and get 'duplicate' — no double application.
   const providerEventId = `reconcile:${tx.id}:${dbStatus}`;
+
+  // Build enriched metadata: keep the reconciliation provenance fields
+  // AND capture the raw Unipesa diagnostic data (result.code,
+  // provider_result, transaction_id) so failed transactions can be
+  // diagnosed without re-querying Unipesa.
+  const reconciledPayload: Record<string, unknown> = {
+    reconciled: true,
+    reconciled_by: WORKER_NAME,
+    reconciled_at: new Date().toISOString(),
+    provider_status: remoteStatusRaw,
+  };
+  // Capture diagnostic fields from the raw Unipesa /status response.
+  // These are the same fields seen in real callbacks (e.g.
+  // provider_result.code, provider_result.message, result.code).
+  if (rawResponse['result'] && typeof rawResponse['result'] === 'object') {
+    reconciledPayload['result'] = rawResponse['result'];
+  }
+  if (rawResponse['provider_result'] && typeof rawResponse['provider_result'] === 'object') {
+    reconciledPayload['provider_result'] = rawResponse['provider_result'];
+  }
+  if (rawResponse['transaction_id']) {
+    reconciledPayload['unipesa_transaction_id'] = rawResponse['transaction_id'];
+  }
+
   const { data: callbackResult, error: callbackError } = await supabase.rpc(
     'process_wallet_provider_callback',
     {
@@ -214,12 +242,7 @@ async function reconcileOne(
       p_transaction_id: tx.id,
       p_new_status: dbStatus,
       p_provider_transaction_id: tx.avada_transaction_id ?? tx.reference ?? tx.id,
-      p_payload: {
-        reconciled: true,
-        reconciled_by: WORKER_NAME,
-        reconciled_at: new Date().toISOString(),
-        provider_status: remoteStatusRaw,
-      },
+      p_payload: reconciledPayload,
     },
   );
 
@@ -272,6 +295,21 @@ async function reconcileOne(
     },
     'reconciled transaction',
   );
+
+  // Notify merchant webhook — fire and forget, HMAC-signed. Uses the
+  // same shared helper as payment/callback.ts so the payload shape and
+  // signing are identical regardless of the resolution path. This
+  // ensures merchants are notified of failures detected by
+  // reconciliation (no inbound callback) — previously they had to
+  // poll the API to discover these.
+  if (tx.merchant_id) {
+    void notifyMerchantWebhook(supabase, {
+      id: tx.id,
+      merchant_id: tx.merchant_id,
+      reference: tx.reference,
+      avada_transaction_id: tx.avada_transaction_id,
+    }, dbStatus, log);
+  }
 }
 
 export async function runReconciliationTick(
