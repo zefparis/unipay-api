@@ -180,9 +180,14 @@ describe('operator status — route file structure', () => {
     assert.match(route, /insufficient_data/);
   });
 
-  it('uses provider outage codes 10301 and 10201', () => {
-    assert.match(route, /10301/);
-    assert.match(route, /10201/);
+  it('imports isProviderOutageFailure from shared lib (not duplicated)', () => {
+    assert.match(route, /import.*isProviderOutageFailure.*from.*provider-outage/);
+  });
+
+  it('uses provider outage codes 10301 and 10201 (in shared lib)', () => {
+    const lib = source('src/lib/provider-outage.ts');
+    assert.match(lib, /10301/);
+    assert.match(lib, /10201/);
   });
 });
 

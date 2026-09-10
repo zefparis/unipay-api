@@ -26,6 +26,7 @@
  */
 
 import type { FastifyPluginAsync } from 'fastify';
+import { isProviderOutageFailure } from '../../lib/provider-outage.js';
 
 interface OperatorRow {
   operator: string;
@@ -53,31 +54,6 @@ const OPERATOR_NAMES: Record<string, string> = {
   orange: 'Orange Money',
   afrimoney: 'Afrimoney',
 };
-
-const PROVIDER_OUTAGE_RESULT_CODES = new Set([10301, 10201]);
-
-function isProviderOutageFailure(metadata: Record<string, unknown> | null): boolean {
-  if (!metadata) return false;
-  // Reconciliation metadata: unipesa_result_code
-  const unipesaCode = metadata['unipesa_result_code'];
-  if (typeof unipesaCode === 'number' && PROVIDER_OUTAGE_RESULT_CODES.has(unipesaCode)) {
-    return true;
-  }
-  // Callback metadata: result.code
-  const result = metadata['result'];
-  if (result && typeof result === 'object') {
-    const code = (result as Record<string, unknown>)['code'];
-    if (typeof code === 'number' && PROVIDER_OUTAGE_RESULT_CODES.has(code)) {
-      return true;
-    }
-  }
-  // Reason-based detection (manual reconciliation)
-  const reason = metadata['reason'];
-  if (typeof reason === 'string' && /API unreachable|get token error|provider.*unavailable/i.test(reason)) {
-    return true;
-  }
-  return false;
-}
 
 function computeOperatorStatus(
   totalAttempts: number,

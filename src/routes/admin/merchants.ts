@@ -6,6 +6,10 @@ import { env } from '../../config/env.js';
 import { logAdminAction } from '../../lib/admin-action-log.js';
 import { buildEmailTemplates, type MerchantTemplateData } from '../../lib/email-templates.js';
 import { sendTemplateAuto } from '../../lib/email-auto-send.js';
+import { initiatePayout } from '../../services/avada.js';
+import { normalizePhoneForOperator, isValidDrcPhone } from '../../lib/phone-normalization.js';
+import { markSettlementSuccess, markSettlementFailed } from '../merchant/settlement-rpc-helpers.js';
+import { isProviderOutageFailure } from '../../lib/provider-outage.js';
 
 function requireAdmin(isAdmin: boolean): boolean {
   return isAdmin;
@@ -261,7 +265,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       const [merchantRes, keysRes, txRes, ledgerRes, settlementRes] = await Promise.all([
         fastify.supabase
           .from('merchants')
-          .select('id, name, email, phone, country, mode, kyc_status, status, company_name, company_rccm, company_idnat, kyc_submitted_at, kyc_notes, kyc_reviewed_at, created_at, updated_at, settlement_phone')
+          .select('id, name, email, phone, country, mode, kyc_status, status, company_name, company_rccm, company_idnat, kyc_submitted_at, kyc_notes, kyc_reviewed_at, created_at, updated_at, settlement_phone, callback_url')
           .eq('id', id)
           .maybeSingle(),
         fastify.supabase
@@ -334,6 +338,423 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         balances,
         settlement_requests: settlementRes.data ?? [],
       });
+    },
+  );
+
+  /* ── POST /v1/admin/merchants/:id/settle ────────────────────── */
+  /* Admin-triggered manual settlement. Reuses the same process_merchant_settlement
+   * RPC + initiatePayout flow as the merchant-side /merchant/settlement/request
+   * endpoint, with the same thresholds and validations. */
+  fastify.post<{ Params: { id: string }; Body: { amount?: number; currency?: string; phone?: string; operator?: string } }>(
+    '/admin/merchants/:id/settle',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+        body: {
+          type: 'object',
+          properties: {
+            amount:   { type: 'number', minimum: 0 },
+            currency: { type: 'string', enum: ['CDF', 'USD'] },
+            phone:    { type: 'string', minLength: 8, maxLength: 32 },
+            operator: { type: 'string', enum: ['orange', 'airtel', 'afrimoney'] },
+          },
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required', statusCode: 403 });
+      }
+
+      const { id } = request.params;
+      const settlementCurrency = request.body.currency ?? 'CDF';
+      const operator = (request.body.operator ?? 'orange') as 'orange' | 'airtel' | 'afrimoney';
+      const AUTO_MAX_PER_REQUEST = Number(env.SETTLEMENT_AUTO_MAX_PER_REQUEST);
+      const AUTO_MAX_DAILY = Number(env.SETTLEMENT_AUTO_MAX_DAILY);
+
+      // Fetch merchant
+      const { data: merchant, error: mError } = await fastify.supabase
+        .from('merchants')
+        .select('id, settlement_phone, kyc_status, mode')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (mError) return reply.status(500).send({ error: mError.message });
+      if (!merchant) return reply.status(404).send({ error: 'Merchant not found' });
+
+      // Same validations as merchant-side flow
+      if (merchant.kyc_status !== 'approved') {
+        return reply.status(403).send({ error: 'KYC_REQUIRED', message: 'Le KYC du marchand doit être approuvé.', statusCode: 403 });
+      }
+      if (merchant.mode !== 'live') {
+        return reply.status(403).send({ error: 'LIVE_MODE_REQUIRED', message: 'Le marchand doit être en mode live.', statusCode: 403 });
+      }
+
+      // Use admin-provided phone or fall back to merchant's settlement_phone
+      const phone = request.body.phone ?? merchant.settlement_phone;
+      if (!phone) {
+        return reply.status(400).send({ error: 'SETTLEMENT_PHONE_REQUIRED', message: 'Aucun numéro de règlement configuré.', statusCode: 400 });
+      }
+      if (!isValidDrcPhone(phone)) {
+        return reply.status(400).send({ error: 'INVALID_SETTLEMENT_PHONE', message: 'Le numéro de règlement est invalide.', statusCode: 400 });
+      }
+
+      const requestedAmount = request.body.amount ?? 0;
+      const idempotencyKey = crypto.randomUUID();
+
+      // Call the same atomic RPC as the merchant flow
+      const { data: rpcResult, error: rpcError } = await fastify.supabase.rpc(
+        'process_merchant_settlement',
+        {
+          p_merchant_id: id,
+          p_amount: requestedAmount > 0 ? requestedAmount : null,
+          p_phone: phone,
+          p_idempotency_key: idempotencyKey,
+          p_auto_max_per_request: AUTO_MAX_PER_REQUEST,
+          p_auto_max_daily: AUTO_MAX_DAILY,
+          p_currency: settlementCurrency,
+        },
+      );
+
+      if (rpcError) {
+        const msg = rpcError.message ?? '';
+        if (msg.includes('INSUFFICIENT_BALANCE')) {
+          return reply.status(402).send({ error: 'INSUFFICIENT_BALANCE', message: 'Solde insuffisant pour ce règlement.', statusCode: 402 });
+        }
+        fastify.log.error({ err: rpcError }, '[admin/merchants/:id/settle] RPC failed');
+        return reply.status(500).send({ error: 'Settlement processing failed', statusCode: 500 });
+      }
+
+      const result = rpcResult as {
+        idempotent?: boolean;
+        request_id?: string;
+        amount?: number;
+        status?: string;
+        auto_payout?: boolean;
+        ledger_entry_id?: string;
+        balance_after?: number;
+      };
+
+      if (result.idempotent) {
+        return reply.send({ idempotent: true, request_id: result.request_id });
+      }
+
+      // If auto-payout threshold met, trigger B2C via same path as merchant flow
+      if (result.auto_payout && result.request_id) {
+        try {
+          const normalizedPhone = normalizePhoneForOperator(phone, operator);
+          fastify.log.info(
+            { requestId: result.request_id, merchantId: id, amount: result.amount, phone: normalizedPhone, operator },
+            '[admin/merchants/:id/settle] auto-payout via Unipesa B2C',
+          );
+
+          const payoutRes = await initiatePayout(
+            operator,
+            normalizedPhone,
+            Number(result.amount),
+            `STL-${result.request_id.slice(0, 8).toUpperCase()}`,
+            settlementCurrency,
+          );
+
+          await markSettlementSuccess(fastify.supabase, result.request_id, payoutRes.avada_transaction_id);
+          void logAdminAction(fastify.supabase, 'merchant.settle', 'merchant', id, { request_id: result.request_id, amount: result.amount, currency: settlementCurrency, operator, auto_payout: true }, fastify.log);
+
+          return reply.send({
+            request_id: result.request_id,
+            status: 'success',
+            amount: result.amount,
+            currency: settlementCurrency,
+            provider_ref: payoutRes.avada_transaction_id,
+            balance_after: result.balance_after,
+            auto_payout: true,
+          });
+        } catch (err: any) {
+          fastify.log.error({ err: err?.message, requestId: result.request_id }, '[admin/merchants/:id/settle] auto-payout failed');
+          await markSettlementFailed(fastify.supabase, result.request_id, `Payout failed: ${err?.message ?? 'unknown'}`);
+          return reply.status(502).send({
+            error: 'PAYOUT_FAILED',
+            message: 'Le payout a échoué. Le solde a été recrédité au marchand.',
+            request_id: result.request_id,
+            statusCode: 502,
+          });
+        }
+      }
+
+      // pending_admin_review — admin can approve via /admin/settlements/:id/approve
+      void logAdminAction(fastify.supabase, 'merchant.settle', 'merchant', id, { request_id: result.request_id, amount: result.amount, currency: settlementCurrency, auto_payout: false }, fastify.log);
+
+      return reply.send({
+        request_id: result.request_id,
+        status: 'pending_admin_review',
+        amount: result.amount,
+        currency: settlementCurrency,
+        balance_after: result.balance_after,
+        auto_payout: false,
+      });
+    },
+  );
+
+  /* ── GET /v1/admin/merchants/:id/stats ──────────────────────── */
+  /* Per-merchant success/failure stats with operator breakdown and
+   * provider-outage vs client-error classification. Reuses the same
+   * isProviderOutageFailure logic as /status/operators. */
+  fastify.get<{ Params: { id: string }; Querystring: { window?: '7d' | '30d' } }>(
+    '/admin/merchants/:id/stats',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+        querystring: {
+          type: 'object',
+          properties: {
+            window: { type: 'string', enum: ['7d', '30d'], default: '7d' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required', statusCode: 403 });
+      }
+
+      const { id } = request.params;
+      const windowDays = request.query.window === '30d' ? 30 : 7;
+      const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString();
+
+      const { data, error } = await fastify.supabase
+        .from('transactions')
+        .select('operator, status, created_at, metadata')
+        .eq('merchant_id', id)
+        .in('operator', ['airtel', 'orange', 'afrimoney'])
+        .in('status', ['success', 'failed', 'processing'])
+        .gte('created_at', since);
+
+      if (error) {
+        fastify.log.error({ err: error }, '[admin/merchants/:id/stats] query failed');
+        return reply.status(500).send({ error: 'Internal server error', statusCode: 500 });
+      }
+
+      const rows = (data as Array<{ operator: string; status: string; created_at: string; metadata: Record<string, unknown> | null }>) ?? [];
+
+      // Aggregate per-operator
+      const byOperator: Record<string, {
+        total: number; success: number; failed: number; processing: number;
+        provider_outage: number; client_error: number;
+      }> = {};
+
+      for (const op of ['airtel', 'orange', 'afrimoney']) {
+        byOperator[op] = { total: 0, success: 0, failed: 0, processing: 0, provider_outage: 0, client_error: 0 };
+      }
+
+      for (const row of rows) {
+        const op = byOperator[row.operator];
+        if (!op) continue;
+        if (row.status === 'success') {
+          op.success++;
+        } else if (row.status === 'failed') {
+          op.failed++;
+          if (isProviderOutageFailure(row.metadata)) {
+            op.provider_outage++;
+          } else {
+            op.client_error++;
+          }
+        } else if (row.status === 'processing') {
+          op.processing++;
+        }
+      }
+
+      // Build response with per-operator + totals
+      const operators = ['airtel', 'orange', 'afrimoney'].map((op) => {
+        const v = byOperator[op];
+        const total = v.success + v.failed;
+        return {
+          operator: op,
+          total_attempts: total,
+          success_count: v.success,
+          failed_count: v.failed,
+          processing_count: v.processing,
+          provider_outage_failures: v.provider_outage,
+          client_error_failures: v.client_error,
+          success_rate_pct: total > 0 ? Math.round((v.success / total) * 1000) / 10 : null,
+        };
+      });
+
+      const totals = operators.reduce((acc, o) => ({
+        total_attempts: acc.total_attempts + o.total_attempts,
+        success_count: acc.success_count + o.success_count,
+        failed_count: acc.failed_count + o.failed_count,
+        processing_count: acc.processing_count + o.processing_count,
+        provider_outage_failures: acc.provider_outage_failures + o.provider_outage_failures,
+        client_error_failures: acc.client_error_failures + o.client_error_failures,
+      }), { total_attempts: 0, success_count: 0, failed_count: 0, processing_count: 0, provider_outage_failures: 0, client_error_failures: 0 });
+
+      const totalSuccessRate = totals.total_attempts > 0
+        ? Math.round((totals.success_count / totals.total_attempts) * 1000) / 10
+        : null;
+
+      return reply.send({
+        window: request.query.window ?? '7d',
+        window_days: windowDays,
+        totals: { ...totals, success_rate_pct: totalSuccessRate },
+        operators,
+      });
+    },
+  );
+
+  /* ── PUT /v1/admin/merchants/:id/callback-url ──────────────── */
+  /* Update the merchant's callback URL. */
+  fastify.put<{ Params: { id: string }; Body: { callback_url: string | null } }>(
+    '/admin/merchants/:id/callback-url',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+        body: {
+          type: 'object',
+          required: ['callback_url'],
+          properties: {
+            callback_url: { type: ['string', 'null'] },
+          },
+          additionalProperties: false,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required', statusCode: 403 });
+      }
+      const { id } = request.params;
+      const { callback_url } = request.body;
+
+      // Validate URL if not null/empty
+      if (callback_url) {
+        try {
+          new URL(callback_url);
+        } catch {
+          return reply.status(400).send({ error: 'Invalid callback URL', statusCode: 400 });
+        }
+      }
+
+      const { data, error } = await fastify.supabase
+        .from('merchants')
+        .update({ callback_url: callback_url || null })
+        .eq('id', id)
+        .select('id, callback_url')
+        .maybeSingle();
+
+      if (error) return reply.status(500).send({ error: error.message });
+      if (!data) return reply.status(404).send({ error: 'Merchant not found' });
+
+      void logAdminAction(fastify.supabase, 'merchant.callback_url_update', 'merchant', id, { callback_url }, fastify.log);
+
+      return reply.send({ ok: true, callback_url: data.callback_url });
+    },
+  );
+
+  /* ── POST /v1/admin/merchants/:id/test-callback ────────────── */
+  /* Send a test POST to the merchant's callback URL and return the
+   * HTTP status, response time, and response body. The payload is
+   * clearly marked as a test (is_test: true, order_id prefixed TEST-). */
+  fastify.post<{ Params: { id: string } }>(
+    '/admin/merchants/:id/test-callback',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required', statusCode: 403 });
+      }
+      const { id } = request.params;
+
+      const { data: merchant, error: mError } = await fastify.supabase
+        .from('merchants')
+        .select('callback_url')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (mError) return reply.status(500).send({ error: mError.message });
+      if (!merchant) return reply.status(404).send({ error: 'Merchant not found' });
+
+      const callbackUrl = merchant.callback_url;
+      if (!callbackUrl) {
+        return reply.status(400).send({
+          error: 'NO_CALLBACK_URL',
+          message: 'Aucun callback configuré pour ce marchand.',
+          statusCode: 400,
+        });
+      }
+
+      // Build a clearly-identifiable test payload
+      const testPayload = {
+        is_test: true,
+        order_id: `TEST-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
+        status: 'success',
+        amount: 0,
+        currency: 'CDF',
+        reference: 'TEST-CALLBACK',
+        message: 'Ceci est un test de callback UniPay — aucune transaction réelle.',
+        timestamp: new Date().toISOString(),
+      };
+
+      const startTime = Date.now();
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
+        const res = await fetch(callbackUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Unipay-Test': 'true',
+          },
+          body: JSON.stringify(testPayload),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+
+        const elapsedMs = Date.now() - startTime;
+        const bodyText = await res.text().catch(() => '');
+        // Truncate body to 2000 chars to avoid huge responses
+        const bodyPreview = bodyText.length > 2000 ? bodyText.slice(0, 2000) + '…' : bodyText;
+
+        void logAdminAction(fastify.supabase, 'merchant.test_callback', 'merchant', id, { callback_url: callbackUrl, http_status: res.status, elapsed_ms: elapsedMs }, fastify.log);
+
+        return reply.send({
+          ok: res.ok,
+          http_status: res.status,
+          elapsed_ms: elapsedMs,
+          body: bodyPreview,
+          content_type: res.headers.get('content-type'),
+        });
+      } catch (err: any) {
+        const elapsedMs = Date.now() - startTime;
+        const isTimeout = err?.name === 'AbortError';
+        return reply.status(502).send({
+          error: isTimeout ? 'CALLBACK_TIMEOUT' : 'CALLBACK_UNREACHABLE',
+          message: isTimeout
+            ? 'Le callback n\'a pas répondu dans les 10 secondes.'
+            : `Impossible de joindre le callback: ${err?.message ?? 'unknown error'}`,
+          elapsed_ms: elapsedMs,
+          statusCode: 502,
+        });
+      }
     },
   );
 
