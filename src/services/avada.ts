@@ -136,6 +136,20 @@ async function unipesaPost(publicId: string, path: string, body: Record<string, 
   } catch {
     throw new Error(`Unipesa non-JSON response: ${text}`);
   }
+  // Unipesa returns HTTP 200 even when the provider call fails. The
+  // result.code field is 0 on success and non-zero on failure (e.g.
+  // 10301 = "REQUEST SENDING ERROR | get token error" when the
+  // operator API is unreachable). Without this check, failed
+  // provider calls are silently treated as "processing" and the
+  // transaction gets stuck forever (no callback will ever arrive).
+  const resultCode = json['result'];
+  if (resultCode && typeof resultCode === 'object') {
+    const code = (resultCode as Record<string, unknown>)['code'];
+    const message = (resultCode as Record<string, unknown>)['message'];
+    if (code !== undefined && code !== 0 && code !== '0') {
+      throw new Error(`Unipesa provider error: code=${code} message=${message ?? '(no message)'}`);
+    }
+  }
   return json;
 }
 
@@ -202,7 +216,17 @@ export async function initiateCollection(
     data['trx_id'] ||
     data['id'] ||
     null;
-  return { avada_transaction_id: avadaId ? String(avadaId) : reference };
+  // If Unipesa returned OK (result.code=0) but no transaction_id was
+  // created, the provider rejected the request (e.g. Airtel returning
+  // "An unexpected error occurred" with provider_result.code=-8888).
+  // Without a transaction_id, no callback will ever arrive — the
+  // transaction would be stuck in "processing" forever.
+  if (!avadaId) {
+    const providerResult = data['provider_result'] as Record<string, unknown> | undefined;
+    const providerMsg = providerResult?.['message'] ?? '(no provider message)';
+    throw new Error(`Unipesa provider did not create a transaction: ${providerMsg}`);
+  }
+  return { avada_transaction_id: String(avadaId) };
 }
 
 export async function initiatePayout(
@@ -238,7 +262,14 @@ export async function initiatePayout(
     data['id'] ||
     null;
   console.log('[avada:initiatePayout] resolved avada_id:', avadaId);
-  return { avada_transaction_id: avadaId ? String(avadaId) : reference };
+  // Same guard as initiateCollection: no transaction_id means the
+  // provider rejected the request and no callback will ever arrive.
+  if (!avadaId) {
+    const providerResult = data['provider_result'] as Record<string, unknown> | undefined;
+    const providerMsg = providerResult?.['message'] ?? '(no provider message)';
+    throw new Error(`Unipesa provider did not create a transaction: ${providerMsg}`);
+  }
+  return { avada_transaction_id: String(avadaId) };
 }
 
 export async function getTransactionStatus(avadaTransactionId: string): Promise<AvadaStatus> {
