@@ -290,7 +290,17 @@ export async function getTransactionStatus(avadaTransactionId: string): Promise<
   };
   payload['signature'] = calculateSignature(payload, secretKey);
   const data = await unipesaPost(publicId, '/status', payload);
-  return (data['status'] as AvadaStatus) ?? 'pending';
+  // Unipesa returns numeric status (0=pending, 1=processing, 2=success,
+  // 3=failed, -1=not found). Map to AvadaStatus text so the reconciliation
+  // worker and callback route can compare against string values. Treat
+  // -1 (PARENT OPERATION NOT FOUND) as 'failed' so stale transactions
+  // that Unipesa no longer knows about can be resolved.
+  const rawStatus = data['status'];
+  if (typeof rawStatus === 'number') {
+    if (rawStatus === -1) return 'failed';
+    return CALLBACK_STATUS_MAP[rawStatus] ?? 'pending';
+  }
+  return (rawStatus as AvadaStatus) ?? 'pending';
 }
 
 export async function getBalance(): Promise<UnipesaBalance> {
