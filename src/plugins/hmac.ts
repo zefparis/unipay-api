@@ -13,7 +13,7 @@ declare module 'fastify' {
 }
 
 // Paths that skip API-key validation
-const PUBLIC_PATHS = new Set(['/health', '/v1/payment/callback']);
+const PUBLIC_PATHS = new Set(['/health', '/v1/payment/callback', '/status/operators']);
 
 const hmacPlugin: FastifyPluginAsync = async (fastify) => {
   fastify.addHook('preHandler', async (request, reply) => {
