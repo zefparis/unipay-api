@@ -9,6 +9,7 @@ import { sandboxPayout } from '../../services/avada';
 import type { Channel } from '../../types/payment';
 import { getLimits } from '../../utils/kyc-limits';
 import { isSandboxAllowed } from '../../lib/sandbox-mode';
+import { validatePhoneOperatorMatch } from '../../lib/phone-normalization';
 
 const WALLET_OPERATORS: Channel[] = ['orange', 'airtel', 'afrimoney'];
 
@@ -194,6 +195,31 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
 
       // Call provider (payout to user's mobile money)
       const service = getProviderService(operator);
+
+      // ── Phone-operator match validation ─────────────────────
+      // A B2C to an operator whose network doesn't own the phone number
+      // is rejected by the operator (MSISDN INCORRECT, code 10401).
+      // Detect this BEFORE sending the doomed B2C to save a round-trip
+      // and give the caller a clear, actionable error.
+      const phoneOpCheck = validatePhoneOperatorMatch(normalizedPhone, operator);
+      if (!phoneOpCheck.ok) {
+        fastify.log.warn(
+          { txId, walletId, operator, phone: normalizedPhone, detected: phoneOpCheck.detected },
+          '[wallet/withdraw] phone-operator mismatch — blocking B2C',
+        );
+        // Refund the deducted balance
+        await fastify.supabase.rpc('wallet_credit_cdf', { p_user_id: walletId, p_amount: totalDeducted });
+        await fastify.supabase.from('transactions')
+          .update({ status: 'failed', metadata: { source: 'wallet_withdraw', error: 'OPERATOR_PHONE_MISMATCH', detected_operator: phoneOpCheck.detected } })
+          .eq('id', txId);
+        return reply.status(400).send({
+          error: 'OPERATOR_PHONE_MISMATCH',
+          message: phoneOpCheck.message,
+          detected_operator: phoneOpCheck.detected,
+          statusCode: 400,
+        });
+      }
+
       try {
         const providerRes = await service.initiatePayment({
           transaction_id: txId,
@@ -240,14 +266,19 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
         });
       } catch (err) {
         // Provider failed — refund balance and mark transaction failed
-        fastify.log.error({ err, txId, operator }, 'Wallet withdraw provider error — refunding');
+        const errMsg = (err as Error)?.message ?? 'unknown error';
+        fastify.log.error({ err: errMsg, txId, operator }, 'Wallet withdraw provider error — refunding');
         await fastify.supabase
           .rpc('wallet_credit_cdf', { p_user_id: walletId, p_amount: totalDeducted });
         await fastify.supabase
           .from('transactions')
-          .update({ status: 'failed' })
+          .update({ status: 'failed', metadata: { source: 'wallet_withdraw', error: 'PROVIDER_FAILED', provider_error: errMsg } })
           .eq('id', txId);
-        return reply.status(502).send({ error: 'Provider service unavailable', statusCode: 502 });
+        return reply.status(502).send({
+          error: 'Provider service unavailable',
+          detail: errMsg,
+          statusCode: 502,
+        });
       }
     },
   );

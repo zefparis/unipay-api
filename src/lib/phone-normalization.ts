@@ -93,3 +93,55 @@ export function normalizePhoneForOperator(
 export function isValidDrcPhone(phone: string): boolean {
   return extractLocalDigits(phone) !== null;
 }
+
+/**
+ * DRC mobile operator prefix map (first 2 digits of the 9-digit local number).
+ *
+ * Source: ARPTC numbering plan + cross-referenced with test fixtures.
+ *   81, 82, 85, 90 → Vodacom (Afrimoney)
+ *   84, 88, 89     → Orange
+ *   97, 98, 99     → Airtel
+ */
+const OPERATOR_PREFIXES: Record<string, string[]> = {
+  airtel:   ['97', '98', '99'],
+  orange:   ['84', '88', '89'],
+  afrimoney: ['81', '82', '85', '90'],
+};
+
+/**
+ * Detect the likely operator from a DRC phone number's prefix.
+ * Returns the operator slug ('airtel' | 'orange' | 'afrimoney') or null
+ * if the prefix is unknown.
+ */
+export function detectOperatorFromPhone(phone: string): string | null {
+  const local9 = extractLocalDigits(phone);
+  if (!local9) return null;
+  const prefix2 = local9.slice(0, 2);
+  for (const [op, prefixes] of Object.entries(OPERATOR_PREFIXES)) {
+    if (prefixes.includes(prefix2)) return op;
+  }
+  return null;
+}
+
+/**
+ * Validate that a phone number's prefix matches the selected operator.
+ * Returns { ok: true } if the prefix matches, or
+ * { ok: false, detected: '<operator>', message: '...' } if mismatched.
+ */
+export function validatePhoneOperatorMatch(
+  phone: string,
+  operator: string,
+): { ok: true } | { ok: false; detected: string | null; message: string } {
+  const detected = detectOperatorFromPhone(phone);
+  if (!detected) {
+    return { ok: true }; // Unknown prefix — don't block
+  }
+  if (detected === operator.toLowerCase()) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    detected,
+    message: `Le numéro ${phone} appartient à l'opérateur ${detected}, mais le retrait est demandé vers ${operator}. L'opérateur de destination rejetera ce numéro (MSISDN INCORRECT).`,
+  };
+}

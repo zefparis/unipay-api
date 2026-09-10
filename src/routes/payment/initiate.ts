@@ -5,7 +5,7 @@ import { sandboxCollection, sandboxPayout } from '../../services/avada';
 import type { Channel, Direction } from '../../types/payment';
 import { env } from '../../config/env';
 import { isSandboxAllowed } from '../../lib/sandbox-mode';
-import { isValidDrcPhone } from '../../lib/phone-normalization';
+import { isValidDrcPhone, validatePhoneOperatorMatch } from '../../lib/phone-normalization';
 
 const FEE_RATE = Number(env.MERCHANT_FEE_RATE); // 5% default (configurable via MERCHANT_FEE_RATE env var)
 
@@ -82,6 +82,22 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
           message: 'Numéro invalide : 9 chiffres significatifs requis (ex: +243XXXXXXXXX, 0XXXXXXXXX, ou XXXXXXXXX)',
           statusCode: 400,
         });
+      }
+
+      // ── Phone-operator match (payout only) ─────────────────────
+      // For payouts (B2C), the destination operator must own the phone
+      // number. A mismatch causes the operator to reject with MSISDN
+      // INCORRECT (code 10401). Detect early to avoid a doomed round-trip.
+      if (operator !== 'usdt' && direction === 'payout') {
+        const phoneOpCheck = validatePhoneOperatorMatch(phone, operator);
+        if (!phoneOpCheck.ok) {
+          return reply.status(400).send({
+            error: 'OPERATOR_PHONE_MISMATCH',
+            message: phoneOpCheck.message,
+            detected_operator: phoneOpCheck.detected,
+            statusCode: 400,
+          });
+        }
       }
 
       // ── Sandbox detection ──────────────────────────────────────
