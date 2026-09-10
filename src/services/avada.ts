@@ -142,12 +142,22 @@ async function unipesaPost(publicId: string, path: string, body: Record<string, 
   // operator API is unreachable). Without this check, failed
   // provider calls are silently treated as "processing" and the
   // transaction gets stuck forever (no callback will ever arrive).
-  const resultCode = json['result'];
-  if (resultCode && typeof resultCode === 'object') {
-    const code = (resultCode as Record<string, unknown>)['code'];
-    const message = (resultCode as Record<string, unknown>)['message'];
-    if (code !== undefined && code !== 0 && code !== '0') {
-      throw new Error(`Unipesa provider error: code=${code} message=${message ?? '(no message)'}`);
+  //
+  // IMPORTANT: this check only applies to payment INITIATION calls
+  // (/payment_c2b, /payment_b2c). The /status endpoint also returns
+  // a non-zero result.code when the TRANSACTION failed (e.g. 10301
+  // for a failed Airtel withdrawal) — but the response still contains
+  // the authoritative status (status=3) that the reconciliation job
+  // needs. Throwing on /status would prevent status resolution.
+  const isStatusEndpoint = path === '/status' || path === '/balance';
+  if (!isStatusEndpoint) {
+    const resultCode = json['result'];
+    if (resultCode && typeof resultCode === 'object') {
+      const code = (resultCode as Record<string, unknown>)['code'];
+      const message = (resultCode as Record<string, unknown>)['message'];
+      if (code !== undefined && code !== 0 && code !== '0') {
+        throw new Error(`Unipesa provider error: code=${code} message=${message ?? '(no message)'}`);
+      }
     }
   }
   return json;
