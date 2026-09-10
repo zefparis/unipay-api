@@ -4,6 +4,7 @@ import { env } from './config/env';
 import { startBscPoller } from './services/bscscan';
 import { startGasMonitor } from './services/gas-monitor';
 import { startOnchainReconciler } from './services/onchain-reconciliation';
+import { startUnipesaReconciler } from './services/unipesa-reconciliation';
 
 /**
  * Fail-closed check: in production, FIXIE_URL is required for Unipesa/Avada
@@ -41,6 +42,9 @@ const start = async () => {
     // Start BSC gas monitor (no-op when BSC_OWNER_KEY absent)
     startGasMonitor({ info: server.log.info.bind(server.log), warn: server.log.warn.bind(server.log), error: server.log.error.bind(server.log) });
     startOnchainReconciler(server.supabase, server.log);
+    // Start Unipesa payment reconciliation (polls /status for stuck
+    // processing transactions, resolves them via process_wallet_provider_callback).
+    startUnipesaReconciler(server.supabase, server.log);
   } catch (err) {
     server.log.error(err);
     process.exit(1);
