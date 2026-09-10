@@ -265,7 +265,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       const [merchantRes, keysRes, txRes, ledgerRes, settlementRes] = await Promise.all([
         fastify.supabase
           .from('merchants')
-          .select('id, name, email, phone, country, mode, kyc_status, status, company_name, company_rccm, company_idnat, kyc_submitted_at, kyc_notes, kyc_reviewed_at, created_at, updated_at, settlement_phone, callback_url')
+          .select('id, name, email, phone, country, mode, kyc_status, status, company_name, company_rccm, company_idnat, kyc_submitted_at, kyc_notes, kyc_reviewed_at, created_at, updated_at, settlement_phone, webhook_url, webhook_secret')
           .eq('id', id)
           .maybeSingle(),
         fastify.supabase
@@ -609,10 +609,15 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
     },
   );
 
-  /* ── PUT /v1/admin/merchants/:id/callback-url ──────────────── */
-  /* Update the merchant's callback URL. */
-  fastify.put<{ Params: { id: string }; Body: { callback_url: string | null } }>(
-    '/admin/merchants/:id/callback-url',
+  /* ── PUT /v1/admin/merchants/:id/webhook-url ──────────────── */
+  /* Update the merchant's webhook URL (the endpoint UniPay calls to
+   * notify the merchant of transaction status changes). Uses the
+   * existing merchants.webhook_url column — the same column the
+   * merchant self-service endpoint (POST /v1/merchant/webhook) writes.
+   * Does NOT regenerate webhook_secret (use the merchant self-service
+   * endpoint for that). */
+  fastify.put<{ Params: { id: string }; Body: { webhook_url: string | null } }>(
+    '/admin/merchants/:id/webhook-url',
     {
       schema: {
         params: {
@@ -622,9 +627,9 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         },
         body: {
           type: 'object',
-          required: ['callback_url'],
+          required: ['webhook_url'],
           properties: {
-            callback_url: { type: ['string', 'null'] },
+            webhook_url: { type: ['string', 'null'] },
           },
           additionalProperties: false,
         },
@@ -635,39 +640,43 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(403).send({ error: 'Admin access required', statusCode: 403 });
       }
       const { id } = request.params;
-      const { callback_url } = request.body;
+      const { webhook_url } = request.body;
 
       // Validate URL if not null/empty
-      if (callback_url) {
+      if (webhook_url) {
         try {
-          new URL(callback_url);
+          const u = new URL(webhook_url);
+          if (u.protocol !== 'https:') {
+            return reply.status(400).send({ error: 'Webhook URL must use HTTPS', statusCode: 400 });
+          }
         } catch {
-          return reply.status(400).send({ error: 'Invalid callback URL', statusCode: 400 });
+          return reply.status(400).send({ error: 'Invalid webhook URL', statusCode: 400 });
         }
       }
 
       const { data, error } = await fastify.supabase
         .from('merchants')
-        .update({ callback_url: callback_url || null })
+        .update({ webhook_url: webhook_url || null })
         .eq('id', id)
-        .select('id, callback_url')
+        .select('id, webhook_url')
         .maybeSingle();
 
       if (error) return reply.status(500).send({ error: error.message });
       if (!data) return reply.status(404).send({ error: 'Merchant not found' });
 
-      void logAdminAction(fastify.supabase, 'merchant.callback_url_update', 'merchant', id, { callback_url }, fastify.log);
+      void logAdminAction(fastify.supabase, 'merchant.webhook_url_update', 'merchant', id, { webhook_url }, fastify.log);
 
-      return reply.send({ ok: true, callback_url: data.callback_url });
+      return reply.send({ ok: true, webhook_url: data.webhook_url });
     },
   );
 
-  /* ── POST /v1/admin/merchants/:id/test-callback ────────────── */
-  /* Send a test POST to the merchant's callback URL and return the
-   * HTTP status, response time, and response body. The payload is
-   * clearly marked as a test (is_test: true, order_id prefixed TEST-). */
+  /* ── POST /v1/admin/merchants/:id/test-webhook ────────────── */
+  /* Send a test POST to the merchant's webhook URL, signed with the
+   * merchant's webhook_secret (X-UniPay-Signature header) — exactly
+   * like the real delivery path in payment/callback.ts. Returns the
+   * HTTP status, response time, and response body. */
   fastify.post<{ Params: { id: string } }>(
-    '/admin/merchants/:id/test-callback',
+    '/admin/merchants/:id/test-webhook',
     {
       schema: {
         params: {
@@ -685,46 +694,59 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data: merchant, error: mError } = await fastify.supabase
         .from('merchants')
-        .select('callback_url')
+        .select('webhook_url, webhook_secret')
         .eq('id', id)
         .maybeSingle();
 
       if (mError) return reply.status(500).send({ error: mError.message });
       if (!merchant) return reply.status(404).send({ error: 'Merchant not found' });
 
-      const callbackUrl = merchant.callback_url;
-      if (!callbackUrl) {
+      const webhookUrl = (merchant as { webhook_url?: string | null })?.webhook_url;
+      const webhookSecret = (merchant as { webhook_secret?: string | null })?.webhook_secret;
+      if (!webhookUrl) {
         return reply.status(400).send({
-          error: 'NO_CALLBACK_URL',
-          message: 'Aucun callback configuré pour ce marchand.',
+          error: 'NO_WEBHOOK_URL',
+          message: 'Aucun webhook configuré pour ce marchand.',
           statusCode: 400,
         });
       }
 
-      // Build a clearly-identifiable test payload
+      // Build a clearly-identifiable test payload matching the real
+      // delivery shape (event + timestamp + data), so the merchant can
+      // validate their signature verification end-to-end.
       const testPayload = {
-        is_test: true,
-        order_id: `TEST-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
-        status: 'success',
-        amount: 0,
-        currency: 'CDF',
-        reference: 'TEST-CALLBACK',
-        message: 'Ceci est un test de callback UniPay — aucune transaction réelle.',
+        event: 'webhook.test',
         timestamp: new Date().toISOString(),
+        data: {
+          is_test: true,
+          transaction_id: `test_${crypto.randomUUID().slice(0, 8)}`,
+          status: 'success',
+          amount: 0,
+          currency: 'CDF',
+          reference: 'TEST-WEBHOOK',
+          message: 'Ceci est un test de webhook UniPay — aucune transaction réelle.',
+        },
       };
+      const payloadStr = JSON.stringify(testPayload);
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'X-Unipay-Test': 'true',
+      };
+      if (webhookSecret) {
+        const sig = crypto.createHmac('sha256', webhookSecret).update(payloadStr).digest('hex');
+        headers['X-UniPay-Signature'] = `sha256=${sig}`;
+      }
 
       const startTime = Date.now();
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout
 
-        const res = await fetch(callbackUrl, {
+        const res = await fetch(webhookUrl, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Unipay-Test': 'true',
-          },
-          body: JSON.stringify(testPayload),
+          headers,
+          body: payloadStr,
           signal: controller.signal,
         });
         clearTimeout(timeout);
@@ -734,7 +756,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         // Truncate body to 2000 chars to avoid huge responses
         const bodyPreview = bodyText.length > 2000 ? bodyText.slice(0, 2000) + '…' : bodyText;
 
-        void logAdminAction(fastify.supabase, 'merchant.test_callback', 'merchant', id, { callback_url: callbackUrl, http_status: res.status, elapsed_ms: elapsedMs }, fastify.log);
+        void logAdminAction(fastify.supabase, 'merchant.test_webhook', 'merchant', id, { webhook_url: webhookUrl, http_status: res.status, elapsed_ms: elapsedMs }, fastify.log);
 
         return reply.send({
           ok: res.ok,
@@ -742,15 +764,16 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
           elapsed_ms: elapsedMs,
           body: bodyPreview,
           content_type: res.headers.get('content-type'),
+          signed: !!webhookSecret,
         });
       } catch (err: any) {
         const elapsedMs = Date.now() - startTime;
         const isTimeout = err?.name === 'AbortError';
         return reply.status(502).send({
-          error: isTimeout ? 'CALLBACK_TIMEOUT' : 'CALLBACK_UNREACHABLE',
+          error: isTimeout ? 'WEBHOOK_TIMEOUT' : 'WEBHOOK_UNREACHABLE',
           message: isTimeout
-            ? 'Le callback n\'a pas répondu dans les 10 secondes.'
-            : `Impossible de joindre le callback: ${err?.message ?? 'unknown error'}`,
+            ? 'Le webhook n\'a pas répondu dans les 10 secondes.'
+            : `Impossible de joindre le webhook: ${err?.message ?? 'unknown error'}`,
           elapsed_ms: elapsedMs,
           statusCode: 502,
         });

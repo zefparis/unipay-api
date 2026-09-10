@@ -93,25 +93,26 @@ describe('Feature 2: Per-merchant stats with operator breakdown', () => {
   });
 });
 
-describe('Feature 3: Callback test', () => {
-  it('defines POST /admin/merchants/:id/test-callback endpoint', () => {
-    assert.match(MERCHANTS_ROUTE, /'\/admin\/merchants\/:id\/test-callback'/);
+describe('Feature 3: Webhook test (uses existing webhook_url column)', () => {
+  it('defines POST /admin/merchants/:id/test-webhook endpoint', () => {
+    assert.match(MERCHANTS_ROUTE, /'\/admin\/merchants\/:id\/test-webhook'/);
   });
 
-  it('defines PUT /admin/merchants/:id/callback-url endpoint', () => {
-    assert.match(MERCHANTS_ROUTE, /'\/admin\/merchants\/:id\/callback-url'/);
+  it('defines PUT /admin/merchants/:id/webhook-url endpoint', () => {
+    assert.match(MERCHANTS_ROUTE, /'\/admin\/merchants\/:id\/webhook-url'/);
   });
 
-  it('returns NO_CALLBACK_URL error when no callback configured', () => {
-    assert.match(MERCHANTS_ROUTE, /NO_CALLBACK_URL/);
+  it('returns NO_WEBHOOK_URL error when no webhook configured', () => {
+    assert.match(MERCHANTS_ROUTE, /NO_WEBHOOK_URL/);
   });
 
-  it('sends test payload with is_test: true', () => {
-    assert.match(MERCHANTS_ROUTE, /is_test:\s*true/);
+  it('sends test payload with event: webhook.test', () => {
+    assert.match(MERCHANTS_ROUTE, /event:\s*['"]webhook\.test['"]/);
   });
 
-  it('uses TEST- prefix for order_id', () => {
-    assert.match(MERCHANTS_ROUTE, /TEST-/);
+  it('signs payload with webhook_secret (X-UniPay-Signature header)', () => {
+    assert.match(MERCHANTS_ROUTE, /webhook_secret/);
+    assert.match(MERCHANTS_ROUTE, /X-UniPay-Signature/);
   });
 
   it('returns http_status, elapsed_ms, and body in response', () => {
@@ -124,8 +125,12 @@ describe('Feature 3: Callback test', () => {
     assert.match(MERCHANTS_ROUTE, /10000/);
   });
 
-  it('handles CALLBACK_TIMEOUT error', () => {
-    assert.match(MERCHANTS_ROUTE, /CALLBACK_TIMEOUT/);
+  it('handles WEBHOOK_TIMEOUT error', () => {
+    assert.match(MERCHANTS_ROUTE, /WEBHOOK_TIMEOUT/);
+  });
+
+  it('does NOT reference the non-existent callback_url column', () => {
+    assert.doesNotMatch(MERCHANTS_ROUTE, /callback_url/);
   });
 });
 
