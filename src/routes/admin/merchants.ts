@@ -1631,16 +1631,25 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(500).send({ error: 'Internal Server Error', statusCode: 500 });
       }
 
-      // Fetch merchant names
+      // Fetch merchant names + mode (sandbox transactions are excluded
+      // from revenue — they are simulated, not real money movements)
       const merchantIds = [...new Set((txs ?? []).map((t: { merchant_id: string }) => t.merchant_id))];
       const { data: merchants } = await fastify.supabase
         .from('merchants')
-        .select('id, name')
+        .select('id, name, mode')
         .in('id', merchantIds);
 
       const merchantNames = new Map<string, string>(
         (merchants ?? []).map((m: { id: string; name: string }) => [m.id, m.name]),
       );
+      const sandboxMerchantIds = new Set<string>(
+        (merchants ?? [])
+          .filter((m: { mode: string }) => m.mode === 'sandbox')
+          .map((m: { id: string }) => m.id),
+      );
+
+      // Exclude sandbox transactions from revenue calculations
+      const liveTxs = (txs ?? []).filter((t: { merchant_id: string }) => !sandboxMerchantIds.has(t.merchant_id));
 
       // Aggregate per merchant + per currency
       const perMerchant = new Map<string, {
@@ -1663,7 +1672,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         }>;
       }>();
 
-      for (const tx of txs ?? []) {
+      for (const tx of liveTxs) {
         const mid = tx.merchant_id as string;
         const cur = (tx.currency ?? 'CDF') as string;
         if (!perMerchant.has(mid)) {
@@ -1877,12 +1886,20 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       const merchantIds = [...new Set((txs ?? []).map((t: { merchant_id: string }) => t.merchant_id))];
       const { data: merchants } = await fastify.supabase
         .from('merchants')
-        .select('id, name')
+        .select('id, name, mode')
         .in('id', merchantIds);
 
       const merchantNames = new Map<string, string>(
         (merchants ?? []).map((m: { id: string; name: string }) => [m.id, m.name]),
       );
+      const sandboxMerchantIds = new Set<string>(
+        (merchants ?? [])
+          .filter((m: { mode: string }) => m.mode === 'sandbox')
+          .map((m: { id: string }) => m.id),
+      );
+
+      // Exclude sandbox transactions from revenue calculations
+      const liveTxs = (txs ?? []).filter((t: { merchant_id: string }) => !sandboxMerchantIds.has(t.merchant_id));
 
       // Aggregate per merchant + per currency (never mix currencies in a row)
       const perMerchantCurrency = new Map<string, {
@@ -1896,7 +1913,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         net_amount_owed: number;
       }>();
 
-      for (const tx of txs ?? []) {
+      for (const tx of liveTxs) {
         const mid = tx.merchant_id as string;
         const cur = (tx.currency ?? 'CDF') as string;
         const key = `${mid}:${cur}`;
@@ -2057,7 +2074,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       // Fetch successful collect transactions in the period
       let query = fastify.supabase
         .from('transactions')
-        .select('amount, currency, created_at')
+        .select('merchant_id, amount, currency, created_at')
         .eq('status', 'success')
         .eq('direction', 'collect')
         .not('merchant_id', 'is', null)
@@ -2076,6 +2093,19 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(500).send({ error: 'Internal Server Error', statusCode: 500 });
       }
 
+      // Exclude sandbox transactions from revenue calculations
+      const merchantIds = [...new Set((txs ?? []).map((t: { merchant_id: string }) => t.merchant_id))];
+      const { data: merchants } = await fastify.supabase
+        .from('merchants')
+        .select('id, mode')
+        .in('id', merchantIds);
+      const sandboxMerchantIds = new Set<string>(
+        (merchants ?? [])
+          .filter((m: { mode: string }) => m.mode === 'sandbox')
+          .map((m: { id: string }) => m.id),
+      );
+      const liveTxs = (txs ?? []).filter((t: { merchant_id: string }) => !sandboxMerchantIds.has(t.merchant_id));
+
       // Aggregate by calendar date (UTC, consistent with the main revenue endpoint)
       const byDate = new Map<string, {
         date: string;
@@ -2085,7 +2115,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         transaction_count: number;
       }>();
 
-      for (const tx of txs ?? []) {
+      for (const tx of liveTxs) {
         const dateStr = (tx.created_at as string).slice(0, 10); // YYYY-MM-DD
         if (!byDate.has(dateStr)) {
           byDate.set(dateStr, {
