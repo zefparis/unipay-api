@@ -265,7 +265,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       const [merchantRes, keysRes, txRes, ledgerRes, settlementRes] = await Promise.all([
         fastify.supabase
           .from('merchants')
-          .select('id, name, email, phone, country, mode, kyc_status, status, company_name, company_rccm, company_idnat, kyc_submitted_at, kyc_notes, kyc_reviewed_at, created_at, updated_at, settlement_phone, webhook_url, webhook_secret')
+          .select('id, name, email, phone, country, mode, kyc_status, status, company_name, company_rccm, company_idnat, kyc_submitted_at, kyc_notes, kyc_reviewed_at, created_at, updated_at, settlement_phone, webhook_url, webhook_secret, rccm_file_url, idnat_file_url, rep_id_file_url')
           .eq('id', id)
           .maybeSingle(),
         fastify.supabase
@@ -331,8 +331,42 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         };
       });
 
+      // Generate signed URLs (30-day expiry) for any uploaded KYC documents
+      // so the admin can view/download them. Mirrors the dev-expenses report
+      // signed-URL pattern.
+      const merchantData = merchantRes.data as
+        | (Record<string, unknown> & { rccm_file_url?: string | null; idnat_file_url?: string | null; rep_id_file_url?: string | null })
+        | null;
+
+      const signDoc = async (path: string | null | undefined): Promise<string | null> => {
+        if (!path) return null;
+        const { data: signed, error: sErr } = await fastify.supabase.storage
+          .from('merchant-kyc-docs')
+          .createSignedUrl(path, 30 * 24 * 60 * 60);
+        if (sErr || !signed?.signedUrl) {
+          fastify.log.warn({ err: sErr, path }, '[admin/merchants/:id] signed URL failed for KYC doc');
+          return null;
+        }
+        return signed.signedUrl;
+      };
+
+      const [rccmSigned, idnatSigned, repIdSigned] = await Promise.all([
+        signDoc(merchantData?.rccm_file_url),
+        signDoc(merchantData?.idnat_file_url),
+        signDoc(merchantData?.rep_id_file_url),
+      ]);
+
+      const merchantWithDocs = merchantData
+        ? {
+            ...merchantData,
+            rccm_file_signed_url:   rccmSigned,
+            idnat_file_signed_url:  idnatSigned,
+            rep_id_file_signed_url: repIdSigned,
+          }
+        : merchantData;
+
       return reply.send({
-        merchant: merchantRes.data,
+        merchant: merchantWithDocs,
         api_keys: keysRes.data ?? [],
         transactions: txRes.data ?? [],
         balances,
