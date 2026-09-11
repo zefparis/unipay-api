@@ -1783,6 +1783,29 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
 
       // Exclude sandbox transactions from revenue calculations
       const liveTxs = (txs ?? []).filter((t: { merchant_id: string }) => !sandboxMerchantIds.has(t.merchant_id));
+      const sandboxTxs = (txs ?? []).filter((t: { merchant_id: string }) => sandboxMerchantIds.has(t.merchant_id));
+
+      // Sandbox-excluded summary (indicative only — not included in totals)
+      const sandbox_excluded = {
+        transaction_count: sandboxTxs.length,
+        volume_collected: Math.round(
+          sandboxTxs.reduce((s, t: { amount?: number | null }) => s + Number(t.amount ?? 0), 0) * 100,
+        ) / 100,
+        by_currency: (() => {
+          const map = new Map<string, { currency: string; transaction_count: number; volume_collected: number }>();
+          for (const t of sandboxTxs) {
+            const cur = ((t as { currency?: string }).currency ?? 'CDF') as string;
+            if (!map.has(cur)) map.set(cur, { currency: cur, transaction_count: 0, volume_collected: 0 });
+            const e = map.get(cur)!;
+            e.transaction_count += 1;
+            e.volume_collected += Number((t as { amount?: number | null }).amount ?? 0);
+          }
+          return Array.from(map.values()).map((e) => ({
+            ...e,
+            volume_collected: Math.round(e.volume_collected * 100) / 100,
+          }));
+        })(),
+      };
 
       // Aggregate per merchant + per currency
       const perMerchant = new Map<string, {
@@ -1859,6 +1882,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       let merchants_array = Array.from(perMerchant.values()).map((e) => ({
         merchant_id: e.merchant_id,
         name: e.name,
+        mode: sandboxMerchantIds.has(e.merchant_id) ? 'sandbox' : 'live',
         transaction_count: e.transaction_count,
         volume_collected: Math.round(e.volume_collected * 100) / 100,
         client_fees: Math.round(e.client_fees * 100) / 100,
@@ -1969,6 +1993,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         },
         totals,
         totals_by_currency,
+        sandbox_excluded,
         merchants: merchants_array,
       });
     },
