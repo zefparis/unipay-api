@@ -895,16 +895,16 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       // Fetch merchant names separately and join
       const txs = (data ?? []) as Array<{ merchant_id: string }>;
       const merchantIds = [...new Set(txs.map((t) => t.merchant_id))];
-      const merchantMap = new Map<string, { name: string; email: string }>();
+      const merchantMap = new Map<string, { name: string; email: string; mode: string }>();
 
       if (merchantIds.length > 0) {
         const { data: merchants } = await fastify.supabase
           .from('merchants')
-          .select('id, name, email')
+          .select('id, name, email, mode')
           .in('id', merchantIds);
 
-        for (const m of (merchants ?? []) as Array<{ id: string; name: string; email: string }>) {
-          merchantMap.set(m.id, { name: m.name, email: m.email });
+        for (const m of (merchants ?? []) as Array<{ id: string; name: string; email: string; mode: string }>) {
+          merchantMap.set(m.id, { name: m.name, email: m.email, mode: m.mode });
         }
       }
 
