@@ -129,7 +129,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       let q = fastify.supabase
         .from('merchants')
         .select(
-          'id, name, email, phone, country, mode, kyc_status, status, company_name, company_rccm, company_idnat, kyc_submitted_at, kyc_notes, kyc_reviewed_at, created_at, updated_at',
+          'id, name, email, phone, country, mode, kyc_status, status, company_name, company_rccm, company_idnat, kyc_submitted_at, kyc_notes, kyc_reviewed_at, created_at, updated_at, rccm_file_url, idnat_file_url, rep_id_file_url',
           { count: 'exact' },
         )
         .order('created_at', { ascending: false });
@@ -229,6 +229,9 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         const stats = txStatsMap[mid] ?? { tx_count: 0, total_volume: 0, last_tx_at: null };
         const keys = keyStatusMap[mid] ?? { has_active_key: false, key_count: 0 };
         const kycReminder = kycReminderMap[mid] ?? { count: 0, last_sent_at: null };
+        const row = m as { rccm_file_url?: string | null; idnat_file_url?: string | null; rep_id_file_url?: string | null };
+        const kyc_docs_count =
+          [row.rccm_file_url, row.idnat_file_url, row.rep_id_file_url].filter(Boolean).length;
         return {
           ...m,
           transaction_count: stats.tx_count,
@@ -237,6 +240,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
           api_key_status: keys.key_count === 0 ? 'none' : keys.has_active_key ? 'active' : 'inactive',
           last_kyc_reminder_count: kycReminder.count,
           last_kyc_reminder_at: kycReminder.last_sent_at,
+          kyc_docs_count,
         };
       });
 
@@ -371,6 +375,60 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         transactions: txRes.data ?? [],
         balances,
         settlement_requests: settlementRes.data ?? [],
+      });
+    },
+  );
+
+  /* ── GET /v1/admin/merchants/:id/kyc-docs ────────────────────
+     Returns signed URLs (30-day expiry) for the merchant's uploaded
+     KYC documents. Called on demand by the admin KYC list modal so
+     we don't generate signed URLs for every merchant in the list.
+  ─────────────────────────────────────────────────────────────── */
+  fastify.get<{ Params: { id: string } }>(
+    '/admin/merchants/:id/kyc-docs',
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required', statusCode: 403 });
+      }
+
+      const { id } = request.params;
+
+      const { data: merchant, error } = await fastify.supabase
+        .from('merchants')
+        .select('id, kyc_status, rccm_file_url, idnat_file_url, rep_id_file_url')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (error || !merchant) {
+        return reply.status(404).send({ error: 'Merchant not found', statusCode: 404 });
+      }
+
+      const signDoc = async (path: string | null | undefined): Promise<string | null> => {
+        if (!path) return null;
+        const { data: signed, error: sErr } = await fastify.supabase.storage
+          .from('merchant-kyc-docs')
+          .createSignedUrl(path, 30 * 24 * 60 * 60);
+        if (sErr || !signed?.signedUrl) {
+          fastify.log.warn({ err: sErr, path, id }, '[admin/merchants/:id/kyc-docs] signed URL failed');
+          return null;
+        }
+        return signed.signedUrl;
+      };
+
+      const [rccmSigned, idnatSigned, repIdSigned] = await Promise.all([
+        signDoc(merchant.rccm_file_url),
+        signDoc(merchant.idnat_file_url),
+        signDoc(merchant.rep_id_file_url),
+      ]);
+
+      return reply.send({
+        merchant_id: id,
+        kyc_status: merchant.kyc_status,
+        docs: {
+          rccm_file:   { path: merchant.rccm_file_url   ?? null, signed_url: rccmSigned },
+          idnat_file:  { path: merchant.idnat_file_url  ?? null, signed_url: idnatSigned },
+          rep_id_file: { path: merchant.rep_id_file_url ?? null, signed_url: repIdSigned },
+        },
       });
     },
   );
