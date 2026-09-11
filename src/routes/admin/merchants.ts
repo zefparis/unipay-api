@@ -22,6 +22,7 @@ interface MerchantTransactionsQuery {
   status?: string;
   operator?: string;
   direction?: string;
+  mode?: string;
   date_from?: string;
   date_to?: string;
 }
@@ -943,6 +944,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
             status:      { type: 'string' },
             operator:    { type: 'string' },
             direction:   { type: 'string' },
+            mode:        { type: 'string', enum: ['sandbox', 'live'] },
             date_from:   { type: 'string' },
             date_to:     { type: 'string' },
           },
@@ -957,6 +959,25 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       const page = request.query.page ?? 1;
       const limit = request.query.limit ?? 50;
       const offset = (page - 1) * limit;
+
+      // If mode filter is set, fetch matching merchant IDs first so we
+      // can filter transactions by merchant mode (mode is on the merchants
+      // table, not transactions). This keeps pagination/count correct.
+      let modeMerchantIds: string[] | null = null;
+      if (request.query.mode) {
+        const { data: modeMerchants } = await fastify.supabase
+          .from('merchants')
+          .select('id')
+          .eq('mode', request.query.mode);
+        modeMerchantIds = (modeMerchants ?? []).map((m: { id: string }) => m.id);
+        if (modeMerchantIds.length === 0) {
+          // No merchants match this mode — return empty result
+          return reply.send({
+            data: [],
+            pagination: { page, limit, total: 0, pages: 0 },
+          });
+        }
+      }
 
       // Fetch transactions without the PostgREST nested select — the FK
       // from transactions.merchant_id may point to operators(id) instead
@@ -980,6 +1001,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       if (request.query.direction) q = q.eq('direction', request.query.direction);
       if (request.query.date_from) q = q.gte('created_at', request.query.date_from);
       if (request.query.date_to) q = q.lte('created_at', request.query.date_to);
+      if (modeMerchantIds) q = q.in('merchant_id', modeMerchantIds);
 
       const { data, error, count } = await q;
       if (error) return reply.status(500).send({ error: error.message });
@@ -1032,6 +1054,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
             status:      { type: 'string', enum: ['pending', 'processing', 'success', 'failed', 'cancelled'] },
             operator:    { type: 'string', enum: ['orange', 'airtel', 'afrimoney', 'usdt'] },
             direction:   { type: 'string', enum: ['collect', 'payout'] },
+            mode:        { type: 'string', enum: ['sandbox', 'live'] },
             date_from:   { type: 'string', format: 'date-time' },
             date_to:     { type: 'string', format: 'date-time' },
           },
@@ -1041,6 +1064,23 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       if (!requireAdmin(request.isAdmin)) {
         return reply.status(403).send({ error: 'Admin access required' });
+      }
+
+      // If mode filter is set, fetch matching merchant IDs first
+      let modeMerchantIds: string[] | null = null;
+      if (request.query.mode) {
+        const { data: modeMerchants } = await fastify.supabase
+          .from('merchants')
+          .select('id')
+          .eq('mode', request.query.mode);
+        modeMerchantIds = (modeMerchants ?? []).map((m: { id: string }) => m.id);
+        if (modeMerchantIds.length === 0) {
+          // No merchants match this mode — return empty CSV
+          return reply
+            .type('text/csv')
+            .header('Content-Disposition', 'attachment; filename="merchant-transactions-empty.csv"')
+            .send('date,marchand,email,type,operateur,telephone,montant,frais,net,statut,reference\n');
+        }
       }
 
       let q = fastify.supabase
@@ -1058,6 +1098,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       if (request.query.direction) q = q.eq('direction', request.query.direction);
       if (request.query.date_from) q = q.gte('created_at', request.query.date_from);
       if (request.query.date_to) q = q.lte('created_at', request.query.date_to);
+      if (modeMerchantIds) q = q.in('merchant_id', modeMerchantIds);
 
       const { data, error } = await q;
       if (error) return reply.status(500).send({ error: error.message });
