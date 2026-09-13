@@ -11,6 +11,18 @@ import { normalizePhoneForOperator, isValidDrcPhone } from '../../lib/phone-norm
 import { markSettlementProcessing, markSettlementFailed } from '../merchant/settlement-rpc-helpers.js';
 import { isProviderOutageFailure } from '../../lib/provider-outage.js';
 
+/**
+ * Check if a transaction is sandbox/test based on its metadata.
+ * Used by the revenue endpoints to exclude test transactions from
+ * "Live uniquement" stats, in addition to the merchant mode filter.
+ * Catches cases where a live merchant has an isolated test transaction
+ * (e.g. made before sandbox/live differentiation was implemented).
+ */
+function isSandboxTransaction(t: { metadata?: Record<string, unknown> | null }): boolean {
+  const meta = t.metadata;
+  return meta?.sandbox === true || meta?.dashboard_test === true;
+}
+
 function requireAdmin(isAdmin: boolean): boolean {
   return isAdmin;
 }
@@ -1781,7 +1793,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       // Fetch all successful collect transactions in the period
       const { data: txs, error } = await fastify.supabase
         .from('transactions')
-        .select('merchant_id, amount, fee, net_amount, currency')
+        .select('merchant_id, amount, fee, net_amount, currency, metadata')
         .eq('status', 'success')
         .eq('direction', 'collect')
         .not('merchant_id', 'is', null)
@@ -1811,9 +1823,19 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
           .map((m: { id: string }) => m.id),
       );
 
-      // Exclude sandbox transactions from revenue calculations
-      const liveTxs = (txs ?? []).filter((t: { merchant_id: string }) => !sandboxMerchantIds.has(t.merchant_id));
-      const sandboxTxs = (txs ?? []).filter((t: { merchant_id: string }) => sandboxMerchantIds.has(t.merchant_id));
+      // Exclude sandbox transactions from revenue calculations.
+      // A transaction is excluded if EITHER the merchant is in sandbox mode
+      // OR the transaction itself is flagged sandbox/dashboard_test in metadata
+      // (catches live merchants with isolated test transactions made before
+      // sandbox/live differentiation was implemented).
+      const liveTxs = (txs ?? []).filter(
+        (t: { merchant_id: string; metadata?: Record<string, unknown> | null }) =>
+          !sandboxMerchantIds.has(t.merchant_id) && !isSandboxTransaction(t),
+      );
+      const sandboxTxs = (txs ?? []).filter(
+        (t: { merchant_id: string; metadata?: Record<string, unknown> | null }) =>
+          sandboxMerchantIds.has(t.merchant_id) || isSandboxTransaction(t),
+      );
 
       // Sandbox-excluded summary (indicative only — not included in totals)
       const sandbox_excluded = {
@@ -2059,7 +2081,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data: txs, error } = await fastify.supabase
         .from('transactions')
-        .select('merchant_id, amount, fee, net_amount, currency')
+        .select('merchant_id, amount, fee, net_amount, currency, metadata')
         .eq('status', 'success')
         .eq('direction', 'collect')
         .not('merchant_id', 'is', null)
@@ -2086,8 +2108,11 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
           .map((m: { id: string }) => m.id),
       );
 
-      // Exclude sandbox transactions from revenue calculations
-      const liveTxs = (txs ?? []).filter((t: { merchant_id: string }) => !sandboxMerchantIds.has(t.merchant_id));
+      // Exclude sandbox transactions (merchant mode OR metadata flag)
+      const liveTxs = (txs ?? []).filter(
+        (t: { merchant_id: string; metadata?: Record<string, unknown> | null }) =>
+          !sandboxMerchantIds.has(t.merchant_id) && !isSandboxTransaction(t),
+      );
 
       // Aggregate per merchant + per currency (never mix currencies in a row)
       const perMerchantCurrency = new Map<string, {
@@ -2262,7 +2287,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       // Fetch successful collect transactions in the period
       let query = fastify.supabase
         .from('transactions')
-        .select('merchant_id, amount, currency, created_at')
+        .select('merchant_id, amount, currency, created_at, metadata')
         .eq('status', 'success')
         .eq('direction', 'collect')
         .not('merchant_id', 'is', null)
@@ -2281,7 +2306,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(500).send({ error: 'Internal Server Error', statusCode: 500 });
       }
 
-      // Exclude sandbox transactions from revenue calculations
+      // Exclude sandbox transactions (merchant mode OR metadata flag)
       const merchantIds = [...new Set((txs ?? []).map((t: { merchant_id: string }) => t.merchant_id))];
       const { data: merchants } = await fastify.supabase
         .from('merchants')
@@ -2292,7 +2317,10 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
           .filter((m: { mode: string }) => m.mode === 'sandbox')
           .map((m: { id: string }) => m.id),
       );
-      const liveTxs = (txs ?? []).filter((t: { merchant_id: string }) => !sandboxMerchantIds.has(t.merchant_id));
+      const liveTxs = (txs ?? []).filter(
+        (t: { merchant_id: string; metadata?: Record<string, unknown> | null }) =>
+          !sandboxMerchantIds.has(t.merchant_id) && !isSandboxTransaction(t),
+      );
 
       // Aggregate by calendar date (UTC, consistent with the main revenue endpoint)
       const byDate = new Map<string, {
