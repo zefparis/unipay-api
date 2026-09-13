@@ -3,7 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env.js';
 import { initiatePayout } from '../../services/avada.js';
 import { normalizePhoneForOperator, isValidDrcPhone } from '../../lib/phone-normalization.js';
-import { markSettlementSuccess, markSettlementFailed } from './settlement-rpc-helpers.js';
+import { markSettlementProcessing, markSettlementFailed } from './settlement-rpc-helpers.js';
 import { requireActiveMerchant } from '../../lib/merchant-auth.js';
 
 const AUTO_MAX_PER_REQUEST = Number(env.SETTLEMENT_AUTO_MAX_PER_REQUEST);
@@ -229,12 +229,41 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
             settlementCurrency,
           );
 
-          // Mark settlement as success
-          await markSettlementSuccess(fastify.supabase, result.request_id, payoutRes.avada_transaction_id);
+          // Create a transactions row linked to the settlement request so
+          // the callback can find it and propagate the terminal status.
+          const settlementRef = `STL-${result.request_id.slice(0, 8).toUpperCase()}`;
+          const { error: txInsertErr } = await fastify.supabase
+            .from('transactions')
+            .insert({
+              id: crypto.randomUUID(),
+              merchant_id: auth.payload.merchant_id,
+              operator,
+              phone: normalizedPhone,
+              amount: Number(result.amount),
+              fee: 0,
+              net_amount: Number(result.amount),
+              currency: settlementCurrency,
+              reference: settlementRef,
+              avada_transaction_id: payoutRes.avada_transaction_id,
+              status: 'processing',
+              direction: 'payout',
+              metadata: { source: 'merchant_settlement' },
+              settlement_request_id: result.request_id,
+            });
+          if (txInsertErr) {
+            fastify.log.error(
+              { err: txInsertErr, requestId: result.request_id },
+              '[settlement/request] transactions insert failed — settlement will not receive callback',
+            );
+          }
+
+          // Mark settlement as processing (NOT success) — the callback
+          // will call mark_settlement_success/failed via the RPC.
+          await markSettlementProcessing(fastify.supabase, result.request_id, payoutRes.avada_transaction_id);
 
           return reply.status(201).send({
             request_id: result.request_id,
-            status: 'success',
+            status: 'processing',
             amount: result.amount,
             currency: settlementCurrency,
             provider_ref: payoutRes.avada_transaction_id,

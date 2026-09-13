@@ -1,7 +1,8 @@
 import type { FastifyPluginAsync } from 'fastify';
+import crypto from 'node:crypto';
 import { initiatePayout } from '../../services/avada.js';
 import { normalizePhoneForOperator, isValidDrcPhone } from '../../lib/phone-normalization.js';
-import { markSettlementSuccess, markSettlementFailed, rejectSettlement } from '../merchant/settlement-rpc-helpers.js';
+import { markSettlementProcessing, markSettlementFailed, rejectSettlement } from '../merchant/settlement-rpc-helpers.js';
 import { logAdminAction } from '../../lib/admin-action-log.js';
 
 function requireAdmin(isAdmin: boolean): boolean {
@@ -144,7 +145,37 @@ const adminSettlementRoute: FastifyPluginAsync = async (fastify) => {
           'CDF',
         );
 
-        await markSettlementSuccess(fastify.supabase, id, payoutRes.avada_transaction_id);
+        // Create a transactions row linked to the settlement request so
+        // the callback can find it and propagate the terminal status.
+        const settlementRef = `STL-${id.slice(0, 8).toUpperCase()}`;
+        const { error: txInsertErr } = await fastify.supabase
+          .from('transactions')
+          .insert({
+            id: crypto.randomUUID(),
+            merchant_id: settlement.merchant_id,
+            operator,
+            phone: normalizedPhone,
+            amount: Number(settlement.amount),
+            fee: 0,
+            net_amount: Number(settlement.amount),
+            currency: 'CDF',
+            reference: settlementRef,
+            avada_transaction_id: payoutRes.avada_transaction_id,
+            status: 'processing',
+            direction: 'payout',
+            metadata: { source: 'admin_settlement_approve' },
+            settlement_request_id: id,
+          });
+        if (txInsertErr) {
+          fastify.log.error(
+            { err: txInsertErr, requestId: id },
+            '[admin/settlements] transactions insert failed — settlement will not receive callback',
+          );
+        }
+
+        // Mark settlement as processing (NOT success) — the callback
+        // will call mark_settlement_success/failed via the RPC.
+        await markSettlementProcessing(fastify.supabase, id, payoutRes.avada_transaction_id);
 
         void logAdminAction(fastify.supabase, 'settlement.approve', 'settlement', id, { merchant_id: settlement.merchant_id, amount: settlement.amount, operator, phone: normalizedPhone }, fastify.log);
 
@@ -152,7 +183,7 @@ const adminSettlementRoute: FastifyPluginAsync = async (fastify) => {
           approved: true,
           request_id: id,
           provider_ref: payoutRes.avada_transaction_id,
-          status: 'success',
+          status: 'processing',
         });
       } catch (err: any) {
         fastify.log.error(

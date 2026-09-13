@@ -65,6 +65,16 @@ type PendingTx = {
   created_at: string;
 };
 
+type PendingSettlement = {
+  id: string;
+  merchant_id: string;
+  amount: number;
+  currency: string;
+  phone: string;
+  provider_ref: string | null;
+  created_at: string;
+};
+
 interface ReconciliationLogger {
   info: (data: unknown, message?: string) => void;
   warn: (data: unknown, message?: string) => void;
@@ -128,6 +138,231 @@ async function logTooOldPending(supabase: SupabaseClient, log: ReconciliationLog
       'pending transaction past max age — manual investigation required',
     );
   }
+}
+
+async function reconcileOneSettlement(
+  supabase: SupabaseClient,
+  settlement: PendingSettlement,
+  log: ReconciliationLogger,
+): Promise<void> {
+  const start = Date.now();
+  // Use provider_ref (avada_transaction_id) to query Unipesa /status.
+  // If provider_ref is null, we cannot reconcile — skip.
+  const statusKey = settlement.provider_ref;
+  if (!statusKey) {
+    log.warn(
+      {
+        event: 'settlement_reconciliation_skipped',
+        settlementId: settlement.id,
+        reason: 'missing_provider_ref',
+      },
+      'settlement has no provider_ref — cannot query Unipesa',
+    );
+    return;
+  }
+
+  let remoteStatusRaw: AvadaStatus;
+  let rawResponse: Record<string, unknown> = {};
+  try {
+    const statusResult = await getTransactionStatusWithRaw(statusKey);
+    remoteStatusRaw = statusResult.status;
+    rawResponse = statusResult.raw;
+  } catch (err) {
+    log.warn(
+      {
+        event: 'settlement_reconciliation_failed',
+        settlementId: settlement.id,
+        providerRef: statusKey,
+        amount: settlement.amount,
+        latencyMs: Date.now() - start,
+        errorCode: (err as Error)?.message,
+      },
+      'settlement reconciliation status check failed (will retry next tick)',
+    );
+    return;
+  }
+
+  const latencyMs = Date.now() - start;
+
+  if (remoteStatusRaw === 'pending' || remoteStatusRaw === 'processing') {
+    log.info(
+      {
+        event: 'settlement_still_pending',
+        settlementId: settlement.id,
+        providerRef: statusKey,
+        amount: settlement.amount,
+        providerStatus: remoteStatusRaw,
+        latencyMs,
+      },
+      'settlement still pending upstream',
+    );
+    return;
+  }
+
+  const dbStatus = remoteStatusRaw === 'success' ? 'success'
+    : remoteStatusRaw === 'failed' || remoteStatusRaw === 'cancelled' ? 'failed'
+    : null;
+
+  if (!dbStatus) {
+    log.warn(
+      {
+        event: 'settlement_reconciliation_unknown_status',
+        settlementId: settlement.id,
+        providerRef: statusKey,
+        providerStatus: remoteStatusRaw,
+        latencyMs,
+      },
+      'unknown provider status — skipping settlement',
+    );
+    return;
+  }
+
+  // Look up the linked transactions row (if any) so we can reuse the
+  // atomic process_wallet_provider_callback RPC, which propagates the
+  // terminal status to the settlement request via settlement_request_id.
+  // This avoids duplicating the refund logic and keeps idempotency.
+  const { data: linkedTx, error: txLookupErr } = await supabase
+    .from('transactions')
+    .select('id, status')
+    .eq('settlement_request_id', settlement.id)
+    .maybeSingle();
+
+  if (txLookupErr) {
+    log.warn(
+      {
+        event: 'settlement_reconciliation_failed',
+        settlementId: settlement.id,
+        err: txLookupErr.message,
+      },
+      'linked transaction lookup failed',
+    );
+    return;
+  }
+
+  if (!linkedTx) {
+    // No linked transactions row — this settlement predates the fix
+    // (or was created by a path that did not insert a transactions row).
+    // Fall back to calling the settlement RPCs directly.
+    log.warn(
+      {
+        event: 'settlement_reconciliation_no_linked_tx',
+        settlementId: settlement.id,
+        providerRef: statusKey,
+      },
+      'settlement has no linked transactions row — direct settlement RPC fallback',
+    );
+
+    const providerEventId = `reconcile_settlement_direct:${settlement.id}:${dbStatus}`;
+    const reconciledPayload: Record<string, unknown> = {
+      reconciled: true,
+      reconciled_by: WORKER_NAME,
+      reconciled_at: new Date().toISOString(),
+      provider_status: remoteStatusRaw,
+    };
+    if (rawResponse['result'] && typeof rawResponse['result'] === 'object') {
+      reconciledPayload['result'] = rawResponse['result'];
+    }
+    if (rawResponse['provider_result'] && typeof rawResponse['provider_result'] === 'object') {
+      reconciledPayload['provider_result'] = rawResponse['provider_result'];
+    }
+
+    if (dbStatus === 'success') {
+      const { error } = await supabase.rpc('mark_settlement_success', {
+        p_request_id: settlement.id,
+        p_provider_ref: statusKey,
+      });
+      if (error) {
+        log.warn(
+          { event: 'settlement_reconciliation_failed', settlementId: settlement.id, err: error.message },
+          'mark_settlement_success failed (may already be terminal)',
+        );
+      } else {
+        log.info(
+          { event: 'settlement_reconciled', settlementId: settlement.id, providerStatus: remoteStatusRaw, latencyMs },
+          'reconciled settlement (direct success)',
+        );
+      }
+    } else {
+      const { error } = await supabase.rpc('mark_settlement_failed', {
+        p_request_id: settlement.id,
+        p_reason: `Reconciliation: provider status ${remoteStatusRaw}`,
+      });
+      if (error) {
+        log.warn(
+          { event: 'settlement_reconciliation_failed', settlementId: settlement.id, err: error.message },
+          'mark_settlement_failed failed (may already be terminal)',
+        );
+      } else {
+        log.info(
+          { event: 'settlement_reconciled', settlementId: settlement.id, providerStatus: remoteStatusRaw, latencyMs },
+          'reconciled settlement (direct failed + refund)',
+        );
+      }
+    }
+    return;
+  }
+
+  // Linked transactions row exists — reuse the atomic callback RPC,
+  // which will propagate the terminal status to the settlement request.
+  const providerEventId = `reconcile_settlement:${settlement.id}:${dbStatus}`;
+  const reconciledPayload: Record<string, unknown> = {
+    reconciled: true,
+    reconciled_by: WORKER_NAME,
+    reconciled_at: new Date().toISOString(),
+    provider_status: remoteStatusRaw,
+    settlement_request_id: settlement.id,
+  };
+  if (rawResponse['result'] && typeof rawResponse['result'] === 'object') {
+    reconciledPayload['result'] = rawResponse['result'];
+  }
+  if (rawResponse['provider_result'] && typeof rawResponse['provider_result'] === 'object') {
+    reconciledPayload['provider_result'] = rawResponse['provider_result'];
+  }
+
+  const { data: callbackResult, error: callbackError } = await supabase.rpc(
+    'process_wallet_provider_callback',
+    {
+      p_provider: 'unipesa',
+      p_provider_event_id: providerEventId,
+      p_transaction_id: (linkedTx as { id: string }).id,
+      p_new_status: dbStatus,
+      p_provider_transaction_id: statusKey,
+      p_payload: reconciledPayload,
+    },
+  );
+
+  if (callbackError) {
+    log.error(
+      {
+        event: 'settlement_reconciliation_failed',
+        settlementId: settlement.id,
+        txId: (linkedTx as { id: string }).id,
+        providerStatus: remoteStatusRaw,
+        latencyMs,
+        errorCode: callbackError.message,
+      },
+      'process_wallet_provider_callback failed for settlement',
+    );
+    return;
+  }
+
+  const result = callbackResult as { processed?: boolean; duplicate?: boolean; already_terminal?: boolean; settlement_updated?: boolean } | null;
+
+  log.info(
+    {
+      event: 'settlement_reconciled',
+      settlementId: settlement.id,
+      txId: (linkedTx as { id: string }).id,
+      amount: settlement.amount,
+      providerStatus: remoteStatusRaw,
+      processed: result?.processed ?? false,
+      duplicate: result?.duplicate ?? false,
+      alreadyTerminal: result?.already_terminal ?? false,
+      settlementUpdated: result?.settlement_updated ?? false,
+      latencyMs,
+    },
+    'reconciled settlement via linked transaction',
+  );
 }
 
 async function reconcileOne(
@@ -389,8 +624,67 @@ export async function runReconciliationTick(
         failed,
         latencyMs: Date.now() - tickStart,
       },
-      'reconciliation tick complete',
+      'reconciliation tick complete (transactions)',
     );
+
+    // ── Settlement reconciliation ─────────────────────────────────
+    // Claim settlement requests stuck in 'processing' and resolve them
+    // via Unipesa /status. Uses a separate claim RPC
+    // (claim_pending_settlements) with its own cooldown.
+    const SETTLEMENT_MIN_AGE_SECONDS = 300; // 5 min — longer than
+    // transactions because settlements are lower-volume and we want
+    // to give the callback more time to arrive.
+    const SETTLEMENT_RETRY_AFTER_SECONDS = 300;
+
+    const { data: settlementRows, error: settlementClaimErr } = await supabase.rpc(
+      'claim_pending_settlements',
+      {
+        p_min_age_seconds: SETTLEMENT_MIN_AGE_SECONDS,
+        p_max_age_seconds: MAX_AGE_SECONDS,
+        p_batch_size: BATCH_SIZE,
+        p_retry_after_seconds: SETTLEMENT_RETRY_AFTER_SECONDS,
+      },
+    );
+
+    if (settlementClaimErr) {
+      log.error(
+        { event: 'settlement_claim_failed', err: settlementClaimErr.message },
+        'claim_pending_settlements RPC failed',
+      );
+      return;
+    }
+
+    const claimedSettlements = (settlementRows as PendingSettlement[] | null) ?? [];
+    if (claimedSettlements.length > 0) {
+      let sSucceeded = 0;
+      let sFailed = 0;
+      for (const s of claimedSettlements) {
+        try {
+          await reconcileOneSettlement(supabase, s, log);
+          sSucceeded += 1;
+        } catch (err) {
+          sFailed += 1;
+          log.error(
+            {
+              event: 'settlement_reconciliation_failed',
+              settlementId: s.id,
+              errorCode: (err as Error)?.message,
+            },
+            'reconcileOneSettlement threw',
+          );
+        }
+      }
+      log.info(
+        {
+          event: 'settlement_reconciliation_completed',
+          claimed: claimedSettlements.length,
+          succeeded: sSucceeded,
+          failed: sFailed,
+          latencyMs: Date.now() - tickStart,
+        },
+        'settlement reconciliation tick complete',
+      );
+    }
   } finally {
     await releaseLock(supabase, log);
   }
