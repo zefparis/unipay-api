@@ -152,7 +152,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       if (request.query.status) q = q.eq('status', request.query.status);
       if (request.query.search) {
         const s = request.query.search.trim();
-        q = q.or(`name.ilike.%${s}%,email.ilike.%${s}%,company_name.ilike.%${s}%`);
+        q = q.or(`name.ilike.%${s}%,email.ilike.%${s}%,company_name.ilike.%${s}%,phone.ilike.%${s}%`);
       }
 
       q = q.range(offset, offset + limit - 1);
