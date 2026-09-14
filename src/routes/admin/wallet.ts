@@ -5,6 +5,7 @@ import { sendAdminDirectEmail } from '../../services/email';
 import { logAdminAction } from '../../lib/admin-action-log';
 import { buildEmailTemplates, type WalletUserTemplateData } from '../../lib/email-templates';
 import { sendTemplateAuto } from '../../lib/email-auto-send';
+import { isValidDrcPhone, extractLocalDigits } from '../../lib/phone-normalization';
 
 function requireAdmin(isAdmin: boolean): boolean {
   return isAdmin;
@@ -363,6 +364,97 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
 
     return reply.send({ ok: true, user: data });
   });
+
+  /* ── POST /v1/admin/wallet/users/:id/correct-phone ─────── */
+  fastify.post<{ Params: { id: string }; Body: { phone: string } }>(
+    '/admin/wallet/users/:id/correct-phone',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['phone'],
+          properties: {
+            phone: { type: 'string', minLength: 4, maxLength: 20 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required' });
+      }
+
+      const { id } = request.params;
+      const { phone: rawPhone } = request.body;
+
+      // Normalize and validate the new phone number
+      const local9 = extractLocalDigits(rawPhone);
+      if (!local9) {
+        return reply.status(400).send({
+          error: 'INVALID_PHONE',
+          message: 'Numéro invalide. Format attendu: +243 suivi de 9 chiffres (ex: +243853315944).',
+        });
+      }
+      const newPhone = `+243${local9}`;
+
+      // Fetch the current user to get the old phone
+      const { data: user, error: fetchErr } = await fastify.supabase
+        .from('wallet_users')
+        .select('id, phone, full_name')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (fetchErr) return reply.status(500).send({ error: fetchErr.message });
+      if (!user) return reply.status(404).send({ error: 'Wallet user not found' });
+
+      const oldPhone = user.phone as string;
+
+      // No-op if the phone is already correct
+      if (oldPhone === newPhone) {
+        return reply.send({ ok: true, old_phone: oldPhone, new_phone: newPhone, changed: false });
+      }
+
+      // Check uniqueness — no other wallet_users should have the new phone
+      const { data: conflict } = await fastify.supabase
+        .from('wallet_users')
+        .select('id')
+        .eq('phone', newPhone)
+        .neq('id', id)
+        .maybeSingle();
+
+      if (conflict) {
+        return reply.status(409).send({
+          error: 'PHONE_ALREADY_EXISTS',
+          message: `Le numéro ${newPhone} est déjà utilisé par un autre wallet user.`,
+        });
+      }
+
+      // Update the phone
+      const { data: updated, error: updateErr } = await fastify.supabase
+        .from('wallet_users')
+        .update({ phone: newPhone, updated_at: new Date().toISOString() })
+        .eq('id', id)
+        .select('id, phone, full_name, email, balance_cdf, kyc_level, is_active, is_verified, created_at, updated_at, kyc_submitted_at')
+        .maybeSingle();
+
+      if (updateErr) return reply.status(500).send({ error: updateErr.message });
+      if (!updated) return reply.status(404).send({ error: 'Wallet user not found after update' });
+
+      fastify.log.info({ userId: id, oldPhone, newPhone }, '[wallet-user-phone-corrected]');
+
+      // Log the action with old and new phone for audit trail
+      void logAdminAction(
+        fastify.supabase,
+        'wallet_user.correct_phone',
+        'wallet_user',
+        id,
+        { old_phone: oldPhone, new_phone: newPhone },
+        fastify.log,
+      );
+
+      return reply.send({ ok: true, old_phone: oldPhone, new_phone: newPhone, changed: true, user: updated });
+    },
+  );
 
   /* ── POST /v1/admin/wallet/adjust ───────────────────────── */
   fastify.post<{ Body: AdjustBody }>('/admin/wallet/adjust', {

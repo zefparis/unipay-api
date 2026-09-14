@@ -5,6 +5,7 @@ import { signWalletToken, signRefreshToken, verifyRefreshToken, requireWallet } 
 import { encryptPrivateKey, generateWallet } from '../../services/blockchain';
 import { createUserWallet } from '../../services/cdp';
 import { sendWalletWelcomeEmail, sendWalletPinChangedEmail } from '../../services/email';
+import { isValidDrcPhone, extractLocalDigits } from '../../lib/phone-normalization';
 
 interface RegisterBody {
   phone: string;
@@ -19,7 +20,22 @@ interface LoginBody {
   pin: string;
 }
 
+/**
+ * Normalize a DRC phone number to E.164 format (+243 + 9 digits).
+ * Uses extractLocalDigits to strip any redundant country code (243) or
+ * leading 0 that the caller may have typed, preventing the double-prefix
+ * bug (e.g. "+243243853315944" → "+243853315944").
+ *
+ * Falls back to the legacy normalization for non-DRC numbers (kept for
+ * forward compatibility if the wallet is ever opened to other countries).
+ */
 function normalizePhone(raw: string): string {
+  // Try strict DRC normalization first — strips redundant 243/0 prefixes
+  const local9 = extractLocalDigits(raw);
+  if (local9) {
+    return `+243${local9}`;
+  }
+  // Legacy fallback for non-DRC numbers
   const digits = raw.replace(/\D/g, '');
   if (digits.startsWith('243') && digits.length === 12) return `+${digits}`;
   if (digits.startsWith('0') && digits.length === 10) return `+243${digits.slice(1)}`;
@@ -62,10 +78,10 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
       const { phone, full_name, pin, email, lang } = request.body;
       const normalizedPhone = normalizePhone(phone);
 
-      if (!/^\+[1-9][0-9]{7,14}$/.test(normalizedPhone)) {
+      if (!isValidDrcPhone(normalizedPhone)) {
         return reply.status(400).send({
           error: 'INVALID_PHONE',
-          message: 'Numéro de téléphone invalide',
+          message: 'Numéro de téléphone invalide. Format attendu: +243 suivi de 9 chiffres.',
         });
       }
 
@@ -171,7 +187,7 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       const { phone: rawPhone, pin } = request.body;
-      const phone = rawPhone.replace(/[\s\-]/g, '');
+      const phone = normalizePhone(rawPhone);
 
       const { data: wallet, error } = await fastify.supabase
         .from('wallet_users')
