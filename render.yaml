@@ -67,3 +67,21 @@ services:
         value: https://unipay-api.onrender.com
       - key: CRON_SERVICE_SECRET
         sync: false
+
+  # ── Cron: daily 03:00 UTC — merchant inactivity sweep ──
+  # Scans merchants with kyc_status='pending' AND volume=0, sends
+  # reminder emails (J3/J7/J12), marks to_relaunch (J7), inactive (J14),
+  # soft-deletes (J104). See src/lib/merchant-inactivity-sweep.ts.
+  - type: cron
+    name: merchant-inactivity-sweep
+    env: node
+    region: frankfurt
+    plan: starter
+    schedule: "0 3 * * *"
+    buildCommand: ""
+    command: node scripts/cron-merchant-inactivity-sweep.js
+    envVars:
+      - key: API_URL
+        value: https://unipay-api.onrender.com
+      - key: CRON_SERVICE_SECRET
+        sync: false

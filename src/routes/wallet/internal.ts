@@ -4,6 +4,7 @@ import { env } from '../../config/env';
 import { createUserWallet } from '../../services/cdp';
 import { getWcgltDepositProcessor } from '../../config/cglt-blockchain-mode';
 import { matchesAnySecret, safeSecretEqual } from '../../security/secret-compare';
+import { runMerchantInactivitySweep } from '../../lib/merchant-inactivity-sweep.js';
 
 interface CreditBody {
   phone:        string;
@@ -180,6 +181,42 @@ const walletInternalRoute: FastifyPluginAsync = async (fastify) => {
         errors,
         remaining: (users?.length ?? 0) === 50 ? 'more' : 'none',
       });
+    },
+  );
+
+  /* ── POST /v1/internal/merchant-inactivity-sweep ─────────── */
+  /* Daily cron: classify merchants by activity, send reminders, soft-delete.
+   * Auth: ADMIN_SECRET or CRON_SERVICE_SECRET (same as backfill). */
+  fastify.post(
+    '/internal/merchant-inactivity-sweep',
+    { config: { rateLimit: { max: 3, timeWindow: '1 hour' } } },
+    async (request, reply) => {
+      const adminSecret = process.env.ADMIN_SECRET;
+      const cronSecret = process.env.CRON_SERVICE_SECRET;
+      if (!safeSecretEqual(request.headers['x-admin-secret'], adminSecret) &&
+          !safeSecretEqual(request.headers['x-admin-secret'], cronSecret)) {
+        return reply.status(403).send({ error: 'Forbidden' });
+      }
+
+      try {
+        const result = await runMerchantInactivitySweep(fastify.supabase);
+        fastify.log.info(
+          {
+            scanned: result.scanned,
+            eligible: result.eligible,
+            reminders_sent: result.reminders_sent,
+            status_changes: result.status_changes,
+            soft_deletes: result.soft_deletes,
+            reactivations: result.reactivations,
+            errors: result.errors,
+          },
+          '[inactivity-sweep] done',
+        );
+        return reply.send({ ok: true, ...result });
+      } catch (err) {
+        fastify.log.error({ err }, '[inactivity-sweep] fatal error');
+        return reply.status(500).send({ error: 'Sweep failed', detail: (err as Error).message });
+      }
     },
   );
 };

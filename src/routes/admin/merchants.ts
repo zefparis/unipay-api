@@ -46,6 +46,8 @@ interface MerchantListQuery {
   kyc_status?: string;
   status?: string;
   search?: string;
+  include_inactive?: boolean;
+  inactivity_status?: string;
 }
 
 const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
@@ -68,13 +70,15 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       kycApprovedRes,
       volume30dRes,
       todayCountRes,
+      toRelaunchRes,
+      inactiveRes,
     ] = await Promise.all([
-      fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }),
-      fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).eq('mode', 'sandbox'),
-      fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).eq('mode', 'live'),
-      fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).eq('kyc_status', 'pending'),
-      fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).eq('kyc_status', 'submitted'),
-      fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).eq('kyc_status', 'approved'),
+      fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).is('deleted_at', null),
+      fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).eq('mode', 'sandbox').is('deleted_at', null),
+      fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).eq('mode', 'live').is('deleted_at', null),
+      fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).eq('kyc_status', 'pending').is('deleted_at', null),
+      fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).eq('kyc_status', 'submitted').is('deleted_at', null),
+      fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).eq('kyc_status', 'approved').is('deleted_at', null),
       fastify.supabase
         .from('transactions')
         .select('net_amount, currency')
@@ -86,6 +90,8 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         .select('id', { count: 'exact', head: true })
         .not('merchant_id', 'is', null)
         .gte('created_at', todayStart),
+      fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).eq('inactivity_status', 'to_relaunch').is('deleted_at', null),
+      fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).eq('inactivity_status', 'inactive').is('deleted_at', null),
     ]);
 
     // Aggregate volume by currency
@@ -109,6 +115,10 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       },
       volume_30d: volumeByCurrency,
       transactions_today: todayCountRes.count ?? 0,
+      inactivity_breakdown: {
+        to_relaunch: toRelaunchRes.count ?? 0,
+        inactive: inactiveRes.count ?? 0,
+      },
     });
   });
 
@@ -126,6 +136,8 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
             kyc_status: { type: 'string', enum: ['pending', 'submitted', 'approved', 'rejected'] },
             status:     { type: 'string', enum: ['active', 'suspended', 'pending'] },
             search:     { type: 'string', maxLength: 128 },
+            include_inactive:   { type: 'boolean', default: false },
+            inactivity_status:  { type: 'string', enum: ['active', 'to_relaunch', 'inactive'] },
           },
         },
       },
@@ -138,14 +150,24 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       const page = request.query.page ?? 1;
       const limit = request.query.limit ?? 50;
       const offset = (page - 1) * limit;
+      const includeInactive = request.query.include_inactive === true;
 
       let q = fastify.supabase
         .from('merchants')
         .select(
-          'id, name, email, phone, country, mode, kyc_status, status, company_name, company_rccm, company_idnat, kyc_submitted_at, kyc_notes, kyc_reviewed_at, created_at, updated_at, rccm_file_url, idnat_file_url, rep_id_file_url',
+          'id, name, email, phone, country, mode, kyc_status, status, company_name, company_rccm, company_idnat, kyc_submitted_at, kyc_notes, kyc_reviewed_at, created_at, updated_at, rccm_file_url, idnat_file_url, rep_id_file_url, inactivity_status, inactivity_status_changed_at, last_reminder_sent_at, last_reminder_step, deleted_at',
           { count: 'exact' },
         )
+        .is('deleted_at', null)
         .order('created_at', { ascending: false });
+
+      // Default: exclude inactive merchants unless include_inactive=true
+      // or an explicit inactivity_status filter is provided.
+      if (!includeInactive && !request.query.inactivity_status) {
+        q = q.neq('inactivity_status', 'inactive');
+      } else if (request.query.inactivity_status) {
+        q = q.eq('inactivity_status', request.query.inactivity_status);
+      }
 
       if (request.query.mode) q = q.eq('mode', request.query.mode);
       if (request.query.kyc_status) q = q.eq('kyc_status', request.query.kyc_status);

@@ -243,6 +243,62 @@ function buildMerchantTemplates(
     ),
   });
 
+  // ── Inactivity lifecycle reminders (cron-triggered, not manual) ──
+  // These are built unconditionally (the cron decides when to send them),
+  // and use {days_since_registration} as an extra placeholder.
+
+  // J3 — Premier rappel doux
+  templates.push({
+    label: 'Rappel inscription J3',
+    subject: 'Finalisez votre inscription UniPay Congo',
+    body: replacePlaceholders(
+      `Bonjour {merchant_name},\n\n` +
+      `Vous vous êtes inscrit sur UniPay Congo il y a quelques jours, mais votre compte n'est pas encore finalisé.\n\n` +
+      `Pour commencer à accepter des paiements, il vous suffit de :\n` +
+      `  1. Soumettre votre dossier KYC (pièce d'identité + registre de commerce)\n` +
+      `  2. Générer votre clé API depuis votre tableau de bord\n\n` +
+      `La procédure prend moins de 10 minutes. Une fois le KYC approuvé, votre compte passera automatiquement en mode live.\n\n` +
+      `Cordialement,\nL'équipe UniPay Congo`,
+      vars,
+    ),
+  });
+
+  // J7 — Relance plus directe
+  templates.push({
+    label: 'Relance inscription J7',
+    subject: 'Votre compte UniPay Congo est en attente — finalisez votre inscription',
+    body: replacePlaceholders(
+      `Bonjour {merchant_name},\n\n` +
+      `Votre compte UniPay Congo a été créé il y a 7 jours, mais votre dossier KYC n'a pas encore été soumis et aucune transaction n'a été enregistrée.\n\n` +
+      `Sans action de votre part, votre compte sera marqué comme « à relancer » et pourrait être masqué du tableau de bord administratif.\n\n` +
+      `Pour activer votre compte :\n` +
+      `  1. Connectez-vous à votre tableau de bord marchand\n` +
+      `  2. Rendez-vous dans la section KYC pour soumettre vos documents\n` +
+      `  3. Générez votre clé API pour commencer à intégrer les paiements\n\n` +
+      `Si vous avez besoin d'aide, notre équipe support est disponible via votre tableau de bord.\n\n` +
+      `Cordialement,\nL'équipe UniPay Congo`,
+      vars,
+    ),
+  });
+
+  // J12 — Dernier avertissement avant archivage
+  templates.push({
+    label: 'Avertissement archivage J12',
+    subject: 'Dernier rappel : votre compte UniPay Congo sera masqué dans 2 jours',
+    body: replacePlaceholders(
+      `Bonjour {merchant_name},\n\n` +
+      `Votre compte UniPay Congo est inactif depuis 12 jours (aucun KYC soumis, aucune transaction enregistrée).\n\n` +
+      `Sans action de votre part dans les 48 heures, votre compte sera automatiquement masqué du tableau de bord et marqué comme inactif. Vous pourrez toujours le réactiver en soumettant votre KYC ou en effectuant une transaction.\n\n` +
+      `Pour éviter cela :\n` +
+      `  1. Connectez-vous à votre tableau de bord marchand\n` +
+      `  2. Soumettez votre dossier KYC (pièce d'identité + registre de commerce)\n` +
+      `  3. Générez votre clé API et effectuez un premier paiement de test\n\n` +
+      `Si vous ne prévoyez pas utiliser ce compte, aucune action n'est nécessaire — il sera simplement masqué, sans suppression immédiate.\n\n` +
+      `Cordialement,\nL'équipe UniPay Congo`,
+      vars,
+    ),
+  });
+
   // Generic — always available
   templates.push({
     label: 'Réponse à votre demande',
