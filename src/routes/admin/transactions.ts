@@ -35,7 +35,7 @@ const adminTransactionsRoute: FastifyPluginAsync = async (fastify) => {
 
       let query = fastify.supabase
         .from('transactions')
-        .select('id, merchant_id, operator, direction, amount, fee, net_amount, currency, phone, reference, avada_transaction_id, status, created_at, updated_at, operators(name, email)', { count: 'exact' })
+        .select('id, merchant_id, operator, direction, amount, fee, net_amount, currency, phone, reference, avada_transaction_id, status, created_at, updated_at, metadata, operators(name, email)', { count: 'exact' })
         .order('created_at', { ascending: false })
         .range(offset, offset + limit - 1);
 

@@ -84,6 +84,29 @@ export async function notifyMerchantWebhook(
   }
 
   const webhookSecret = (merchantWebhook as { webhook_secret?: string } | null)?.webhook_secret;
+
+  // Fetch the transaction metadata to include the provider error
+  // details (provider_result.code + provider_result.message) so the
+  // merchant can display the real failure reason to their end user
+  // (e.g. "PIN incorrect" vs "solde insuffisant" vs "opérateur
+  // indisponible") instead of a generic "transaction failed".
+  let providerResult: { code?: string; message?: string } | null = null;
+  if (status === 'failed') {
+    const { data: txRow } = await supabase
+      .from('transactions')
+      .select('metadata')
+      .eq('id', tx.id)
+      .maybeSingle();
+    const md = (txRow as { metadata?: Record<string, unknown> | null } | null)?.metadata;
+    if (md && typeof md === 'object' && md['provider_result'] && typeof md['provider_result'] === 'object') {
+      const pr = md['provider_result'] as Record<string, unknown>;
+      providerResult = {
+        code: typeof pr['code'] === 'string' || typeof pr['code'] === 'number' ? String(pr['code']) : undefined,
+        message: typeof pr['message'] === 'string' ? pr['message'] : undefined,
+      };
+    }
+  }
+
   const payload = JSON.stringify({
     event: 'payment.status_update',
     timestamp: new Date().toISOString(),
@@ -92,6 +115,7 @@ export async function notifyMerchantWebhook(
       avada_transaction_id: tx.avada_transaction_id ?? null,
       reference: tx.reference,
       status,
+      ...(providerResult ? { provider_result: providerResult } : {}),
     },
   });
 

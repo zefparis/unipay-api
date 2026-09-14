@@ -44,7 +44,7 @@ const merchantTransactionsRoute: FastifyPluginAsync = async (fastify) => {
 
       let query = fastify.supabase
         .from('transactions')
-        .select('id, operator, direction, amount, fee, net_amount, currency, phone, reference, avada_transaction_id, status, created_at, updated_at', { count: 'exact' })
+        .select('id, operator, direction, amount, fee, net_amount, currency, phone, reference, avada_transaction_id, status, created_at, updated_at, metadata', { count: 'exact' })
         .eq('merchant_id', auth.payload.merchant_id)
         .order('created_at', { ascending: false })
         .range(offset, offset + limit - 1);

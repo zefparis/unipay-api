@@ -1030,7 +1030,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       let q = fastify.supabase
         .from('transactions')
         .select(
-          'id, merchant_id, direction, operator, phone, amount, fee, net_amount, currency, status, reference, avada_transaction_id, created_at, updated_at',
+          'id, merchant_id, direction, operator, phone, amount, fee, net_amount, currency, status, reference, avada_transaction_id, created_at, updated_at, metadata',
           { count: 'exact' },
         )
         .not('merchant_id', 'is', null)
