@@ -91,6 +91,7 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
               fee: { type: 'number' },
               net_amount: { type: 'number' },
               currency: { type: 'string' },
+              idempotent: { type: 'boolean' },
             },
           },
         },
@@ -159,6 +160,59 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
       const net_amount = Math.round((amount - fee) * 100) / 100;
       const transactionId = crypto.randomUUID();
       const resolvedReference = reference ?? `TXN-${transactionId.slice(0, 8).toUpperCase()}`;
+
+      // ── Idempotency check (M9) ──────────────────────────────────
+      // If the merchant provided an explicit reference, check whether
+      // a transaction with the same (merchant_id, reference) already
+      // exists. This prevents accidental duplicates from network
+      // retries and deliberate collision attacks on the callback
+      // lookup (which uses reference as a fallback key).
+      //
+      // - Non-terminal (pending/processing): return the existing
+      //   transaction — true idempotent behavior for a POST that may
+      //   be replayed by the client after a network timeout.
+      // - Terminal (success/failed/cancelled): reject with
+      //   DUPLICATE_REFERENCE — the merchant must use a new reference.
+      //
+      // Auto-generated references (reference === undefined) are always
+      // unique by construction (UUID-based) and skip this check.
+      if (reference !== undefined) {
+        const { data: existingTx, error: lookupErr } = await fastify.supabase
+          .from('transactions')
+          .select('id, status, amount, fee, net_amount, currency, direction, operator')
+          .eq('merchant_id', merchantId)
+          .eq('reference', resolvedReference)
+          .maybeSingle();
+
+        if (lookupErr) {
+          fastify.log.error({ err: lookupErr, merchantId, reference: resolvedReference }, '[initiate] Idempotency lookup failed');
+          return reply.status(500).send({ error: 'Failed to check transaction idempotency', statusCode: 500 });
+        }
+
+        if (existingTx) {
+          if (existingTx.status === 'pending' || existingTx.status === 'processing') {
+            // Idempotent return — same transaction, still in flight
+            fastify.log.info({ merchantId, reference: resolvedReference, existingTxId: existingTx.id }, '[initiate] Idempotent replay — returning existing transaction');
+            return reply.status(201).send({
+              transaction_id: existingTx.id,
+              status: existingTx.status,
+              amount: Number(existingTx.amount),
+              fee: Number(existingTx.fee),
+              net_amount: Number(existingTx.net_amount),
+              currency: existingTx.currency,
+              idempotent: true,
+            });
+          }
+          // Terminal — reject
+          return reply.status(409).send({
+            error: 'DUPLICATE_REFERENCE',
+            message: `A transaction with reference '${resolvedReference}' already exists with status '${existingTx.status}'. Use a different reference.`,
+            existing_transaction_id: existingTx.id,
+            existing_status: existingTx.status,
+            statusCode: 409,
+          });
+        }
+      }
 
       // ── Pre-flight Avada balance check (payout only) ───────────
       // For payouts (B2C), the Unipesa merchant account must have
