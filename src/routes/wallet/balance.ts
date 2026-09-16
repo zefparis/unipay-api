@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
+import { errorResponses } from '../../lib/error-schema';
 
 const walletBalanceRoute: FastifyPluginAsync = async (fastify) => {
   fastify.get(
@@ -21,6 +22,7 @@ const walletBalanceRoute: FastifyPluginAsync = async (fastify) => {
               phone:        { type: 'string' },
             },
           },
+          ...errorResponses,
         },
       },
     },

@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { requireActiveMerchant } from '../../lib/merchant-auth';
+import { errorResponses } from '../../lib/error-schema';
 
 const merchantBalanceRoute: FastifyPluginAsync = async (fastify) => {
   fastify.get(
@@ -23,6 +24,7 @@ const merchantBalanceRoute: FastifyPluginAsync = async (fastify) => {
               mode:     { type: 'string' },
             },
           },
+          ...errorResponses,
         },
       },
     },

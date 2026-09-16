@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env.js';
 import { requireActiveMerchant } from '../../lib/merchant-auth.js';
+import { errorResponses } from '../../lib/error-schema.js';
 
 type MerchantMode = 'sandbox' | 'live';
 interface ModeBody { mode: MerchantMode }
@@ -29,6 +30,7 @@ const merchantModeRoute: FastifyPluginAsync = async (fastify) => {
               kyc_status: { type: 'string' },
             },
           },
+          ...errorResponses,
         },
       },
     },
@@ -70,6 +72,7 @@ const merchantModeRoute: FastifyPluginAsync = async (fastify) => {
               ok:   { type: 'boolean' },
             },
           },
+          ...errorResponses,
         },
       },
     },

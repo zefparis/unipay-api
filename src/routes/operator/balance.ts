@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
+import { errorResponses } from '../../lib/error-schema.js';
 
 const balanceRoute: FastifyPluginAsync = async (fastify) => {
   fastify.get(
@@ -14,6 +15,7 @@ const balanceRoute: FastifyPluginAsync = async (fastify) => {
               currency: { type: 'string' },
             },
           },
+          ...errorResponses,
         },
       },
     },

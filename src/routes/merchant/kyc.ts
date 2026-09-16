@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import '@fastify/multipart';
 import { env } from '../../config/env.js';
 import { requireActiveMerchant } from '../../lib/merchant-auth.js';
+import { errorResponses } from '../../lib/error-schema.js';
 
 /* ── upload validation ─────────────────────────────────────── */
 const BUCKET = 'merchant-kyc-docs';
@@ -61,6 +62,7 @@ const merchantKycRoute: FastifyPluginAsync = async (fastify) => {
               rep_id_file_url:   { type: ['string', 'null'] },
             },
           },
+          ...errorResponses,
         },
       },
     },

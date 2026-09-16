@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env.js';
 import { requireActiveMerchant, merchantIdFromRequest } from '../../lib/merchant-auth.js';
+import { errorResponses } from '../../lib/error-schema.js';
 
 /* ── SSRF guard ─────────────────────────────────────────────── */
 function isSafeWebhookUrl(raw: string): boolean {
@@ -36,6 +37,7 @@ const merchantWebhookRoute: FastifyPluginAsync = async (fastify) => {
               has_secret:  { type: 'boolean' },
             },
           },
+          ...errorResponses,
         },
       },
     },
@@ -80,6 +82,7 @@ const merchantWebhookRoute: FastifyPluginAsync = async (fastify) => {
               note:           { type: 'string' },
             },
           },
+          ...errorResponses,
         },
       },
     },
@@ -125,7 +128,7 @@ const merchantWebhookRoute: FastifyPluginAsync = async (fastify) => {
     '/merchant/webhook',
     {
       schema: {
-        response: { 200: { type: 'object', properties: { ok: { type: 'boolean' } } } },
+        response: { 200: { type: 'object', properties: { ok: { type: 'boolean' } } }, ...errorResponses },
       },
     },
     async (request, reply) => {
@@ -158,6 +161,7 @@ const merchantWebhookRoute: FastifyPluginAsync = async (fastify) => {
               duration_ms: { type: 'number' },
             },
           },
+          ...errorResponses,
         },
       },
       config: {

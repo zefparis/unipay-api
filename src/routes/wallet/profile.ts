@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
 import { generateWallet, encryptPrivateKey } from '../../services/blockchain';
+import { errorResponses } from '../../lib/error-schema';
 
 interface PatchProfileBody { full_name: string }
 
@@ -27,6 +28,7 @@ const walletProfileRoute: FastifyPluginAsync = async (fastify) => {
               created_at:         { type: 'string' },
             },
           },
+          ...errorResponses,
         },
       },
     },
@@ -97,6 +99,7 @@ const walletProfileRoute: FastifyPluginAsync = async (fastify) => {
               full_name: { type: 'string' },
             },
           },
+          ...errorResponses,
         },
       },
     },

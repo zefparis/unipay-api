@@ -42,7 +42,7 @@ export async function requireActiveMerchant(
   supabase: SupabaseClient,
 ): Promise<
   | { ok: true; payload: JwtPayload }
-  | { ok: false; status: number; error: { error: string; statusCode: number } }
+  | { ok: false; status: 401 | 403 | 404; error: { error: string; statusCode: number } }
 > {
   const payload = requireMerchantAuth(request);
   if (!payload) {

@@ -235,26 +235,27 @@ export async function buildServer() {
   });
 
   // Global error handler
-  server.setErrorHandler((error, request, reply) => {
-    if (error.validation) {
-      server.log.warn({ url: request.url, validation: error.validation }, 'Validation error');
+  server.setErrorHandler((error: Error, request, reply) => {
+    const err = error as Error & { validation?: unknown; statusCode?: number };
+    if (err.validation) {
+      server.log.warn({ url: request.url, validation: err.validation }, 'Validation error');
       return reply.status(400).send({
         error: 'Validation Error',
-        message: error.message,
+        message: err.message,
         statusCode: 400,
       });
     }
 
-    const statusCode = error.statusCode ?? 500;
+    const statusCode = err.statusCode ?? 500;
 
     if (statusCode >= 500) {
-      server.log.error({ err: error, reqId: request.id }, 'Server error');
+      server.log.error({ err: err, reqId: request.id }, 'Server error');
     } else {
-      server.log.warn({ statusCode, url: request.url }, error.message);
+      server.log.warn({ statusCode, url: request.url }, err.message);
     }
 
     return reply.status(statusCode).send({
-      error: statusCode >= 500 ? 'Internal Server Error' : error.message,
+      error: statusCode >= 500 ? 'Internal Server Error' : err.message,
       statusCode,
     });
   });

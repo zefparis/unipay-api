@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
+import { errorResponses } from '../../lib/error-schema.js';
 
 const authRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post(
@@ -17,6 +18,7 @@ const authRoute: FastifyPluginAsync = async (fastify) => {
               is_admin: { type: 'boolean' },
             },
           },
+          ...errorResponses,
         },
       },
     },
