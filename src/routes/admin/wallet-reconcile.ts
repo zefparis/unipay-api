@@ -35,6 +35,7 @@ const walletReconcileRoute: FastifyPluginAsync = async (fastify) => {
 
       const { reference, force_status } = request.body;
 
+      // Fetch the transaction (read-only — the atomic RPC locks + updates)
       const { data: tx, error: txErr } = await fastify.supabase
         .from('transactions')
         .select('id, status, wallet_user_id, direction, amount, net_amount')
@@ -44,10 +45,6 @@ const walletReconcileRoute: FastifyPluginAsync = async (fastify) => {
       if (txErr) return reply.status(500).send({ error: txErr.message });
       if (!tx)   return reply.status(404).send({ error: `Transaction ${reference} not found` });
       if (!tx.wallet_user_id) return reply.status(400).send({ error: 'No wallet_user_id on transaction' });
-
-      if (tx.status === 'success' || tx.status === 'failed') {
-        return reply.send({ ok: true, message: `Already ${tx.status}`, reference });
-      }
 
       const netAmount = Number(tx.net_amount ?? 0);
       const amount    = Number(tx.amount ?? 0);
@@ -59,41 +56,64 @@ const walletReconcileRoute: FastifyPluginAsync = async (fastify) => {
       const isWithdrawal = tx.direction === 'payout';
       const targetStatus = force_status ?? (isDeposit ? 'success' : 'failed');
 
-      // 1. Update transaction status
-      const { error: updateErr } = await fastify.supabase
-        .from('transactions')
-        .update({ status: targetStatus })
-        .eq('id', tx.id);
-      if (updateErr) return reply.status(500).send({ error: updateErr.message });
-
-      // 2. Adjust wallet balance
-      const { data: walletRow } = await fastify.supabase
-        .from('wallet_users')
-        .select('balance_cdf')
-        .eq('id', tx.wallet_user_id)
-        .maybeSingle();
-      if (!walletRow) return reply.status(404).send({ error: 'Wallet user not found' });
-
       let delta = 0;
-      let action = 'none';
-
       if (isDeposit && targetStatus === 'success') {
-        delta  = netAmount;  // credit deposit net
-        action = 'credited';
+        delta = netAmount;  // credit deposit net
       } else if (isWithdrawal && targetStatus === 'failed') {
-        delta  = amount;     // refund full amount
-        action = 'refunded';
+        delta = amount;     // refund full amount
       }
 
-      let newBalance = Number(walletRow.balance_cdf ?? 0);
-      if (delta > 0) {
-        const { data: creditedBalance, error: balErr } = await fastify.supabase
-          .rpc('wallet_credit_cdf', { p_user_id: tx.wallet_user_id, p_amount: delta });
-        if (balErr) return reply.status(500).send({ error: balErr.message });
-        newBalance = Number(creditedBalance);
+      // ── Atomic reconcile (M4): status update + balance credit in one RPC ──
+      // The RPC locks the transaction row (FOR UPDATE), checks if already
+      // terminal (idempotent no-op), updates status, and credits the wallet
+      // — all in a single transaction. Two concurrent calls cannot both
+      // credit: the first commits, the second finds the row already terminal.
+      const { data: result, error: rpcErr } = await fastify.supabase
+        .rpc('wallet_reconcile_atomic', {
+          p_tx_id: tx.id,
+          p_target_status: targetStatus,
+          p_delta: delta,
+        });
+
+      if (rpcErr) {
+        const msg = rpcErr.message ?? '';
+        if (msg.includes('TRANSACTION_NOT_FOUND')) {
+          return reply.status(404).send({ error: `Transaction ${reference} not found` });
+        }
+        if (msg.includes('WALLET_NOT_FOUND')) {
+          return reply.status(404).send({ error: 'Wallet user not found' });
+        }
+        if (msg.includes('INVALID_TARGET_STATUS')) {
+          return reply.status(400).send({ error: msg });
+        }
+        return reply.status(500).send({ error: msg });
       }
 
-      fastify.log.info({ reference, action, delta, newBalance }, '[reconcile] done');
+      const r = result as { already_terminal: boolean; previous_status?: string; new_status?: string; action?: string; delta?: number; new_balance?: number | null };
+
+      // Idempotent: already terminal — no double-credit
+      if (r.already_terminal) {
+        return reply.send({
+          ok: true,
+          message: `Already ${r.previous_status}`,
+          reference,
+          already_terminal: true,
+        });
+      }
+
+      const action = r.action ?? 'none';
+      const newBalance = r.new_balance !== null && r.new_balance !== undefined ? Number(r.new_balance) : undefined;
+
+      fastify.log.info({ reference, action, delta, newBalance, previous_status: r.previous_status, new_status: r.new_status }, '[reconcile] done (atomic)');
+
+      void logAdminAction(
+        fastify.supabase,
+        'wallet.reconcile',
+        'transaction',
+        tx.id,
+        { reference, previous_status: r.previous_status, new_status: r.new_status, action, delta, new_balance: newBalance, wallet_user_id: tx.wallet_user_id },
+        fastify.log,
+      );
 
       return reply.send({ ok: true, reference, action, delta, new_balance: newBalance });
     },
