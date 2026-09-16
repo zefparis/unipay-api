@@ -168,6 +168,123 @@ describe('Unipesa reconciliation — service', () => {
   });
 });
 
+describe('Unipesa reconciliation — settlement fallback', () => {
+  const service = source('src/services/unipesa-reconciliation.ts');
+
+  it('runs claim_pending_settlements even when no transactions were claimed', () => {
+    // Regression: the tick used to `return` early when claimed.length === 0,
+    // which skipped the settlement claim section entirely — settlements
+    // stuck in 'processing' were never reconciled.
+    assert.doesNotMatch(service, /claimed\.length === 0[\s\S]{0,300}\breturn\b/);
+    assert.match(service, /if \(claimed\.length > 0\)/);
+    const txDone = service.indexOf('reconciliation tick complete (transactions)');
+    const settlementClaim = service.indexOf('claim_pending_settlements');
+    assert.ok(txDone > 0 && settlementClaim > txDone,
+      'settlement claim must run after the transaction loop, unconditionally');
+  });
+
+  it('falls back to direct settlement RPCs when the linked tx is already terminal', () => {
+    // Covers the case where the tx was resolved while the settlement
+    // propagation block was missing from process_wallet_provider_callback:
+    // the RPC returns already_terminal and skips the settlement. The worker
+    // must then call mark_settlement_* directly instead of re-claiming
+    // forever.
+    assert.match(service, /result\?\.already_terminal && !result\?\.processed/);
+    assert.match(service, /mark_settlement_success/);
+    assert.match(service, /mark_settlement_failed/);
+    assert.match(service, /already_terminal_direct/);
+  });
+});
+
+describe('reconcileOneSettlement — already_terminal fallback (functional)', () => {
+  // env.ts exits the process when required vars are missing — stub them
+  // before importing the service module.
+  process.env.SUPABASE_URL ??= 'http://localhost';
+  process.env.SUPABASE_SERVICE_KEY ??= 'test-service-key';
+  process.env.HMAC_SECRET ??= 'test-hmac-secret-1234';
+
+  const silentLog = { info: () => {}, warn: () => {}, error: () => {} };
+
+  const settlement = {
+    id: 'stl-test-1',
+    merchant_id: 'm-1',
+    amount: 19950,
+    currency: 'CDF',
+    phone: '+243970967029',
+    provider_ref: 'STL-TEST',
+    created_at: '2026-09-16T16:09:19Z',
+  };
+
+  function mockSupabase(linkedTx: { id: string; status: string }, callbackResult: unknown) {
+    const rpcCalls: Array<{ fn: string; params: Record<string, unknown> }> = [];
+    const supabase = {
+      from: () => ({
+        select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: linkedTx, error: null }) }) }),
+      }),
+      rpc: async (fn: string, params: Record<string, unknown>) => {
+        rpcCalls.push({ fn, params });
+        if (fn === 'process_wallet_provider_callback') return { data: callbackResult, error: null };
+        return { data: { ok: true }, error: null };
+      },
+    };
+    return { supabase, rpcCalls };
+  }
+
+  it('tx already failed + settlement processing → mark_settlement_failed', async () => {
+    const { reconcileOneSettlement } = await import('../../services/unipesa-reconciliation');
+    const { supabase, rpcCalls } = mockSupabase(
+      { id: 'tx-1', status: 'failed' },
+      { processed: false, already_terminal: true },
+    );
+    await reconcileOneSettlement(
+      supabase as never,
+      settlement,
+      silentLog,
+      async () => ({ status: 'failed', raw: {} }),
+    );
+    const mark = rpcCalls.find((c) => c.fn === 'mark_settlement_failed');
+    assert.ok(mark, 'mark_settlement_failed must be called');
+    assert.equal(mark!.params.p_request_id, 'stl-test-1');
+    assert.match(String(mark!.params.p_reason), /linked transaction already failed/);
+    assert.equal(rpcCalls.filter((c) => c.fn === 'mark_settlement_success').length, 0);
+  });
+
+  it('tx already success + settlement processing → mark_settlement_success', async () => {
+    const { reconcileOneSettlement } = await import('../../services/unipesa-reconciliation');
+    const { supabase, rpcCalls } = mockSupabase(
+      { id: 'tx-2', status: 'success' },
+      { processed: false, already_terminal: true },
+    );
+    await reconcileOneSettlement(
+      supabase as never,
+      settlement,
+      silentLog,
+      async () => ({ status: 'success', raw: {} }),
+    );
+    const mark = rpcCalls.find((c) => c.fn === 'mark_settlement_success');
+    assert.ok(mark, 'mark_settlement_success must be called');
+    assert.equal(mark!.params.p_request_id, 'stl-test-1');
+    assert.equal(mark!.params.p_provider_ref, 'STL-TEST');
+    assert.equal(rpcCalls.filter((c) => c.fn === 'mark_settlement_failed').length, 0);
+  });
+
+  it('tx processing (RPC processed the resolution) → no direct settlement RPC', async () => {
+    const { reconcileOneSettlement } = await import('../../services/unipesa-reconciliation');
+    const { supabase, rpcCalls } = mockSupabase(
+      { id: 'tx-3', status: 'processing' },
+      { processed: true },
+    );
+    await reconcileOneSettlement(
+      supabase as never,
+      settlement,
+      silentLog,
+      async () => ({ status: 'failed', raw: {} }),
+    );
+    assert.equal(rpcCalls.filter((c) => c.fn.startsWith('mark_settlement')).length, 0,
+      'fallback must not fire when the RPC processed normally');
+  });
+});
+
 describe('Unipesa reconciliation — app.ts wiring', () => {
   const app = source('src/app.ts');
 

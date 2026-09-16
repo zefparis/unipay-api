@@ -65,7 +65,7 @@ type PendingTx = {
   created_at: string;
 };
 
-type PendingSettlement = {
+export type PendingSettlement = {
   id: string;
   merchant_id: string;
   amount: number;
@@ -140,10 +140,12 @@ async function logTooOldPending(supabase: SupabaseClient, log: ReconciliationLog
   }
 }
 
-async function reconcileOneSettlement(
+export async function reconcileOneSettlement(
   supabase: SupabaseClient,
   settlement: PendingSettlement,
   log: ReconciliationLogger,
+  // Injectable for tests — production callers use the default.
+  getStatus: typeof getTransactionStatusWithRaw = getTransactionStatusWithRaw,
 ): Promise<void> {
   const start = Date.now();
   // Use provider_ref (avada_transaction_id) to query Unipesa /status.
@@ -164,7 +166,7 @@ async function reconcileOneSettlement(
   let remoteStatusRaw: AvadaStatus;
   let rawResponse: Record<string, unknown> = {};
   try {
-    const statusResult = await getTransactionStatusWithRaw(statusKey);
+    const statusResult = await getStatus(statusKey);
     remoteStatusRaw = statusResult.status;
     rawResponse = statusResult.raw;
   } catch (err) {
@@ -347,6 +349,46 @@ async function reconcileOneSettlement(
   }
 
   const result = callbackResult as { processed?: boolean; duplicate?: boolean; already_terminal?: boolean; settlement_updated?: boolean } | null;
+
+  // The linked transaction is already terminal but the settlement is still
+  // 'processing' — this happens when the tx was resolved while the
+  // settlement-propagation block was missing from
+  // process_wallet_provider_callback. The RPC's already_terminal guard
+  // returns early without touching the settlement, so we apply the terminal
+  // status directly. Without this, the settlement would be re-claimed every
+  // cooldown forever with no effect.
+  if (result?.already_terminal && !result?.processed) {
+    const txStatus = (linkedTx as { status: string }).status;
+    const terminal = txStatus === 'success' ? 'success' : 'failed';
+    const { error: directErr } = terminal === 'success'
+      ? await supabase.rpc('mark_settlement_success', {
+          p_request_id: settlement.id,
+          p_provider_ref: statusKey,
+        })
+      : await supabase.rpc('mark_settlement_failed', {
+          p_request_id: settlement.id,
+          p_reason: `Reconciliation fallback: linked transaction already ${txStatus}`,
+        });
+    if (directErr) {
+      log.warn(
+        { event: 'settlement_reconciliation_failed', settlementId: settlement.id, err: directErr.message },
+        'already_terminal fallback failed (may already be terminal)',
+      );
+    } else {
+      log.info(
+        {
+          event: 'settlement_reconciled',
+          settlementId: settlement.id,
+          txId: (linkedTx as { id: string }).id,
+          providerStatus: remoteStatusRaw,
+          fallback: 'already_terminal_direct',
+          latencyMs: Date.now() - start,
+        },
+        'settlement resolved via already_terminal fallback',
+      );
+    }
+    return;
+  }
 
   log.info(
     {
@@ -588,17 +630,10 @@ export async function runReconciliationTick(
     }
 
     const claimed = (rows as PendingTx[] | null) ?? [];
-    if (claimed.length === 0) {
-      log.info(
-        { event: 'reconciliation_completed', claimed: 0, latencyMs: Date.now() - tickStart },
-        'reconciliation tick complete (no work)',
-      );
-      return;
-    }
-
-    let succeeded = 0;
-    let failed = 0;
-    for (const tx of claimed) {
+    if (claimed.length > 0) {
+      let succeeded = 0;
+      let failed = 0;
+      for (const tx of claimed) {
       try {
         await reconcileOne(supabase, tx, log);
         succeeded += 1;
@@ -626,6 +661,7 @@ export async function runReconciliationTick(
       },
       'reconciliation tick complete (transactions)',
     );
+    }
 
     // ── Settlement reconciliation ─────────────────────────────────
     // Claim settlement requests stuck in 'processing' and resolve them
