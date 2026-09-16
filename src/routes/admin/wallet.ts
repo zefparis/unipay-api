@@ -213,7 +213,7 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
 
     let q = fastify.supabase
       .from('wallet_users')
-      .select('id, phone, full_name, balance_cdf, kyc_level, is_active, created_at, updated_at', { count: 'exact' })
+      .select('id, phone, full_name, balance_cdf, kyc_level, is_active, created_at, updated_at, failed_pin_attempts, locked_until, pin_lockout_count', { count: 'exact' })
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
 
@@ -244,7 +244,7 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
     const [userRes, txRes, ledgerRes] = await Promise.all([
       fastify.supabase
         .from('wallet_users')
-        .select('id, phone, full_name, balance_cdf, kyc_level, is_active, created_at, updated_at')
+        .select('id, phone, full_name, balance_cdf, kyc_level, is_active, created_at, updated_at, failed_pin_attempts, locked_until, pin_lockout_count')
         .eq('id', id)
         .maybeSingle(),
       fastify.supabase
@@ -327,6 +327,130 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
     }
 
     return reply.send({ ok: true, is_active: true });
+  });
+
+  /* ── GET /v1/admin/wallet/users/:id/lockout-status ──────────
+   * Returns the current PIN lockout state for a wallet user.
+   * Useful for the admin dashboard to display a "PIN verrouillé" badge
+   * and decide whether to show the unlock button.
+   */
+  fastify.get<{ Params: { id: string } }>('/admin/wallet/users/:id/lockout-status', async (request, reply) => {
+    if (!requireAdmin(request.isAdmin)) {
+      return reply.status(403).send({ error: 'Admin access required' });
+    }
+
+    const { id } = request.params;
+    const { data, error } = await fastify.supabase
+      .from('wallet_users')
+      .select('id, failed_pin_attempts, locked_until, pin_lockout_count')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (error) return reply.status(500).send({ error: error.message });
+    if (!data) return reply.status(404).send({ error: 'Wallet user not found' });
+
+    const lockedUntil = (data as { locked_until: string | null }).locked_until;
+    const isLocked = lockedUntil !== null && new Date(lockedUntil) > new Date();
+    const isPermanent = isLocked && new Date(lockedUntil).getFullYear() >= 2099;
+
+    return reply.send({
+      wallet_id: id,
+      is_locked: isLocked,
+      is_permanent: isPermanent,
+      failed_pin_attempts: (data as { failed_pin_attempts: number }).failed_pin_attempts,
+      locked_until: lockedUntil,
+      pin_lockout_count: (data as { pin_lockout_count: number }).pin_lockout_count,
+    });
+  });
+
+  /* ── POST /v1/admin/wallet/users/:id/unlock-pin ────────────
+   * Resets the PIN brute-force lockout on a wallet user account.
+   * Clears failed_pin_attempts, locked_until and pin_lockout_count.
+   *
+   * Returns:
+   *   200 { ok: true, was_locked: true }   — lockout cleared
+   *   200 { ok: true, was_locked: false, status: 'ALREADY_UNLOCKED' } — nothing to do
+   *   404  — wallet_id not found
+   *
+   * The action is logged via logAdminAction for audit traceability.
+   */
+  fastify.post<{ Params: { id: string } }>('/admin/wallet/users/:id/unlock-pin', async (request, reply) => {
+    if (!requireAdmin(request.isAdmin)) {
+      return reply.status(403).send({ error: 'Admin access required' });
+    }
+
+    const { id } = request.params;
+
+    // 1. Fetch the current lockout state to know if the account is
+    //    actually locked, and to verify the wallet exists.
+    const { data: existing, error: fetchErr } = await fastify.supabase
+      .from('wallet_users')
+      .select('id, phone, failed_pin_attempts, locked_until, pin_lockout_count')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (fetchErr) return reply.status(500).send({ error: fetchErr.message });
+    if (!existing) return reply.status(404).send({ error: 'Wallet user not found' });
+
+    const row = existing as {
+      id: string;
+      phone: string | null;
+      failed_pin_attempts: number;
+      locked_until: string | null;
+      pin_lockout_count: number;
+    };
+
+    const wasLocked = row.locked_until !== null && new Date(row.locked_until) > new Date();
+
+    // 2. If not currently locked, return ALREADY_UNLOCKED without
+    //    touching the row (no audit log for a no-op).
+    if (!wasLocked) {
+      return reply.send({
+        ok: true,
+        was_locked: false,
+        status: 'ALREADY_UNLOCKED',
+        failed_pin_attempts: row.failed_pin_attempts,
+        pin_lockout_count: row.pin_lockout_count,
+      });
+    }
+
+    // 3. Reset the three lockout columns.
+    const { error: updateErr } = await fastify.supabase
+      .from('wallet_users')
+      .update({
+        failed_pin_attempts: 0,
+        locked_until: null,
+        pin_lockout_count: 0,
+      })
+      .eq('id', id);
+
+    if (updateErr) {
+      fastify.log.error({ err: updateErr, walletId: id }, '[admin] unlock-pin failed');
+      return reply.status(500).send({ error: updateErr.message });
+    }
+
+    fastify.log.info(
+      { walletId: id, phone: row.phone, previousLockoutCount: row.pin_lockout_count },
+      '[admin] wallet PIN lockout cleared',
+    );
+
+    // 4. Audit log — capture who/when/what. The actor is 'admin' (set
+    //    by logAdminAction). We log the previous state for forensics.
+    void logAdminAction(
+      fastify.supabase,
+      'wallet_user.unlock_pin',
+      'wallet_user',
+      id,
+      {
+        phone: row.phone,
+        previous_failed_pin_attempts: row.failed_pin_attempts,
+        previous_pin_lockout_count: row.pin_lockout_count,
+        previous_locked_until: row.locked_until,
+      },
+      fastify.log,
+    );
+
+    return reply.send({ ok: true, was_locked: true });
   });
 
   /* ── POST /v1/admin/wallet/users/:id/kyc/approve ─────────── */

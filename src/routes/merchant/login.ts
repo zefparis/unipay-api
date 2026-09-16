@@ -12,6 +12,7 @@ const loginRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: LoginBody }>(
     '/merchant/login',
     {
+      config: { rateLimit: { max: 10, timeWindow: '1 minute', keyGenerator: (req) => req.ip } },
       schema: {
         body: {
           type: 'object',

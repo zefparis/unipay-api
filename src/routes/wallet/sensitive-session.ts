@@ -1,6 +1,12 @@
 import bcrypt from 'bcryptjs';
 import type { FastifyPluginAsync } from 'fastify';
 import { requireActiveWallet } from '../../lib/wallet-auth.js';
+import {
+  getLockoutDeadline,
+  recordFailedPinAttempt,
+  resetPinLockout,
+  type PinLockoutState,
+} from '../../lib/pin-lockout.js';
 
 /**
  * Wallet sensitive-session management — local to unipay-api.
@@ -288,10 +294,27 @@ const sensitiveSessionRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      const auth = await requireActiveWallet(request, fastify.supabase, 'id, phone, is_active, kyc_level, pin_hash');
+      const auth = await requireActiveWallet(request, fastify.supabase, 'id, phone, is_active, kyc_level, pin_hash, failed_pin_attempts, locked_until, pin_lockout_count');
       if (!auth.ok) return reply.status(auth.status).send(auth.error);
       const walletId = auth.payload.wallet_id;
       const { sessionId, pin } = request.body;
+
+      // ── Lockout check ──
+      const lockoutState: PinLockoutState = {
+        failed_pin_attempts: auth.wallet.failed_pin_attempts as number | null,
+        locked_until: auth.wallet.locked_until as string | null,
+        pin_lockout_count: auth.wallet.pin_lockout_count as number | null,
+      };
+      const lockedUntil = getLockoutDeadline(lockoutState);
+      if (lockedUntil) {
+        const retryAfter = Math.max(1, Math.ceil((new Date(lockedUntil).getTime() - Date.now()) / 1000));
+        fastify.log.warn({ walletId, lockedUntil }, 'reactivate rejected — account locked');
+        return reply.status(423).send({
+          error: 'Account temporarily locked due to too many failed PIN attempts.',
+          statusCode: 423,
+          retry_after: retryAfter,
+        });
+      }
 
       // Fetch the session — must be invalidated to be reactivated.
       const { data: session } = await fastify.supabase
@@ -336,8 +359,31 @@ const sensitiveSessionRoute: FastifyPluginAsync = async (fastify) => {
 
       const pinMatch = await bcrypt.compare(pin, pinHash);
       if (!pinMatch) {
+        const result = await recordFailedPinAttempt(
+          fastify.supabase,
+          walletId,
+          lockoutState.failed_pin_attempts ?? 0,
+          lockoutState.pin_lockout_count ?? 0,
+        );
+        fastify.log.warn(
+          { walletId, locked: result.locked, lockoutCount: result.lockoutCount },
+          'reactivate: PIN verification failed',
+        );
+        if (result.locked) {
+          const retryAfter = result.lockedUntil
+            ? Math.max(1, Math.ceil((new Date(result.lockedUntil).getTime() - Date.now()) / 1000))
+            : undefined;
+          return reply.status(423).send({
+            error: 'Account locked due to too many failed PIN attempts.',
+            statusCode: 423,
+            ...(retryAfter !== undefined ? { retry_after: retryAfter } : {}),
+          });
+        }
         return reply.status(401).send({ error: 'Invalid PIN', statusCode: 401 });
       }
+
+      // PIN is valid — reset lockout counters before reactivating.
+      await resetPinLockout(fastify.supabase, walletId);
 
       // PIN is valid — reset the session to active.
       const now = new Date().toISOString();

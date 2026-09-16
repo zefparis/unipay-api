@@ -20,6 +20,7 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: RegisterBody }>(
     '/merchant/register',
     {
+      config: { rateLimit: { max: 5, timeWindow: '1 minute', keyGenerator: (req) => req.ip } },
       schema: {
         body: {
           type: 'object',

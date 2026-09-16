@@ -70,6 +70,12 @@ import { validateCgltConfig } from './config/cglt-config-validator';
 
 export async function buildServer() {
   const server = Fastify({
+    // Trust the X-Forwarded-For / X-Forwarded-* headers set by the
+    // Render proxy so that req.ip reflects the real client IP. Without
+    // this, req.ip is the proxy's IP and every user shares one rate-limit
+    // bucket (unintended DoS), and the global rate-limit keyGenerator
+    // cannot distinguish attackers.
+    trustProxy: true,
     logger: {
       level: env.NODE_ENV === 'production' ? 'info' : 'debug',
       ...(env.NODE_ENV !== 'production' && {
@@ -104,7 +110,10 @@ export async function buildServer() {
     global: true,
     max: 60,
     timeWindow: '1 minute',
-    keyGenerator: (req) => (req.headers['x-api-key'] as string) ?? req.ip,
+    // Key solely on req.ip — now reliable thanks to trustProxy. Never
+    // trust a client-supplied header (x-api-key) for the rate-limit key:
+    // an attacker can rotate it to get a fresh counter on every request.
+    keyGenerator: (req) => req.ip,
     errorResponseBuilder: () => ({
       error: 'Too Many Requests',
       message: 'Rate limit exceeded, retry after 1 minute',
