@@ -106,7 +106,15 @@ const walletP2PRoute: FastifyPluginAsync = async (fastify) => {
         .rpc('wallet_p2p', { p_sender_id: senderWalletId, p_receiver_id: recipient.id, p_amount: amount });
 
       if (transferError) {
-        const isInsufficient = transferError.message?.includes('INSUFFICIENT_FUNDS');
+        const msg = transferError.message ?? '';
+        const isInsufficient = msg.includes('INSUFFICIENT_FUNDS');
+        const isReceiverInactive = msg.includes('RECEIVER_INACTIVE');
+        if (isReceiverInactive) {
+          return reply.status(403).send({
+            error:      'Recipient account is suspended',
+            statusCode: 403,
+          });
+        }
         return reply.status(isInsufficient ? 402 : 500).send({
           error:      isInsufficient ? 'Insufficient balance' : 'Transfer failed',
           statusCode: isInsufficient ? 402 : 500,
