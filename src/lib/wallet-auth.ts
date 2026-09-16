@@ -46,7 +46,7 @@ export function walletIdFromRequest(
 export async function requireActiveWallet(
   request: { headers: Record<string, string | string[] | undefined> },
   supabase: SupabaseClient,
-  select = 'id, phone, is_active, kyc_level',
+  select = 'id, phone, is_active, kyc_level, token_version',
 ): Promise<
   | { ok: true; payload: WalletJwtPayload; wallet: Record<string, unknown> }
   | { ok: false; status: number; error: { error: string; statusCode: number } }
@@ -75,6 +75,19 @@ export async function requireActiveWallet(
   }
 
   const row = data as unknown as Record<string, unknown>;
+
+  // ── Token revocation check ──────────────────────────────────
+  // Compare the token_version in the JWT with the current DB value.
+  // Pre-migration tokens (without token_version claim) are treated as
+  // version 0 by verifyWalletToken, so they pass when DB version is 0.
+  const dbTokenVersion = (row.token_version as number | undefined) ?? 0;
+  if (payload.token_version !== dbTokenVersion) {
+    return {
+      ok: false,
+      status: 401,
+      error: { error: 'TOKEN_REVOKED', statusCode: 401 },
+    };
+  }
 
   if (!row.is_active) {
     return {

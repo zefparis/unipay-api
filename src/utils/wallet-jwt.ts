@@ -4,6 +4,7 @@ export interface WalletJwtPayload {
   wallet_id: string;
   phone: string;
   role: 'wallet';
+  token_version: number;
   iat: number;
   exp: number;
 }
@@ -43,6 +44,9 @@ export function verifyWalletToken(token: string, secret: string): WalletJwtPaylo
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString()) as WalletJwtPayload;
     if (payload.exp < Math.floor(Date.now() / 1000)) return null;
     if (payload.role !== 'wallet') return null;
+    // Pre-migration tokens (without token_version claim) are treated
+    // as version 0 for backward compatibility.
+    if (payload.token_version === undefined) payload.token_version = 0;
     return payload;
   } catch {
     return null;
@@ -60,12 +64,13 @@ export function requireWallet(
 export interface RefreshTokenPayload {
   wallet_id: string;
   role: 'wallet_refresh';
+  token_version: number;
   iat: number;
   exp: number;
 }
 
 export function signRefreshToken(
-  payload: { wallet_id: string },
+  payload: { wallet_id: string; token_version: number },
   secret: string,
   expiresInSeconds = 2_592_000,
 ): string {
@@ -100,6 +105,9 @@ export function verifyRefreshToken(token: string, secret: string): RefreshTokenP
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString()) as RefreshTokenPayload;
     if (payload.exp < Math.floor(Date.now() / 1000)) return null;
     if (payload.role !== 'wallet_refresh') return null;
+    // Pre-migration tokens (without token_version claim) are treated
+    // as version 0 for backward compatibility.
+    if (payload.token_version === undefined) payload.token_version = 0;
     return payload;
   } catch {
     return null;

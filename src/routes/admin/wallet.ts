@@ -289,6 +289,18 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
       .eq('id', id);
 
     if (error) return reply.status(500).send({ error: error.message });
+
+    // ── Increment token_version (invalidates all existing JWTs) ──
+    // Admin block must cut access immediately, not just prevent future
+    // logins. This revokes any access + refresh token still in flight.
+    const { error: revokeErr } = await fastify.supabase.rpc(
+      'increment_wallet_token_version',
+      { p_wallet_id: id },
+    );
+    if (revokeErr) {
+      fastify.log.error({ err: revokeErr, userId: id }, '[admin] Failed to increment token_version on block');
+    }
+
     fastify.log.info({ userId: id }, 'wallet user blocked');
     void logAdminAction(fastify.supabase, 'wallet_user.block', 'wallet_user', id, {}, fastify.log);
     return reply.send({ ok: true, is_active: false });
@@ -327,6 +339,42 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
     }
 
     return reply.send({ ok: true, is_active: true });
+  });
+
+  /* ── POST /v1/admin/wallet/users/:id/revoke-sessions ─────────
+   * Manually revoke all active JWT sessions (access + refresh) for
+   * a wallet user by incrementing token_version. Useful when an
+   * admin suspects compromise but doesn't want to block the account.
+   */
+  fastify.post<{ Params: { id: string } }>('/admin/wallet/users/:id/revoke-sessions', async (request, reply) => {
+    if (!requireAdmin(request.isAdmin)) {
+      return reply.status(403).send({ error: 'Admin access required' });
+    }
+
+    const { id } = request.params;
+
+    const { data: user, error: checkErr } = await fastify.supabase
+      .from('wallet_users')
+      .select('id')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (checkErr || !user) {
+      return reply.status(404).send({ error: 'Wallet user not found', statusCode: 404 });
+    }
+
+    const { data: result, error: revokeErr } = await fastify.supabase
+      .rpc('increment_wallet_token_version', { p_wallet_id: id });
+
+    if (revokeErr) {
+      fastify.log.error({ err: revokeErr, userId: id }, '[admin] Failed to revoke wallet sessions');
+      return reply.status(500).send({ error: 'Failed to revoke sessions', statusCode: 500 });
+    }
+
+    fastify.log.info({ userId: id, newTokenVersion: result }, '[admin] Wallet sessions revoked');
+    void logAdminAction(fastify.supabase, 'wallet_user.revoke_sessions', 'wallet_user', id, { new_token_version: result }, fastify.log);
+
+    return reply.send({ ok: true, new_token_version: result });
   });
 
   /* ── GET /v1/admin/wallet/users/:id/lockout-status ──────────

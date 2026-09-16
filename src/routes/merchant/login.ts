@@ -47,7 +47,7 @@ const loginRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data: merchant, error } = await fastify.supabase
         .from('merchants')
-        .select('id, name, email, password_hash, status')
+        .select('id, name, email, password_hash, status, token_version')
         .eq('email', email)
         .maybeSingle();
 
@@ -66,7 +66,7 @@ const loginRoute: FastifyPluginAsync = async (fastify) => {
 
       const EXPIRES_IN = 86_400; // 24 hours
       const token = signToken(
-        { merchant_id: merchant.id as string, email: merchant.email as string },
+        { merchant_id: merchant.id as string, email: merchant.email as string, token_version: (merchant as { token_version: number }).token_version ?? 0 },
         env.JWT_SECRET,
         EXPIRES_IN,
       );

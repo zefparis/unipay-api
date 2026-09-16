@@ -208,7 +208,7 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data: wallet, error } = await fastify.supabase
         .from('wallet_users')
-        .select('id, phone, full_name, pin_hash, is_active, failed_pin_attempts, locked_until, pin_lockout_count')
+        .select('id, phone, full_name, pin_hash, is_active, failed_pin_attempts, locked_until, pin_lockout_count, token_version')
         .eq('phone', phone)
         .maybeSingle();
 
@@ -267,13 +267,14 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
 
       const ACCESS_TTL  = 3_600;
       const REFRESH_TTL = 2_592_000;
+      const tokenVersion = (wallet as { token_version?: number }).token_version ?? 0;
       const accessToken = signWalletToken(
-        { wallet_id: wallet.id as string, phone: wallet.phone as string, role: 'wallet' },
+        { wallet_id: wallet.id as string, phone: wallet.phone as string, role: 'wallet', token_version: tokenVersion },
         env.JWT_SECRET,
         ACCESS_TTL,
       );
       const refreshToken = signRefreshToken(
-        { wallet_id: wallet.id as string },
+        { wallet_id: wallet.id as string, token_version: tokenVersion },
         env.JWT_SECRET,
         REFRESH_TTL,
       );
@@ -313,7 +314,7 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data: wallet } = await fastify.supabase
         .from('wallet_users')
-        .select('id, phone, is_active')
+        .select('id, phone, is_active, token_version')
         .eq('id', payload.wallet_id)
         .maybeSingle();
 
@@ -321,8 +322,17 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(401).send({ error: 'Account not found or suspended' });
       }
 
+      // ── Token revocation check ──────────────────────────────
+      // Reject refresh tokens with a stale token_version before
+      // issuing a new access token. This ensures that a PIN change
+      // or admin block also invalidates the 30-day refresh token.
+      const dbTokenVersion = (wallet as { token_version?: number }).token_version ?? 0;
+      if (payload.token_version !== dbTokenVersion) {
+        return reply.status(401).send({ error: 'TOKEN_REVOKED', statusCode: 401 });
+      }
+
       const accessToken = signWalletToken(
-        { wallet_id: wallet.id as string, phone: wallet.phone as string, role: 'wallet' },
+        { wallet_id: wallet.id as string, phone: wallet.phone as string, role: 'wallet', token_version: dbTokenVersion },
         env.JWT_SECRET,
         3_600,
       );
@@ -428,6 +438,19 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
       if (updateErr) {
         fastify.log.error({ err: updateErr, walletId: wp.wallet_id }, 'PIN change failed');
         return reply.status(500).send({ error: 'PIN change failed', statusCode: 500 });
+      }
+
+      // ── Increment token_version (invalidates all existing JWTs) ──
+      // This is the core H2 fix: changing PIN expels any attacker who
+      // holds a valid access or refresh token. Done AFTER the PIN
+      // update succeeds, so a failed PIN change doesn't log out the
+      // legitimate user.
+      const { error: revokeErr } = await fastify.supabase.rpc(
+        'increment_wallet_token_version',
+        { p_wallet_id: wp.wallet_id },
+      );
+      if (revokeErr) {
+        fastify.log.error({ err: revokeErr, walletId: wp.wallet_id }, '[change-pin] Failed to increment token_version');
       }
 
       fastify.log.info({ walletId: wp.wallet_id }, 'PIN changed');

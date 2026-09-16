@@ -1501,6 +1501,17 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       if (error) return reply.status(500).send({ error: error.message });
       if (!data) return reply.status(404).send({ error: 'Merchant not found' });
 
+      // ── Increment token_version (invalidates all existing JWTs) ──
+      // Admin suspend must cut access immediately, not just prevent
+      // future logins. This revokes any 24h access token still in flight.
+      const { error: revokeErr } = await fastify.supabase.rpc(
+        'increment_merchant_token_version',
+        { p_merchant_id: id },
+      );
+      if (revokeErr) {
+        fastify.log.error({ err: revokeErr, merchantId: id }, '[admin] Failed to increment token_version on suspend');
+      }
+
       fastify.log.info(
         { merchantId: id, adminAction: 'suspend_merchant' },
         '[admin] Merchant suspended',
@@ -1548,6 +1559,45 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         });
 
       return reply.send({ ok: true, merchant: data });
+    },
+  );
+
+  /* ── POST /v1/admin/merchants/:id/revoke-sessions ───────────
+   * Manually revoke all active JWT sessions for a merchant by
+   * incrementing token_version. Useful when an admin suspects
+   * compromise but doesn't want to suspend the account entirely.
+   */
+  fastify.post<{ Params: { id: string } }>(
+    '/admin/merchants/:id/revoke-sessions',
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required' });
+      }
+
+      const { id } = request.params;
+
+      const { data: merchant, error: checkErr } = await fastify.supabase
+        .from('merchants')
+        .select('id')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (checkErr || !merchant) {
+        return reply.status(404).send({ error: 'Merchant not found', statusCode: 404 });
+      }
+
+      const { data: result, error: revokeErr } = await fastify.supabase
+        .rpc('increment_merchant_token_version', { p_merchant_id: id });
+
+      if (revokeErr) {
+        fastify.log.error({ err: revokeErr, merchantId: id }, '[admin] Failed to revoke merchant sessions');
+        return reply.status(500).send({ error: 'Failed to revoke sessions', statusCode: 500 });
+      }
+
+      fastify.log.info({ merchantId: id, newTokenVersion: result }, '[admin] Merchant sessions revoked');
+      void logAdminAction(fastify.supabase, 'merchant.revoke_sessions', 'merchant', id, { new_token_version: result }, fastify.log);
+
+      return reply.send({ ok: true, new_token_version: result });
     },
   );
 

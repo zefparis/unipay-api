@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 export interface JwtPayload {
   merchant_id: string;
   email: string;
+  token_version: number;
   iat: number;
   exp: number;
 }
@@ -41,6 +42,9 @@ export function verifyToken(token: string, secret: string): JwtPayload | null {
     }
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString()) as JwtPayload;
     if (payload.exp < Math.floor(Date.now() / 1000)) return null;
+    // Pre-migration tokens (without token_version claim) are treated
+    // as version 0 for backward compatibility.
+    if (payload.token_version === undefined) payload.token_version = 0;
     return payload;
   } catch {
     return null;

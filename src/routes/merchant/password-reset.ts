@@ -189,6 +189,18 @@ const passwordResetRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(500).send({ error: 'Failed to update password', statusCode: 500 });
       }
 
+      // ── Increment token_version (invalidates all existing JWTs) ──
+      // This is the core H2 fix: resetting the password expels any
+      // attacker who holds a valid 24h access token. Done AFTER the
+      // password update succeeds.
+      const { error: revokeErr } = await fastify.supabase.rpc(
+        'increment_merchant_token_version',
+        { p_merchant_id: merchantId },
+      );
+      if (revokeErr) {
+        fastify.log.error({ err: revokeErr, merchantId }, '[password-reset] Failed to increment token_version');
+      }
+
       // Mark this token as used
       await fastify.supabase
         .from('merchant_password_resets')

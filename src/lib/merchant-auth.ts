@@ -55,7 +55,7 @@ export async function requireActiveMerchant(
 
   const { data, error } = await supabase
     .from('merchants')
-    .select('status')
+    .select('status, token_version')
     .eq('id', payload.merchant_id)
     .maybeSingle();
 
@@ -64,6 +64,19 @@ export async function requireActiveMerchant(
       ok: false,
       status: 404,
       error: { error: 'Merchant not found', statusCode: 404 },
+    };
+  }
+
+  // ── Token revocation check ──────────────────────────────────
+  // Compare the token_version in the JWT with the current DB value.
+  // Pre-migration tokens (without token_version claim) are treated as
+  // version 0 by verifyToken, so they pass when DB version is still 0.
+  const dbTokenVersion = (data as { token_version?: number }).token_version ?? 0;
+  if (payload.token_version !== dbTokenVersion) {
+    return {
+      ok: false,
+      status: 401,
+      error: { error: 'TOKEN_REVOKED', statusCode: 401 },
     };
   }
 
