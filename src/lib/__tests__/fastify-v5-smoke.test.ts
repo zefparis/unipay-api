@@ -9,13 +9,13 @@
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import Fastify from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from 'fastify';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import multipart from '@fastify/multipart';
 
 describe('Fastify v5 migration smoke test', () => {
-  let server: ReturnType<typeof Fastify>;
+  let server: FastifyInstance;
 
   before(async () => {
     server = Fastify({
@@ -30,20 +30,24 @@ describe('Fastify v5 migration smoke test', () => {
       },
     });
 
-    server.addContentTypeParser('application/json', { parseAs: 'string', bodyLimit: 65536 }, (req, body, done) => {
-      try {
-        const str = (body as string).trim();
-        done(null, str ? JSON.parse(str) : {});
-      } catch (err) {
-        done(err as Error, undefined);
-      }
-    });
+    server.addContentTypeParser(
+      'application/json',
+      { parseAs: 'string', bodyLimit: 65536 },
+      (req: FastifyRequest, body: string, done: (err: Error | null, body?: unknown) => void) => {
+        try {
+          const str = body.trim();
+          done(null, str ? JSON.parse(str) : {});
+        } catch (err) {
+          done(err as Error, undefined);
+        }
+      },
+    );
 
     await server.register(rateLimit, {
       global: true,
       max: 5,
       timeWindow: '1 minute',
-      keyGenerator: (req) => req.ip,
+      keyGenerator: (req: FastifyRequest) => req.ip,
       errorResponseBuilder: () => ({
         error: 'Too Many Requests',
         message: 'Rate limit exceeded',
@@ -58,10 +62,8 @@ describe('Fastify v5 migration smoke test', () => {
     server.get('/health', async () => ({ status: 'ok' }));
 
     // Protected routes — scoped sub-instance with preHandler hook
-    // (same pattern as the real app where hmac plugin is registered globally
-    // but individual routes check auth results)
-    await server.register(async (sub) => {
-      sub.addHook('preHandler', async (request, reply) => {
+    await server.register(async (sub: FastifyInstance) => {
+      sub.addHook('preHandler', async (request: FastifyRequest, reply: FastifyReply) => {
         const auth = request.headers.authorization;
         if (!auth || !auth.startsWith('Bearer ')) {
           return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
@@ -70,7 +72,7 @@ describe('Fastify v5 migration smoke test', () => {
       sub.get('/protected', async () => ({ ok: true }));
     });
 
-    server.setErrorHandler((error: Error, _request, reply) => {
+    server.setErrorHandler((error: Error, _request: FastifyRequest, reply: FastifyReply) => {
       const err = error as Error & { validation?: unknown; statusCode?: number };
       if (err.validation) {
         return reply.status(400).send({
@@ -86,7 +88,7 @@ describe('Fastify v5 migration smoke test', () => {
       });
     });
 
-    server.setNotFoundHandler((_request, reply) => {
+    server.setNotFoundHandler((_request: FastifyRequest, reply: FastifyReply) => {
       reply.status(404).send({
         error: 'Not Found',
         message: 'Route not found',
