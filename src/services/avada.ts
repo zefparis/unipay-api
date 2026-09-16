@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { fetch as undiciFetch, ProxyAgent } from 'undici';
 import { env } from '../config/env';
 import { normalizePhoneForOperator } from '../lib/phone-normalization';
+import { safeSecretEqual } from '../security/secret-compare';
 
 const BASE = 'https://api.unipesa.tech';
 
@@ -349,7 +350,7 @@ export function verifyCallbackSignature(body: Record<string, unknown>): boolean 
   const provided = String(body['signature'] ?? '');
   if (!provided) return false;
   const expected = calculateSignature(body, env.UNIPESA_SECRET_KEY);
-  return provided.toLowerCase() === expected.toLowerCase();
+  return safeSecretEqual(provided.toLowerCase(), expected.toLowerCase());
 }
 
 export function normalizeCallback(payload: AvadaCallbackPayload): NormalizedCallback {

@@ -12,6 +12,7 @@ import { createHmac, randomUUID } from 'node:crypto';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import { env } from '../config/env';
 import { normalizePhoneForOperator, type UnipesaOperator } from './phone-normalization';
+import { safeSecretEqual } from '../security/secret-compare';
 
 const BASE = 'https://api.unipesa.tech';
 
@@ -175,5 +176,5 @@ export function verifyCallbackSignature(body: Record<string, any>): boolean {
   const provided = String(body?.signature ?? '');
   if (!provided) return false;
   const expected = calculateSignature(body, secret);
-  return provided.toLowerCase() === expected.toLowerCase();
+  return safeSecretEqual(provided.toLowerCase(), expected.toLowerCase());
 }
