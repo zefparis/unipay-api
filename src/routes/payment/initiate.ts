@@ -187,6 +187,59 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
         }
       }
 
+      // ── Merchant ledger debit (payout only, live mode) ─────────
+      // Atomically debit the merchant's ledger before calling the
+      // provider. This ensures the merchant has sufficient balance
+      // (from their own collects) and prevents draining the global
+      // Unipesa treasury. The debit is re-credited on failure (either
+      // immediately in the catch block below, or later via the
+      // callback RPC process_wallet_provider_callback).
+      //
+      // Sandbox mode skips this — sandbox transactions don't use real
+      // money and the merchant ledger is not affected.
+      if (!isSandbox && direction === 'payout') {
+        try {
+          const { error: debitError } = await fastify.supabase.rpc(
+            'debit_merchant_for_payout',
+            {
+              p_merchant_id: merchantId,
+              p_transaction_id: transactionId,
+              p_amount: amount,
+              p_currency: currency,
+            },
+          );
+
+          if (debitError) {
+            // Classify the error for a clear response
+            if (debitError.message.includes('KYC_REQUIRED_FOR_PAYOUT')) {
+              return reply.status(403).send({
+                error: 'KYC_REQUIRED_FOR_PAYOUT',
+                message: 'KYC validation required before initiating payouts. Contact support to validate your account.',
+                statusCode: 403,
+              });
+            }
+            if (debitError.message.includes('INSUFFICIENT_MERCHANT_BALANCE')) {
+              const match = debitError.message.match(/available ([\d.]+), requested ([\d.]+)/);
+              return reply.status(402).send({
+                error: 'INSUFFICIENT_MERCHANT_BALANCE',
+                message: `Solde marchand insuffisant pour ce payout. Disponible: ${match?.[1] ?? '?'} ${currency}, demandé: ${amount} ${currency}.`,
+                available: match ? Number(match[1]) : undefined,
+                required: amount,
+                currency,
+                statusCode: 402,
+              });
+            }
+            fastify.log.error({ err: debitError, merchantId, transactionId }, '[initiate] Merchant ledger debit failed');
+            return reply.status(500).send({ error: 'Failed to debit merchant balance', statusCode: 500 });
+          }
+
+          fastify.log.info({ merchantId, transactionId, amount, currency }, '[initiate] Merchant ledger debited for payout');
+        } catch (debitErr) {
+          fastify.log.error({ err: debitErr, merchantId, transactionId }, '[initiate] debit_merchant_for_payout RPC threw');
+          return reply.status(500).send({ error: 'Failed to debit merchant balance', statusCode: 500 });
+        }
+      }
+
       // ── Sandbox path: mock, persist as success, return immediately ──
       if (isSandbox) {
         const mockRef = direction === 'collect'
@@ -287,6 +340,35 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
           failure_kind: classified.kind,
           failed_at: 'initiation',
         };
+
+        // ── Re-credit merchant ledger (payout only, live mode) ────
+        // If we debited the merchant ledger before the provider call,
+        // we must re-credit it now that the payout failed. The
+        // recredit_merchant_payout RPC is idempotent — if the callback
+        // already processed the failure, it returns without doing
+        // anything (already_terminal guard).
+        //
+        // ⚠️ This MUST run BEFORE the direct status update below,
+        // because the RPC checks `status IN ('success','failed','cancelled')`
+        // and returns `already_terminal` if the transaction is already
+        // terminal. If we mark it as 'failed' first, the RPC will
+        // skip the re-credit.
+        if (!isSandbox && direction === 'payout') {
+          try {
+            const { error: recreditError } = await fastify.supabase.rpc(
+              'recredit_merchant_payout',
+              {
+                p_transaction_id: transactionId,
+                p_reason: `Provider error at initiation: ${classified.kind}`,
+              },
+            );
+            if (recreditError) {
+              fastify.log.error({ err: recreditError, transactionId }, '[initiate] recredit_merchant_payout failed');
+            }
+          } catch (recreditErr) {
+            fastify.log.error({ err: recreditErr, transactionId }, '[initiate] recredit_merchant_payout RPC threw');
+          }
+        }
 
         await fastify.supabase
           .from('transactions')
