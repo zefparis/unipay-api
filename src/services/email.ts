@@ -64,7 +64,6 @@ function layout(body: string): string {
 export async function sendWelcomeEmail(
   to: string,
   name: string,
-  apiKey: string,
 ): Promise<void> {
   const api = getClient();
   if (!api) {
@@ -81,16 +80,21 @@ export async function sendWelcomeEmail(
       Vous pouvez commencer à accepter et envoyer des paiements Mobile Money en RDC dès maintenant.
     </p>
 
-    <!-- API Key block -->
-    <div style="background:#0d1117;border-radius:12px;padding:20px 24px;margin-bottom:24px;">
-      <p style="margin:0 0 8px;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#64748b;">
-        Votre clé API
+    <!-- API Key retrieval notice (M7: no key in email) -->
+    <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:20px 24px;margin-bottom:24px;">
+      <p style="margin:0 0 8px;font-size:14px;font-weight:600;color:#0f172a;">
+        🔑 Votre clé API
       </p>
-      <code style="font-family:'Courier New',Courier,monospace;font-size:14px;color:#1D9E75;word-break:break-all;">
-        ${apiKey}
-      </code>
+      <p style="margin:0 0 12px;font-size:14px;color:#475569;line-height:1.6;">
+        Pour des raisons de sécurité, votre clé API n'est pas incluse dans cet e-mail.
+        Vous pouvez la récupérer depuis votre tableau de bord marchand :
+      </p>
+      <a href="https://unipaycongo.com/fr/dashboard/api-keys"
+         style="display:inline-block;background:#1D9E75;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:10px 20px;border-radius:8px;">
+        Récupérer ma clé API →
+      </a>
       <p style="margin:10px 0 0;font-size:11px;color:#64748b;">
-        ⚠️ Conservez cette clé en lieu sûr — elle ne sera plus affichée.
+        ⚠️ Si vous avez vu votre clé à l'inscription, notez-la maintenant — elle ne sera plus jamais affichée en entier. Si vous l'avez perdue, vous pouvez en générer une nouvelle depuis le tableau de bord.
       </p>
     </div>
 

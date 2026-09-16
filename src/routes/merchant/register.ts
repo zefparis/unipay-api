@@ -129,8 +129,8 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
 
       fastify.log.info({ merchantId, email }, 'Merchant registered');
 
-      // Fire welcome email — non-blocking
-      sendWelcomeEmail(email, name, rawKey).catch((err: unknown) => {
+      // Fire welcome email — non-blocking (M7: no API key in email)
+      sendWelcomeEmail(email, name).catch((err: unknown) => {
         fastify.log.error({ err, email }, 'Welcome email failed');
       });
 
