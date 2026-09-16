@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import crypto from 'node:crypto';
 import { initiatePayout } from '../../services/avada.js';
-import { normalizePhoneForOperator, isValidDrcPhone } from '../../lib/phone-normalization.js';
+import { normalizePhoneForOperator, isValidDrcPhone, detectOperatorFromPhone, validatePhoneOperatorMatch } from '../../lib/phone-normalization.js';
 import { markSettlementProcessing, markSettlementFailed, rejectSettlement } from '../merchant/settlement-rpc-helpers.js';
 import { logAdminAction } from '../../lib/admin-action-log.js';
 
@@ -122,7 +122,29 @@ const adminSettlementRoute: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      const operator = (request.body?.operator ?? 'orange') as 'orange' | 'airtel' | 'afrimoney';
+      // Operator: explicit admin choice, otherwise detected from the phone
+      // prefix. No implicit 'orange' default — a wrong operator is rejected
+      // by the provider (701 MSISDN2 INCORRECT) and strands the settlement.
+      const explicitOperator = request.body?.operator;
+      const operator = (explicitOperator ?? detectOperatorFromPhone(settlement.phone)) as 'orange' | 'airtel' | 'afrimoney' | null;
+      if (!operator) {
+        return reply.status(400).send({
+          error: 'OPERATOR_UNDETECTABLE',
+          message: 'Impossible de déterminer l\'opérateur du numéro de règlement. Passez operator explicitement.',
+          statusCode: 400,
+        });
+      }
+      if (explicitOperator) {
+        const match = validatePhoneOperatorMatch(settlement.phone, explicitOperator);
+        if (!match.ok) {
+          return reply.status(400).send({
+            error: 'OPERATOR_PHONE_MISMATCH',
+            message: match.message,
+            detected_operator: match.detected,
+            statusCode: 400,
+          });
+        }
+      }
       const normalizedPhone = normalizePhoneForOperator(settlement.phone, operator);
 
       // Mark as processing

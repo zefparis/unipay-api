@@ -7,7 +7,7 @@ import { logAdminAction } from '../../lib/admin-action-log.js';
 import { buildEmailTemplates, type MerchantTemplateData } from '../../lib/email-templates.js';
 import { sendTemplateAuto } from '../../lib/email-auto-send.js';
 import { initiatePayout } from '../../services/avada.js';
-import { normalizePhoneForOperator, isValidDrcPhone } from '../../lib/phone-normalization.js';
+import { normalizePhoneForOperator, isValidDrcPhone, detectOperatorFromPhone, validatePhoneOperatorMatch } from '../../lib/phone-normalization.js';
 import { markSettlementProcessing, markSettlementFailed } from '../merchant/settlement-rpc-helpers.js';
 import { isProviderOutageFailure } from '../../lib/provider-outage.js';
 
@@ -500,7 +500,6 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
 
       const { id } = request.params;
       const settlementCurrency = request.body.currency ?? 'CDF';
-      const operator = (request.body.operator ?? 'orange') as 'orange' | 'airtel' | 'afrimoney';
       const AUTO_MAX_PER_REQUEST = Number(env.SETTLEMENT_AUTO_MAX_PER_REQUEST);
       const AUTO_MAX_DAILY = Number(env.SETTLEMENT_AUTO_MAX_DAILY);
 
@@ -529,6 +528,21 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       }
       if (!isValidDrcPhone(phone)) {
         return reply.status(400).send({ error: 'INVALID_SETTLEMENT_PHONE', message: 'Le numéro de règlement est invalide.', statusCode: 400 });
+      }
+
+      // Operator: explicit admin choice, otherwise detected from the phone
+      // prefix. No implicit 'orange' default — a wrong operator is rejected
+      // by the provider (701 MSISDN2 INCORRECT) and strands the settlement.
+      const explicitOperator = request.body.operator;
+      const operator = (explicitOperator ?? detectOperatorFromPhone(phone)) as 'orange' | 'airtel' | 'afrimoney' | null;
+      if (!operator) {
+        return reply.status(400).send({ error: 'OPERATOR_UNDETECTABLE', message: 'Impossible de déterminer l\'opérateur du numéro. Passez operator explicitement.', statusCode: 400 });
+      }
+      if (explicitOperator) {
+        const match = validatePhoneOperatorMatch(phone, explicitOperator);
+        if (!match.ok) {
+          return reply.status(400).send({ error: 'OPERATOR_PHONE_MISMATCH', message: match.message, detected_operator: match.detected, statusCode: 400 });
+        }
       }
 
       const requestedAmount = request.body.amount ?? 0;

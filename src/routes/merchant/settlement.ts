@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env.js';
 import { initiatePayout } from '../../services/avada.js';
-import { normalizePhoneForOperator, isValidDrcPhone } from '../../lib/phone-normalization.js';
+import { normalizePhoneForOperator, isValidDrcPhone, detectOperatorFromPhone } from '../../lib/phone-normalization.js';
 import { markSettlementProcessing, markSettlementFailed } from './settlement-rpc-helpers.js';
 import { requireActiveMerchant } from '../../lib/merchant-auth.js';
 
@@ -158,6 +158,20 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
         });
       }
 
+      // Resolve the Mobile Money operator from the phone prefix — required.
+      // Sending a payout to the wrong operator is rejected by the provider
+      // (701 MSISDN2 INCORRECT) and strands the settlement in 'processing'.
+      // Done BEFORE process_merchant_settlement so no ledger debit is
+      // created for an undetectable operator.
+      const operator = detectOperatorFromPhone(merchant.settlement_phone) as 'orange' | 'airtel' | 'afrimoney' | null;
+      if (!operator) {
+        return reply.status(400).send({
+          error: 'OPERATOR_UNDETECTABLE',
+          message: 'Impossible de déterminer l\'opérateur du numéro de règlement. Veuillez contacter l\'administrateur.',
+          statusCode: 400,
+        });
+      }
+
       const requestedAmount = request.body.amount ?? 0;
       const idempotencyKey = crypto.randomUUID();
 
@@ -209,11 +223,6 @@ const merchantSettlementRoute: FastifyPluginAsync = async (fastify) => {
       // If auto-payout, trigger B2C via Unipesa
       if (result.auto_payout && result.request_id) {
         try {
-          // Determine operator from phone prefix (simplified — could be enhanced)
-          // For now, use 'orange' as default; the admin can set the operator
-          // on the merchant's settlement_phone or we detect from prefix.
-          // TODO: store settlement_operator on merchant
-          const operator = 'orange'; // default — will be configurable
           const normalizedPhone = normalizePhoneForOperator(merchant.settlement_phone, operator);
 
           fastify.log.info(
