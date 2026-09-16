@@ -71,40 +71,54 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      // ── KYC daily withdrawal limit check ─────────────────
+      // ── Atomic KYC daily limit check + balance debit (M3) ──────
+      // Previously this was a TOCTOU: the daily limit was checked in
+      // a SELECT, then the balance debited in a separate UPDATE. Two
+      // concurrent requests could both pass the limit check before
+      // either debit was visible. Now both checks + the debit happen
+      // atomically in a single RPC (FOR UPDATE on wallet_users).
       const kycLevel = Number(wallet.kyc_level ?? 0);
       const limits   = getLimits(kycLevel);
-      const dayStart = new Date(); dayStart.setUTCHours(0, 0, 0, 0);
-      const { data: todayRows } = await fastify.supabase
-        .from('transactions')
-        .select('amount')
-        .eq('wallet_user_id', walletId)
-        .eq('direction', 'payout')
-        .in('status', ['processing', 'success'])
-        .gte('created_at', dayStart.toISOString());
-      const dailyUsed = (todayRows ?? []).reduce((s, r) => s + Number(r.amount), 0);
-      if (dailyUsed + amount > limits.withdraw_daily) {
-        return reply.status(403).send({
-          error:      'KYC_LIMIT_EXCEEDED',
-          limit:      limits.withdraw_daily,
-          daily_used: dailyUsed,
-          kyc_level:  kycLevel,
-          statusCode: 403,
-        });
-      }
-
       const fee            = Math.round(amount * FEE_RATE * 100) / 100;
       const totalDeducted  = Math.round((amount + fee) * 100) / 100;
       const netAmount      = amount;
       const currentBalance = Number(wallet.balance_cdf ?? 0);
 
-      if (currentBalance < totalDeducted) {
-        return reply.status(402).send({
-          error:           'Insufficient balance',
-          balance_cdf:     currentBalance,
-          required_cdf:    totalDeducted,
-          statusCode:      402,
+      const { data: debitResult, error: debitError } = await fastify.supabase
+        .rpc('wallet_debit_with_kyc_limit', {
+          p_user_id: walletId,
+          p_amount: totalDeducted,
+          p_daily_limit: limits.withdraw_daily,
         });
+
+      if (debitError) {
+        const msg = debitError.message ?? '';
+        if (msg.includes('KYC_LIMIT_EXCEEDED')) {
+          const match = msg.match(/daily_used ([\d.]+), requested ([\d.]+), limit ([\d.]+)/);
+          return reply.status(403).send({
+            error:      'KYC_LIMIT_EXCEEDED',
+            limit:      match ? Number(match[3]) : limits.withdraw_daily,
+            daily_used: match ? Number(match[1]) : undefined,
+            kyc_level:  kycLevel,
+            statusCode: 403,
+          });
+        }
+        if (msg.includes('INSUFFICIENT_FUNDS')) {
+          return reply.status(402).send({
+            error:        'Insufficient balance',
+            balance_cdf:  currentBalance,
+            required_cdf: totalDeducted,
+            statusCode:   402,
+          });
+        }
+        if (msg.includes('WALLET_SUSPENDED')) {
+          return reply.status(403).send({
+            error:      'Account is suspended',
+            statusCode: 403,
+          });
+        }
+        fastify.log.error({ err: debitError, walletId }, '[withdraw] Atomic debit+KYC failed');
+        return reply.status(500).send({ error: 'Debit failed', statusCode: 500 });
       }
 
       const isSandbox = isSandboxAllowed(env.NODE_ENV, request.headers['x-unipay-mode']);
@@ -112,17 +126,10 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
       const txId      = crypto.randomUUID();
       const reference = `WW-${txId.slice(0, 8).toUpperCase()}`;
 
-      // ── Deduct balance atomically via RPC ────────────────────
-      const { error: debitError } = await fastify.supabase
-        .rpc('wallet_debit', { p_user_id: walletId, p_amount: totalDeducted });
-
-      if (debitError) {
-        const isInsufficient = debitError.message?.includes('INSUFFICIENT_FUNDS');
-        return reply.status(isInsufficient ? 402 : 500).send({
-          error:      isInsufficient ? 'Insufficient balance' : 'Debit failed',
-          statusCode: isInsufficient ? 402 : 500,
-        });
-      }
+      fastify.log.info(
+        { walletId, txId, debitResult },
+        '[withdraw] Atomic KYC+debit succeeded',
+      );
 
       // ── Sandbox path ──────────────────────────────────────────
       if (isSandbox) {
