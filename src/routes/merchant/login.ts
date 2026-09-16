@@ -3,6 +3,12 @@ import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { signToken } from '../../utils/jwt';
 
+// Dummy hash for constant-time login (M8: eliminate timing oracle).
+// This hash is used when the account doesn't exist, so bcrypt.compare
+// always runs — whether the account exists or not, the response time
+// includes a full bcrypt comparison.
+const DUMMY_HASH = '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy';
+
 interface LoginBody {
   email: string;
   password: string;
@@ -51,16 +57,29 @@ const loginRoute: FastifyPluginAsync = async (fastify) => {
         .eq('email', email)
         .maybeSingle();
 
-      if (error || !merchant) {
+      // M8: uniform 401 "Invalid credentials" in all failure cases.
+      // The real reason is logged server-side for support/debugging.
+      // bcrypt.compare always runs (against DUMMY_HASH if account
+      // doesn't exist) to eliminate the timing oracle.
+      const accountExists = !error && merchant;
+      const hashToCompare = accountExists
+        ? (merchant!.password_hash as string)
+        : DUMMY_HASH;
+
+      const passwordMatch = await bcrypt.compare(password, hashToCompare);
+
+      if (!accountExists) {
+        fastify.log.info({ email, reason: 'account_not_found' }, '[login] failed');
         return reply.status(401).send({ error: 'Invalid credentials', statusCode: 401 });
       }
 
-      if (merchant.status !== 'active') {
-        return reply.status(403).send({ error: 'Account is not active', statusCode: 403 });
+      if (merchant!.status !== 'active') {
+        fastify.log.info({ merchantId: merchant!.id, email, reason: 'inactive_account', status: merchant!.status }, '[login] failed');
+        return reply.status(401).send({ error: 'Invalid credentials', statusCode: 401 });
       }
 
-      const passwordMatch = await bcrypt.compare(password, merchant.password_hash as string);
       if (!passwordMatch) {
+        fastify.log.info({ merchantId: merchant!.id, email, reason: 'invalid_password' }, '[login] failed');
         return reply.status(401).send({ error: 'Invalid credentials', statusCode: 401 });
       }
 
