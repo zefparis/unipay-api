@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { sendKycApprovedEmail, sendKycRejectedEmail } from '../../services/email.js';
+import { logAdminAction } from '../../lib/admin-action-log.js';
 
 interface KycListQuery {
   kyc_status?: 'pending' | 'approved' | 'rejected';
@@ -87,6 +88,15 @@ const adminKycRoute: FastifyPluginAsync = async (fastify) => {
 
       fastify.log.info({ merchant_id, email: merchant.email }, 'KYC approved');
 
+      void logAdminAction(
+        fastify.supabase,
+        'merchant.kyc_approve',
+        'merchant',
+        merchant_id,
+        { previous_kyc_status: merchant.kyc_status, new_kyc_status: 'approved', new_mode: 'live', email: merchant.email },
+        fastify.log,
+      );
+
       sendKycApprovedEmail(merchant.email as string, merchant.name as string).catch((err: unknown) => {
         fastify.log.error({ err, merchant_id }, 'KYC approval email failed');
       });
@@ -136,6 +146,15 @@ const adminKycRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       fastify.log.info({ merchant_id, email: merchant.email }, 'KYC rejected');
+
+      void logAdminAction(
+        fastify.supabase,
+        'merchant.kyc_reject',
+        'merchant',
+        merchant_id,
+        { new_kyc_status: 'rejected', notes, email: merchant.email },
+        fastify.log,
+      );
 
       sendKycRejectedEmail(merchant.email as string, merchant.name as string, notes).catch((err: unknown) => {
         fastify.log.error({ err, merchant_id }, 'KYC rejection email failed');

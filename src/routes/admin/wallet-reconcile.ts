@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { safeSecretEqual } from '../../security/secret-compare';
+import { logAdminAction } from '../../lib/admin-action-log.js';
 
 interface ReconcileBody {
   reference: string;

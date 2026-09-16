@@ -27,6 +27,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { SupabaseClient }     from '@supabase/supabase-js';
 import { verifyBscTransfer }        from '../../lib/bsc-verify';
+import { logAdminAction }           from '../../lib/admin-action-log.js';
 
 /* ── Allowed enum values ─────────────────────────────────────────────── */
 const VALID_ASSETS   = ['USDC', 'USDT']                                          as const;
@@ -283,6 +284,15 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
         receipt_kind === 'internal_regularization'
           ? { asset, network, amount: received_amount, receiving_address, notes, receipt_kind }
           : undefined,
+      );
+
+      void logAdminAction(
+        fastify.supabase,
+        receipt_kind === 'internal_regularization' ? 'treasury.internal_regularization_create' : 'treasury.receipt_create',
+        'treasury_crypto_receipt',
+        row.id as string,
+        { asset, network, expected_amount, receiving_address, tx_hash: cleanHash, status, receipt_kind, invoice_reference: invoice_reference ?? null, payer_name: payer_name ?? null, created_by: created_by ?? null },
+        fastify.log,
       );
 
       fastify.log.info({ id: row.id, asset, network, expected_amount, invoice_reference }, '[treasury-crypto] receipt created');
@@ -546,6 +556,15 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
         );
       }
 
+      void logAdminAction(
+        fastify.supabase,
+        'treasury.receipt_update',
+        'treasury_crypto_receipt',
+        id,
+        { fields: Object.keys(updates), previous_status: currentStatus, new_status: (updates.status as string | undefined) ?? currentStatus, override_reason: override_reason ?? null, updated_by: updated_by ?? null },
+        fastify.log,
+      );
+
       if (updates.status === 'confirmed' && override_reason) {
         fastify.log.warn({ id, override_reason, actor: updated_by }, '[treasury-crypto] forced confirm with override reason');
       }
@@ -611,6 +630,15 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
         { status: 'cancelled' },
         updated_by,
         reason ? { reason } : undefined,
+      );
+
+      void logAdminAction(
+        fastify.supabase,
+        'treasury.receipt_cancel',
+        'treasury_crypto_receipt',
+        id,
+        { previous_status: current.status as string, reason: reason ?? null, updated_by: updated_by ?? null },
+        fastify.log,
       );
 
       fastify.log.info({ id, actor: updated_by }, '[treasury-crypto] receipt cancelled');
@@ -687,6 +715,15 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
         },
       );
 
+      void logAdminAction(
+        fastify.supabase,
+        'treasury.receipt_archive',
+        'treasury_crypto_receipt',
+        id,
+        { archive_reason: reason, archived_by: archived_by ?? null, status: current.status as string },
+        fastify.log,
+      );
+
       fastify.log.info({ id, actor: archived_by, reason }, '[treasury-crypto] receipt archived');
       return reply.send({ success: true, data: updated });
     },
@@ -754,6 +791,15 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
           receipt_kind:      current.receipt_kind,
           tx_hash_present:   !!current.tx_hash,
         },
+      );
+
+      void logAdminAction(
+        fastify.supabase,
+        'treasury.receipt_restore',
+        'treasury_crypto_receipt',
+        id,
+        { restored_by: restored_by ?? null, status: current.status as string },
+        fastify.log,
       );
 
       fastify.log.info({ id, actor: restored_by }, '[treasury-crypto] receipt restored');
@@ -835,6 +881,15 @@ const adminTreasuryCryptoReceiptsRoute: FastifyPluginAsync = async (fastify) => 
           receipt_kind:      receipt.receipt_kind,
           tx_hash_present:   !!receipt.tx_hash,
         },
+      );
+
+      void logAdminAction(
+        fastify.supabase,
+        'treasury.receipt_delete',
+        'treasury_crypto_receipt',
+        id,
+        { status: receipt.status as string, receipt_kind: receipt.receipt_kind as string, deleted_by: deleted_by ?? null },
+        fastify.log,
       );
 
       fastify.log.info({ id, actor: deleted_by, status: receipt.status }, '[treasury-crypto] receipt hard-deleted');

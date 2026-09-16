@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { verifyUsdtWithdrawal, verifyWcgltMint } from '../../lib/bsc-withdrawal';
+import { logAdminAction } from '../../lib/admin-action-log.js';
 
 interface ResolveBody {
   resource_type: 'usdt_withdrawal' | 'wcglt_operation';
@@ -84,6 +85,14 @@ const adminOnchainReconciliationRoute: FastifyPluginAsync = async (fastify) => {
           p_reason: status === 'failed' ? 'ADMIN_VERIFIED_FAILED_RECEIPT' : null,
         });
         if (error) return reply.status(500).send({ error: 'Resolution failed' });
+        void logAdminAction(
+          fastify.supabase,
+          'onchain.resolve_usdt_withdrawal',
+          'withdrawal_request',
+          id,
+          { tx_hash, outcome: status, amount: Number(row.amount), fee: Number(row.fee ?? 0), destination_address: row.destination_address },
+          fastify.log,
+        );
         return reply.send({ resolved: true, onchain_status: status, result: data });
       }
 
@@ -109,6 +118,14 @@ const adminOnchainReconciliationRoute: FastifyPluginAsync = async (fastify) => {
         p_reason: status === 'failed' ? 'ADMIN_VERIFIED_FAILED_RECEIPT' : null,
       });
       if (error) return reply.status(500).send({ error: 'Resolution failed' });
+      void logAdminAction(
+        fastify.supabase,
+        'onchain.resolve_wcglt_operation',
+        'onchain_operation',
+        id,
+        { tx_hash, outcome: status, amount_onchain: Number(row.amount_onchain), recipient: row.recipient },
+        fastify.log,
+      );
       return reply.send({ resolved: true, onchain_status: status, result: data });
     },
   );
