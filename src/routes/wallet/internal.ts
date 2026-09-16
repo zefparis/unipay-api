@@ -43,15 +43,63 @@ const walletInternalRoute: FastifyPluginAsync = async (fastify) => {
   }
 
   /* ── GET /v1/internal/bsc-addresses ─────────────────────── */
-  fastify.get(
+  // M10: pagination is now mandatory (limit + offset).
+  // If absent → 400. Response: { data, total, has_more }.
+  // This prevents dumping ALL phone numbers + blockchain addresses
+  // in a single unbounded response.
+  fastify.get<{
+    Querystring: { limit?: string; offset?: string };
+  }>(
     '/internal/bsc-addresses',
     { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
     async (request, reply) => {
       if (!requireBridgeInboundKey(request, reply)) return;
-      const { data, error } = await fastify.supabase
+
+      // M10: mandatory pagination
+      const { limit: limitStr, offset: offsetStr } = request.query;
+      if (limitStr === undefined || offsetStr === undefined) {
+        fastify.log.warn(
+          { ip: request.ip, userAgent: request.headers['user-agent'], hasLimit: limitStr !== undefined, hasOffset: offsetStr !== undefined },
+          '[internal/bsc-addresses] 400 — missing pagination params',
+        );
+        return reply.status(400).send({
+          error: 'PAGINATION_REQUIRED',
+          message: 'limit and offset query parameters are required. limit max 500.',
+          statusCode: 400,
+        });
+      }
+
+      const limit = parseInt(limitStr, 10);
+      const offset = parseInt(offsetStr, 10);
+
+      if (!Number.isFinite(limit) || !Number.isFinite(offset) || limit < 1 || offset < 0) {
+        return reply.status(400).send({
+          error: 'INVALID_PAGINATION',
+          message: 'limit must be >= 1, offset must be >= 0.',
+          statusCode: 400,
+        });
+      }
+
+      if (limit > 500) {
+        return reply.status(400).send({
+          error: 'LIMIT_EXCEEDED',
+          message: 'limit must be <= 500.',
+          statusCode: 400,
+        });
+      }
+
+      // M10: distinct application log for each call (monitor 400s after deploy)
+      fastify.log.info(
+        { ip: request.ip, userAgent: request.headers['user-agent'], limit, offset },
+        '[internal/bsc-addresses] paginated query',
+      );
+
+      const { data, error, count } = await fastify.supabase
         .from('wallet_users')
-        .select('phone, blockchain_address')
-        .not('blockchain_address', 'is', null);
+        .select('phone, blockchain_address', { count: 'exact' })
+        .not('blockchain_address', 'is', null)
+        .range(offset, offset + limit - 1);
+
       if (error) {
         fastify.log.error({ err: error }, '[internal] bsc-addresses fetch failed');
         return reply.status(500).send({ error: 'Database error' });
@@ -60,7 +108,9 @@ const walletInternalRoute: FastifyPluginAsync = async (fastify) => {
         ...row,
         blockchain_address: row.blockchain_address?.toLowerCase() ?? null,
       }));
-      return reply.send(normalized);
+      const total = count ?? 0;
+      const hasMore = offset + limit < total;
+      return reply.send({ data: normalized, total, has_more: hasMore });
     },
   );
 
