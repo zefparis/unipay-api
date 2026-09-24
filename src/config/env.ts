@@ -135,9 +135,6 @@ const envSchema = z.object({
   BSC_RPC_URL:      z.string().url().default('https://bsc-rpc.publicnode.com'),
   USDT_BSC_CONTRACT: z.preprocess((v) => (v === '' ? undefined : v), z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional()),
 
-  // PayGuard (Hybrid Vector API) — server-to-server API key for KYC enroll/verify
-  PAYGUARD_API_KEY: z.string().min(16).optional(),
-
   // Anthropic — LLM for merchant support bot
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
 

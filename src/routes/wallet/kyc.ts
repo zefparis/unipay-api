@@ -1,8 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import '@fastify/multipart';
 import { requireActiveWallet } from '../../lib/wallet-auth';
-import { enrollPayGuard, type CognitiveBaseline } from '../../services/payguard';
-import { fetchImageAsBase64 } from '../../utils/storage';
 
 const walletKycRoute: FastifyPluginAsync = async (fastify) => {
 
@@ -33,7 +31,6 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       let doc_type = '', full_name = '', birth_date = '', doc_number = '';
-      let cognitiveData: CognitiveBaseline | null = null;
       const files: Record<string, Buffer> = {};
 
       try {
@@ -45,9 +42,6 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
             if (part.fieldname === 'full_name')  full_name  = val;
             if (part.fieldname === 'birth_date') birth_date = val;
             if (part.fieldname === 'doc_number') doc_number = val;
-            if (part.fieldname === 'cognitive_data') {
-              try { cognitiveData = JSON.parse(val) as CognitiveBaseline; } catch { /* ignore invalid */ }
-            }
           } else {
             const chunks: Buffer[] = [];
             for await (const chunk of part.file) chunks.push(Buffer.from(chunk));
@@ -113,7 +107,6 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(500).send({ error: 'Submission failed' });
       }
 
-      const walletUserId = walletId;
       const submissionId = sub.id;
 
       await fastify.supabase
@@ -121,74 +114,16 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
         .update({ kyc_submitted_at: new Date().toISOString() })
         .eq('id', walletId);
 
-      let payguardResult: { student_id: string; confidence: number } | null = null;
-      try {
-        const { data: signed, error: signedErr } = await fastify.supabase.storage
-          .from('kyc-docs')
-          .createSignedUrl(selfie_url, 300);
-
-        if (signedErr || !signed?.signedUrl) {
-          throw signedErr ?? new Error('Selfie signed URL failed');
-        }
-
-        const selfieBuffer = await fetchImageAsBase64(signed.signedUrl);
-        const [firstName, ...lastNameParts] = full_name.trim().split(/\s+/);
-        const lastName = lastNameParts.join(' ') || full_name;
-
-        payguardResult = await enrollPayGuard({
-          selfie_b64: selfieBuffer,
-          first_name: firstName,
-          last_name: lastName,
-          cognitive_baseline: cognitiveData ?? undefined,
-        });
-
-        if (payguardResult.confidence >= 85) {
-          const kycLevel = cognitiveData ? 2 : 1;
-          await fastify.supabase
-            .from('wallet_users')
-            .update({
-              kyc_level: kycLevel,
-              is_verified: true,
-              payguard_student_id: payguardResult.student_id,
-            })
-            .eq('id', walletUserId);
-
-          await fastify.supabase
-            .from('kyc_submissions')
-            .update({
-              status: 'approved',
-              payguard_confidence: payguardResult.confidence,
-              payguard_decision: cognitiveData ? 'auto_approved_cognitive' : 'auto_approved',
-              reviewed_at: new Date().toISOString(),
-            })
-            .eq('id', submissionId);
-
-          request.log.info({ walletUserId, confidence: payguardResult.confidence, kycLevel: cognitiveData ? 2 : 1 }, '[kyc] auto-approved by PayGuard');
-        } else {
-          await fastify.supabase
-            .from('kyc_submissions')
-            .update({
-              payguard_confidence: payguardResult.confidence,
-              payguard_decision: 'manual_review',
-            })
-            .eq('id', submissionId);
-          request.log.info({ walletUserId, confidence: payguardResult.confidence }, '[kyc] queued for manual review');
-        }
-      } catch (err) {
-        request.log.warn({ err }, '[kyc] PayGuard enroll failed, queuing for manual review');
-      }
-
-      fastify.log.info({ walletId, submissionId }, '[kyc] submitted');
-
-      const confidence = payguardResult?.confidence ?? null;
-      const kycLevel = (confidence ?? 0) >= 85 && cognitiveData ? 2 : (confidence ?? 0) >= 85 ? 1 : undefined;
+      // The external verification provider (PayGuard → Hybrid Vector) has
+      // been decommissioned: every submission goes straight to the manual
+      // review queue (admin approves → kyc_level 1).
+      fastify.log.info({ walletId, submissionId }, '[kyc] submitted — queued for manual review');
 
       return reply.status(201).send({
         submission_id: submissionId,
-        status: (confidence ?? 0) >= 85 ? 'approved' : 'pending',
-        confidence,
-        auto_approved: (confidence ?? 0) >= 85,
-        kyc_level: kycLevel,
+        status: 'pending',
+        confidence: null,
+        auto_approved: false,
       });
     },
   );
@@ -219,148 +154,21 @@ const walletKycRoute: FastifyPluginAsync = async (fastify) => {
   );
 
   /* ── POST /v1/wallet/kyc/upgrade-cognitive ──────────────────
-     Upgrades a level-1 user to level 2 using cognitive test results.
-     Reuses the selfie already stored from the initial KYC submission.
-     Body: { cognitive_data: CognitiveBaseline }
+     DISABLED — the cognitive verification backend (PayGuard → Hybrid
+     Vector) has been decommissioned. Kept as an explicit 410 so existing
+     clients get a clear "feature unavailable" response instead of a 404.
   ───────────────────────────────────────────────────────────── */
   fastify.post(
     '/wallet/kyc/upgrade-cognitive',
     async (request, reply) => {
-      const auth = await requireActiveWallet(request, fastify.supabase, 'id, phone, kyc_level, is_active');
+      const auth = await requireActiveWallet(request, fastify.supabase, 'id, kyc_level, is_active');
       if (!auth.ok) return reply.status(auth.status).send(auth.error);
-      const { payload } = auth;
-      const wallet = auth.wallet as { id: string; phone: string; kyc_level: number; is_active: boolean };
 
-      const walletId = payload.wallet_id;
-
-      if (wallet.kyc_level !== 1) {
-        return reply.status(409).send({ error: 'Cognitive upgrade is only available for KYC level 1 users' });
-      }
-
-      const body = request.body as { cognitive_data?: CognitiveBaseline };
-      if (!body?.cognitive_data) {
-        return reply.status(400).send({ error: 'cognitive_data is required' });
-      }
-
-      const { data: sub } = await fastify.supabase
-        .from('kyc_submissions')
-        .select('selfie_url, full_name')
-        .eq('wallet_user_id', walletId)
-        .eq('status', 'approved')
-        .order('submitted_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (!sub?.selfie_url || !sub?.full_name) {
-        return reply.status(409).send({ error: 'No approved KYC submission found. Please complete KYC level 1 first.' });
-      }
-
-      // Insert audit row for this upgrade attempt
-      const { data: upgradeSub } = await fastify.supabase
-        .from('kyc_submissions')
-        .insert({
-          wallet_user_id: walletId,
-          status: 'pending',
-          doc_type: 'cognitive_upgrade',
-          full_name: sub.full_name,
-          selfie_url: sub.selfie_url,
-          submission_type: 'cognitive_upgrade',
-          submitted_at: new Date().toISOString(),
-        })
-        .select('id')
-        .single();
-
-      const upgradeId = upgradeSub?.id;
-
-      try {
-        const { data: signed, error: signedErr } = await fastify.supabase.storage
-          .from('kyc-docs')
-          .createSignedUrl(sub.selfie_url, 300);
-
-        if (signedErr || !signed?.signedUrl) {
-          throw signedErr ?? new Error('Selfie signed URL failed');
-        }
-
-        const selfieB64 = await fetchImageAsBase64(signed.signedUrl);
-        const [firstName, ...lastNameParts] = sub.full_name.trim().split(/\s+/);
-        const lastName = lastNameParts.join(' ') || sub.full_name;
-
-        const payguardResult = await enrollPayGuard({
-          selfie_b64: selfieB64,
-          first_name: firstName,
-          last_name: lastName,
-          cognitive_baseline: body.cognitive_data,
-        });
-
-        if (payguardResult.confidence >= 85) {
-          await fastify.supabase
-            .from('wallet_users')
-            .update({
-              kyc_level: 2,
-              payguard_student_id: payguardResult.student_id,
-            })
-            .eq('id', walletId);
-
-          if (upgradeId) {
-            await fastify.supabase
-              .from('kyc_submissions')
-              .update({
-                status: 'approved',
-                payguard_confidence: payguardResult.confidence,
-                payguard_decision: 'cognitive_upgrade_approved',
-                reviewed_at: new Date().toISOString(),
-              })
-              .eq('id', upgradeId);
-          }
-
-          request.log.info({ walletId, confidence: payguardResult.confidence }, '[kyc] cognitive upgrade approved → level 2');
-
-          return reply.send({
-            success: true,
-            kyc_level: 2,
-            confidence: payguardResult.confidence,
-          });
-        } else {
-          if (upgradeId) {
-            await fastify.supabase
-              .from('kyc_submissions')
-              .update({
-                status: 'rejected',
-                payguard_confidence: payguardResult.confidence,
-                payguard_decision: 'cognitive_upgrade_insufficient',
-                reviewer_note: `Confiance insuffisante (${payguardResult.confidence}%)`,
-                reviewed_at: new Date().toISOString(),
-              })
-              .eq('id', upgradeId);
-          }
-
-          request.log.info({ walletId, confidence: payguardResult.confidence }, '[kyc] cognitive upgrade rejected (confidence too low)');
-          return reply.status(422).send({
-            success: false,
-            error: `Score insuffisant (${Math.round(payguardResult.confidence)}%). Réessayez ou contactez le support.`,
-            confidence: payguardResult.confidence,
-          });
-        }
-      } catch (err) {
-        request.log.error({ err, walletId }, '[kyc] cognitive upgrade failed (PayGuard error)');
-
-        if (upgradeId) {
-          await fastify.supabase
-            .from('kyc_submissions')
-            .update({
-              status: 'failed',
-              payguard_decision: 'cognitive_upgrade_error',
-              reviewer_note: err instanceof Error ? err.message : 'Unknown error',
-              reviewed_at: new Date().toISOString(),
-            })
-            .eq('id', upgradeId);
-        }
-
-        return reply.status(503).send({
-          success: false,
-          error: 'Service de vérification temporairement indisponible, réessayez dans quelques instants.',
-        });
-      }
+      return reply.status(410).send({
+        success: false,
+        error: 'La vérification cognitive (KYC niveau 2) n\'est plus disponible.',
+        code: 'FEATURE_DISABLED',
+      });
     },
   );
 
