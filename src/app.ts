@@ -37,11 +37,15 @@ const start = async () => {
 
   try {
     await server.listen({ port: parseInt(env.PORT), host: '0.0.0.0' });
-    // Start BSC deposit poller (no-op when BSCSCAN_API_KEY or UNIPAY_HD_WALLET_MNEMONIC absent)
-    startBscPoller(server.supabase, { info: server.log.info.bind(server.log), error: server.log.error.bind(server.log) });
-    // Start BSC gas monitor (no-op when BSC_OWNER_KEY absent)
-    startGasMonitor({ info: server.log.info.bind(server.log), warn: server.log.warn.bind(server.log), error: server.log.error.bind(server.log) });
-    startOnchainReconciler(server.supabase, server.log);
+    if (env.ONCHAIN_ENABLED) {
+      // Start BSC deposit poller (no-op when BSCSCAN_API_KEY or UNIPAY_HD_WALLET_MNEMONIC absent)
+      startBscPoller(server.supabase, { info: server.log.info.bind(server.log), error: server.log.error.bind(server.log) });
+      // Start BSC gas monitor (no-op when BSC_OWNER_KEY absent)
+      startGasMonitor({ info: server.log.info.bind(server.log), warn: server.log.warn.bind(server.log), error: server.log.error.bind(server.log) });
+      startOnchainReconciler(server.supabase, server.log);
+    } else {
+      server.log.info('[boot] ONCHAIN_ENABLED=false — on-chain workers disabled');
+    }
     // Start Unipesa payment reconciliation (polls /status for stuck
     // processing transactions, resolves them via process_wallet_provider_callback).
     startUnipesaReconciler(server.supabase, server.log);

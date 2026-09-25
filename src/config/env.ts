@@ -32,6 +32,15 @@ const envSchema = z.object({
   VODACASH_API_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
   VODACASH_API_KEY: z.string().optional(),
 
+  // On-chain workers (BSC poller, gas monitor, on-chain reconciler).
+  // Set ONCHAIN_ENABLED=false to skip starting them at boot — allows running
+  // without UNIPAY_HD_WALLET_MNEMONIC / HOT_WALLET_USDT_PRIVATE_KEY /
+  // BSC_OWNER_KEY / CGLT_MINTER_KEY. Payment and KYC routes are unaffected.
+  ONCHAIN_ENABLED: z
+    .string()
+    .transform((v) => v.toLowerCase() !== 'false')
+    .default('true'),
+
   // ── CGLT Blockchain containment (Phase 03) ──
   CGLT_BLOCKCHAIN_MODE: z.enum(['disabled', 'read_only', 'enabled']).default('disabled'),
   WCGLT_DEPOSIT_PROCESSOR: z.enum(['disabled', 'bridge', 'bscscan']).default('disabled'),
