@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import { getLimits } from '../../utils/kyc-limits';
 import { requireActiveWallet, walletIdFromRequest } from '../../lib/wallet-auth';
+import { normalizeToE164 } from '../../lib/phone-normalization';
 import { sendWalletTransferEmail } from '../../services/email';
 import { notify } from '../../utils/push';
 
@@ -25,7 +26,7 @@ const walletP2PRoute: FastifyPluginAsync = async (fastify) => {
           type: 'object',
           required: ['recipient_phone', 'amount'],
           properties: {
-            recipient_phone: { type: 'string', pattern: '^\\+?[0-9]{8,15}$' },
+            recipient_phone: { type: 'string', pattern: '^\\+?[0-9\\s\\-().]{8,20}$' },
             amount:          { type: 'number', minimum: 1 },
             note:            { type: 'string', maxLength: 255 },
           },
@@ -55,7 +56,9 @@ const walletP2PRoute: FastifyPluginAsync = async (fastify) => {
       const { payload } = auth;
       const sender = auth.wallet as { id: string; phone: string; is_active: boolean; balance_cdf: number; kyc_level: number; email?: string; full_name?: string; lang?: string };
 
-      const { recipient_phone, amount, note } = request.body;
+      const { amount, note } = request.body;
+      // Normalize to the stored E.164 form — frontend may send local formats.
+      const recipient_phone = normalizeToE164(request.body.recipient_phone) ?? request.body.recipient_phone;
       const senderWalletId = payload.wallet_id;
 
       // Prevent self-transfer
@@ -210,7 +213,7 @@ const walletP2PRoute: FastifyPluginAsync = async (fastify) => {
           type: 'object',
           required: ['phone', 'amount'],
           properties: {
-            phone:  { type: 'string', pattern: '^\\+?[0-9]{8,15}$' },
+            phone:  { type: 'string', pattern: '^\\+?[0-9\\s\\-().]{8,20}$' },
             amount: { type: 'number', minimum: 0.01 },
           },
         },
@@ -236,7 +239,8 @@ const walletP2PRoute: FastifyPluginAsync = async (fastify) => {
       const { payload } = auth;
       const sender = auth.wallet as { id: string; phone: string; is_active: boolean; usdt_balance: number; kyc_level: number };
 
-      const { phone, amount } = request.body;
+      const { amount } = request.body;
+      const phone = normalizeToE164(request.body.phone) ?? request.body.phone;
       const senderWalletId = payload.wallet_id;
 
       if (payload.phone === phone) {

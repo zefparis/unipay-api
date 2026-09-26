@@ -19,7 +19,32 @@
  * exactly 9 significant digits.
  */
 
+import { parsePhoneNumberFromString } from 'libphonenumber-js';
+
 export type UnipesaOperator = 'orange' | 'airtel' | 'afrimoney' | 'africell';
+
+/**
+ * Normalize any international phone number to E.164 (e.g. "+33612345678").
+ *
+ * Primary path: libphonenumber-js strict parse — the input must carry a "+"
+ * country prefix (no default-country guessing: a bare "0612…" is ambiguous).
+ * Fallback: the DRC-specific extractor, which rescues defensive cases such as
+ * "+243243997174834" or "0243997174834" that strict parsing rejects.
+ *
+ * Returns null when no valid number can be derived.
+ */
+export function normalizeToE164(phone: string): string | null {
+  // "00" is the international dialling prefix in most of our markets —
+  // parsePhoneNumberFromString only recognises "+", so translate it first.
+  const input = phone.trim().replace(/^00/, '+');
+  const parsed = parsePhoneNumberFromString(input);
+  if (parsed?.isValid()) return parsed.number;
+
+  const drc9 = extractLocalDigits(phone);
+  if (drc9) return `+243${drc9}`;
+
+  return null;
+}
 
 /**
  * Extract the 9 significant local digits from any common DRC phone format.
@@ -33,15 +58,17 @@ export function extractLocalDigits(phone: string): string | null {
   // Remove leading +
   p = p.replace(/^\+/, '');
 
-  // Remove country code 243 (if present at start)
-  if (p.startsWith('243')) {
-    p = p.slice(3);
-  }
-
-  // Remove leading 0 (local prefix)
-  if (p.startsWith('0')) {
-    p = p.slice(1);
-  }
+  // Strip trunk "0" and country code "243" iteratively — users sometimes type
+  // both ("0243853315944") or duplicate the code ("243243853315944"). The loop
+  // stops when nothing changes; a genuine 9-digit local never starts with 243.
+  let prev: string;
+  do {
+    prev = p;
+    p = p.replace(/^0+/, '');
+    if (p.startsWith('243')) {
+      p = p.slice(3);
+    }
+  } while (p !== prev);
 
   // At this point p should be exactly 9 digits
   if (!/^\d{9}$/.test(p)) {

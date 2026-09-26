@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizePhoneForOperator,
+  normalizeToE164,
   extractLocalDigits,
   isValidDrcPhone,
   type UnipesaOperator,
@@ -198,5 +199,59 @@ describe('normalizePhoneForOperator — cross-operator consistency', () => {
     const afrimoney = normalizePhoneForOperator('+243997174834', 'afrimoney');
     assert.equal(orange, afrimoney);
     assert.equal(orange, '0997174834');
+  });
+});
+
+describe('extractLocalDigits — defensive double-prefix handling', () => {
+  it('extracts from 0243XXXXXXXXX (trunk 0 before country code)', () => {
+    assert.equal(extractLocalDigits('0243997174834'), '997174834');
+    assert.equal(extractLocalDigits('00243997174834'), '997174834');
+  });
+
+  it('extracts from 243243XXXXXXXXX (duplicated country code)', () => {
+    assert.equal(extractLocalDigits('243243997174834'), '997174834');
+    assert.equal(extractLocalDigits('+243243997174834'), '997174834');
+  });
+
+  it('extracts from "+243 0 997 174 834" (code + trunk 0 + spaces)', () => {
+    assert.equal(extractLocalDigits('+243 0 997 174 834'), '997174834');
+  });
+
+  it('extracts from 2430XXXXXXXXX (code then trunk 0)', () => {
+    assert.equal(extractLocalDigits('2430997174834'), '997174834');
+  });
+
+  it('still rejects ambiguous garbage', () => {
+    assert.equal(extractLocalDigits('243243243'), null);
+    assert.equal(extractLocalDigits('243243243243'), null);
+  });
+});
+
+describe('normalizeToE164 — multi-country', () => {
+  it('normalizes French numbers to E.164', () => {
+    assert.equal(normalizeToE164('+33 6 12 34 56 78'), '+33612345678');
+    assert.equal(normalizeToE164('+33612345678'), '+33612345678');
+    assert.equal(normalizeToE164('0033612345678'), '+33612345678');
+  });
+
+  it('normalizes DRC numbers to E.164', () => {
+    assert.equal(normalizeToE164('+243997174834'), '+243997174834');
+    assert.equal(normalizeToE164('+243 997 174 834'), '+243997174834');
+  });
+
+  it('rescues DRC defensive cases via the local-digits fallback', () => {
+    assert.equal(normalizeToE164('+243243997174834'), '+243997174834');
+    assert.equal(normalizeToE164('0243997174834'), '+243997174834');
+  });
+
+  it('normalizes other supported countries', () => {
+    assert.equal(normalizeToE164('+225 07 07 07 07 07'), '+2250707070707');
+    assert.equal(normalizeToE164('+1 202 456 1414'), '+12024561414');
+  });
+
+  it('returns null for invalid / unresolvable input', () => {
+    assert.equal(normalizeToE164('abc'), null);
+    assert.equal(normalizeToE164('+24312345678'), null);
+    assert.equal(normalizeToE164(''), null);
   });
 });

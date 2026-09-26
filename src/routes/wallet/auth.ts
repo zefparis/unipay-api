@@ -5,7 +5,7 @@ import { signWalletToken, signRefreshToken, verifyRefreshToken, requireWallet } 
 import { encryptPrivateKey, generateWallet } from '../../services/blockchain';
 import { createUserWallet } from '../../services/cdp';
 import { sendWalletWelcomeEmail, sendWalletPinChangedEmail } from '../../services/email';
-import { isValidDrcPhone, extractLocalDigits } from '../../lib/phone-normalization';
+import { normalizeToE164 } from '../../lib/phone-normalization';
 import {
   getLockoutDeadline,
   recordFailedPinAttempt,
@@ -33,26 +33,12 @@ interface LoginBody {
 }
 
 /**
- * Normalize a DRC phone number to E.164 format (+243 + 9 digits).
- * Uses extractLocalDigits to strip any redundant country code (243) or
- * leading 0 that the caller may have typed, preventing the double-prefix
- * bug (e.g. "+243243853315944" → "+243853315944").
- *
- * Falls back to the legacy normalization for non-DRC numbers (kept for
- * forward compatibility if the wallet is ever opened to other countries).
+ * Normalize a wallet phone number to strict E.164 (multi-country).
+ * Delegates to libphonenumber-js with a DRC-defensive fallback; returns null
+ * when the input cannot be resolved to a valid international number.
  */
-function normalizePhone(raw: string): string {
-  // Try strict DRC normalization first — strips redundant 243/0 prefixes
-  const local9 = extractLocalDigits(raw);
-  if (local9) {
-    return `+243${local9}`;
-  }
-  // Legacy fallback for non-DRC numbers
-  const digits = raw.replace(/\D/g, '');
-  if (digits.startsWith('243') && digits.length === 12) return `+${digits}`;
-  if (digits.startsWith('0') && digits.length === 10) return `+243${digits.slice(1)}`;
-  if (raw.trimStart().startsWith('+')) return raw.replace(/\s/g, '');
-  return `+${digits}`;
+function normalizePhone(raw: string): string | null {
+  return normalizeToE164(raw);
 }
 
 const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
@@ -67,7 +53,7 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
           type: 'object',
           required: ['phone', 'pin'],
           properties: {
-            phone:     { type: 'string', pattern: '^\\+?[0-9]{8,15}$' },
+            phone:     { type: 'string', pattern: '^\\+?[0-9\\s\\-().]{8,20}$' },
             full_name: { type: 'string', minLength: 2, maxLength: 100 },
             pin:       { type: 'string', minLength: 4, maxLength: 8, pattern: '^[0-9]+$' },
             email:     { type: 'string', format: 'email', maxLength: 254 },
@@ -90,10 +76,10 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
       const { phone, full_name, pin, email, lang } = request.body;
       const normalizedPhone = normalizePhone(phone);
 
-      if (!isValidDrcPhone(normalizedPhone)) {
+      if (!normalizedPhone) {
         return reply.status(400).send({
           error: 'INVALID_PHONE',
-          message: 'Numéro de téléphone invalide. Format attendu: +243 suivi de 9 chiffres.',
+          message: 'Numéro de téléphone invalide. Format international attendu (ex. +243 853 315 944, +33 6 12 34 56 78).',
         });
       }
 
@@ -177,7 +163,7 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
           type: 'object',
           required: ['phone', 'pin'],
           properties: {
-            phone: { type: 'string', pattern: '^\\+?[0-9\\s\\-]{8,20}$' },
+            phone: { type: 'string', pattern: '^\\+?[0-9\\s\\-().]{8,20}$' },
             pin:   { type: 'string', minLength: 4, maxLength: 8, pattern: '^[0-9]+$' },
           },
         },
@@ -210,7 +196,9 @@ const walletAuthRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       const { phone: rawPhone, pin } = request.body;
-      const phone = normalizePhone(rawPhone);
+      // Unparseable input falls back to the raw string — the lookup simply
+      // misses and the uniform 401 path applies.
+      const phone = normalizePhone(rawPhone) ?? rawPhone;
 
       const { data: wallet, error } = await fastify.supabase
         .from('wallet_users')
