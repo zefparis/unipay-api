@@ -137,7 +137,7 @@ const walletStripeRoute: FastifyPluginAsync = async (fastify) => {
    * Stripe event webhook — public, signature-verified.
    * On payment_intent.succeeded → credit usd_balance (idempotent).
    * Configure in Stripe Dashboard:
-   *   URL: https://unipay-api.onrender.com/v1/wallet/deposit/stripe/webhook
+   *   URL: https://api.unipaycongo.com/v1/wallet/deposit/stripe/webhook
    *   Events: payment_intent.succeeded
    * ───────────────────────────────────────────────────────────── */
   fastify.register(async (sub) => {

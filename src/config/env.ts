@@ -7,6 +7,9 @@ const envSchema = z.object({
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_KEY: z.string().min(1),
 
+  // Public base URL of this API (shown to merchants in emails, docs, etc.)
+  PUBLIC_API_BASE_URL: z.string().url().default('https://api.unipaycongo.com'),
+
   HMAC_SECRET: z.string().min(16),
   OPERATOR_WEBHOOK_SECRET: z.string().optional(),
 

@@ -140,7 +140,7 @@ const merchantModeRoute: FastifyPluginAsync = async (fastify) => {
 
       const merchantId = auth.payload.merchant_id;
       const { operator, direction, amount, currency = 'CDF', phone } = request.body;
-      const FEE_RATE = 0.03;
+      const FEE_RATE = Number(env.MERCHANT_FEE_RATE);
       const fee = Math.round(amount * FEE_RATE * 100) / 100;
       const net_amount = Math.round((amount - fee) * 100) / 100;
       const transactionId = crypto.randomUUID();

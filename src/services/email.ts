@@ -104,7 +104,7 @@ export async function sendWelcomeEmail(
         <td style="padding:0 8px 0 0;width:50%;">
           <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px;">
             <p style="margin:0 0 4px;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#94a3b8;">Base URL</p>
-            <code style="font-size:12px;color:#0f172a;">https://unipay-api.onrender.com</code>
+            <code style="font-size:12px;color:#0f172a;">${env.PUBLIC_API_BASE_URL}</code>
           </div>
         </td>
         <td style="padding:0 0 0 8px;width:50%;">
@@ -453,7 +453,7 @@ export async function sendApiKeyRotationEmail(
         <td style="padding:0 8px 0 0;width:50%;">
           <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px;">
             <p style="margin:0 0 4px;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#94a3b8;">Base URL</p>
-            <code style="font-size:12px;color:#0f172a;">https://unipay-api.onrender.com</code>
+            <code style="font-size:12px;color:#0f172a;">${env.PUBLIC_API_BASE_URL}</code>
           </div>
         </td>
         <td style="padding:0 0 0 8px;width:50%;">

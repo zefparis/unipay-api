@@ -92,6 +92,17 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
               net_amount: { type: 'number' },
               currency: { type: 'string' },
               idempotent: { type: 'boolean' },
+              sandbox: { type: 'boolean' },
+            },
+          },
+          409: {
+            type: 'object',
+            properties: {
+              error: { type: 'string' },
+              message: { type: 'string' },
+              existing_transaction_id: { type: 'string' },
+              existing_status: { type: 'string' },
+              statusCode: { type: 'number' },
             },
           },
         },

@@ -10,7 +10,7 @@
  * Node 18+ native fetch — no dependencies.
  */
 
-const API_URL     = process.env.API_URL      || 'https://unipay-api.onrender.com';
+const API_URL     = process.env.API_URL      || 'https://api.unipaycongo.com';
 const CRON_SECRET = process.env.CRON_SERVICE_SECRET || process.env.ADMIN_SECRET || '';
 
 if (!CRON_SECRET) {
