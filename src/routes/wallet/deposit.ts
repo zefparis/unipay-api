@@ -8,11 +8,10 @@ import type { Channel } from '../../types/payment';
 import { getLimits } from '../../utils/kyc-limits';
 import { notify } from '../../utils/push';
 import { isSandboxAllowed } from '../../lib/sandbox-mode';
+import { walletFee } from '../../lib/wallet-fees';
 
 // Wallet-supported MM operators (Vodacash pending due diligence, USDT not in wallet scope)
 const WALLET_OPERATORS: Channel[] = ['orange', 'airtel', 'afrimoney'];
-
-const FEE_RATE = 0.03;
 
 interface DepositBody {
   phone_mm: string;
@@ -95,7 +94,7 @@ const walletDepositRoute: FastifyPluginAsync = async (fastify) => {
       // Sandbox detection via header
       const isSandbox = isSandboxAllowed(env.NODE_ENV, request.headers['x-unipay-mode']);
 
-      const fee       = Math.round(amount * FEE_RATE * 100) / 100;
+      const fee       = walletFee(amount);
       const netAmount = Math.round((amount - fee) * 100) / 100;
       const txId      = crypto.randomUUID();
       const reference = `WD-${txId.slice(0, 8).toUpperCase()}`;

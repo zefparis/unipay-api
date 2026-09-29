@@ -10,10 +10,9 @@ import type { Channel } from '../../types/payment';
 import { getLimits } from '../../utils/kyc-limits';
 import { isSandboxAllowed } from '../../lib/sandbox-mode';
 import { validatePhoneOperatorMatch } from '../../lib/phone-normalization';
+import { walletFee } from '../../lib/wallet-fees';
 
 const WALLET_OPERATORS: Channel[] = ['orange', 'airtel', 'afrimoney'];
-
-const FEE_RATE = 0.03;
 
 interface WithdrawBody {
   phone_mm: string;
@@ -79,7 +78,7 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
       // atomically in a single RPC (FOR UPDATE on wallet_users).
       const kycLevel = Number(wallet.kyc_level ?? 0);
       const limits   = getLimits(kycLevel);
-      const fee            = Math.round(amount * FEE_RATE * 100) / 100;
+      const fee            = walletFee(amount);
       const totalDeducted  = Math.round((amount + fee) * 100) / 100;
       const netAmount      = amount;
       const currentBalance = Number(wallet.balance_cdf ?? 0);

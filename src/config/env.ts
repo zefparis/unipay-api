@@ -102,6 +102,15 @@ const envSchema = z.object({
   // Note: Avada takes 0.03 (3%) of the same amount; UniPay net margin = fee − 0.03.
   MERCHANT_FEE_RATE: z.string().regex(/^0\.\d+$/).default('0.05'),
 
+  // Wallet (grand public) fee rate — deposit and withdraw.
+  // Default 0.05 = 5%, aligned with the merchant rate. The Avada
+  // provider cost (3%) is internal-only and never user-facing.
+  WALLET_FEE_RATE: z.string().regex(/^0\.\d+$/).default('0.05'),
+
+  // Avada/Unipesa provider cost rate (internal-only, never user-facing).
+  // Default 0.03 = 3%. UniPay net margin = WALLET_FEE_RATE − AVADA_FEE_RATE.
+  AVADA_FEE_RATE: z.string().regex(/^0\.\d+$/).default('0.03'),
+
   // Stripe — diaspora card deposits
   STRIPE_SECRET_KEY:    z.string().min(1).optional(),
   STRIPE_WEBHOOK_SECRET: z.string().min(1).optional(),

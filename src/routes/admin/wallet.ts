@@ -1,11 +1,12 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { env } from '../../config/env';
 import { sendAdminDirectEmail } from '../../services/email';
 import { logAdminAction } from '../../lib/admin-action-log';
 import { buildEmailTemplates, type WalletUserTemplateData } from '../../lib/email-templates';
 import { sendTemplateAuto } from '../../lib/email-auto-send';
 import { isValidDrcPhone, extractLocalDigits } from '../../lib/phone-normalization';
+import { WALLET_FEE_RATE } from '../../lib/wallet-fees';
+import { env } from '../../config/env';
 
 function requireAdmin(isAdmin: boolean): boolean {
   return isAdmin;
@@ -152,12 +153,12 @@ const adminWalletRoute: FastifyPluginAsync = async (fastify) => {
 
     function computeMetrics(rows: { amount: unknown; fee: unknown }[]) {
       const volume     = rows.reduce((s, r) => s + Number(r.amount ?? 0), 0);
-      const fraisAvada = rows.reduce((s, r) => s + Number(r.fee    ?? 0), 0);
+      const avadaRate  = Number(env.AVADA_FEE_RATE);
       return {
         volume,
-        frais_avada:  fraisAvada,
-        frais_client: volume * Number(env.MERCHANT_FEE_RATE),
-        marge_nette:  volume * (Number(env.MERCHANT_FEE_RATE) - 0.03),
+        frais_avada:  volume * avadaRate,
+        frais_client: volume * WALLET_FEE_RATE,
+        marge_nette:  volume * (WALLET_FEE_RATE - avadaRate),
         nb_tx:        rows.length,
       };
     }

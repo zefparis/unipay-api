@@ -24,8 +24,8 @@ import {
 import { normalizePhoneForOperator, isValidDrcPhone } from '../../lib/phone-normalization';
 import { sendWalletDepositEmail } from '../../services/email';
 import { getLimits } from '../../utils/kyc-limits';
+import { walletFee } from '../../lib/wallet-fees';
 
-const FEE_RATE       = 0.03;
 const USD_OPERATORS  = ['orange', 'airtel', 'africell'] as const;
 const MIN_USD_AMOUNT = 1;
 
@@ -92,7 +92,7 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      const fee        = Math.round(amount_usd * FEE_RATE * 100) / 100;
+      const fee        = walletFee(amount_usd);
       const netAmount  = Math.round((amount_usd - fee) * 100) / 100;
       const txId       = crypto.randomUUID();
       const orderId    = newOrderId();
@@ -228,7 +228,7 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       const usdBalance = Number(wallet.usd_balance ?? 0);
-      const fee        = Math.round(amount_usd * FEE_RATE * 100) / 100;
+      const fee        = walletFee(amount_usd);
       const totalCost  = Math.round((amount_usd + fee) * 100) / 100;
 
       if (usdBalance < totalCost) {

@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { requireWallet } from '../../utils/wallet-jwt';
 import { errorResponses } from '../../lib/error-schema';
+import { WALLET_FEE_RATE } from '../../lib/wallet-fees';
 
 const walletBalanceRoute: FastifyPluginAsync = async (fastify) => {
   fastify.get(
@@ -17,6 +18,7 @@ const walletBalanceRoute: FastifyPluginAsync = async (fastify) => {
               cglt_balance: { type: 'number' },
               usdt_balance: { type: 'number' },
               usd_balance:  { type: 'number' },
+              fee_rate:     { type: 'number' },
               currency:     { type: 'string' },
               kyc_level:    { type: 'number' },
               phone:        { type: 'string' },
@@ -56,6 +58,7 @@ const walletBalanceRoute: FastifyPluginAsync = async (fastify) => {
         cglt_balance: Number(data.cglt_balance ?? 0),
         usdt_balance: Number(data.usdt_balance ?? 0),
         usd_balance:  Number(data.usd_balance ?? 0),
+        fee_rate:     WALLET_FEE_RATE,
         currency:     'CDF',
         kyc_level:    data.kyc_level ?? 0,
         phone:        data.phone ?? '',
