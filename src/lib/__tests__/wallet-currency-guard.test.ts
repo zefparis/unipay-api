@@ -44,8 +44,9 @@ describe('withdraw 502 — no provider detail leak', () => {
     assert.doesNotMatch(reply502[0], /detail|errMsg/);
   });
 
-  it('still logs the full provider error server-side', () => {
-    assert.match(WITHDRAW, /log\.error\(\{ err: errMsg[^}]*\}[^)]*refund/i);
+  it('still logs the full provider error server-side (both refund and ambiguous paths)', () => {
+    const logs = WITHDRAW.match(/log\.error\(\s*\{ err: errMsg[^}]*\}/g) ?? [];
+    assert.ok(logs.length >= 2, `expected errMsg logged on both provider-failure paths, found ${logs.length}`);
   });
 });
 

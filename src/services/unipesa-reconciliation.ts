@@ -48,6 +48,11 @@ const RETRY_AFTER_SECONDS = 90;
 // Stop reconciling rows older than this — they are likely lost
 // causes and we do not want to keep paging Unipesa for them forever.
 const MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
+// Unipesa /status -1 (PARENT OPERATION NOT FOUND) is only trusted as a
+// terminal "never created" once the transaction is this old. A -1 seen
+// earlier may be late indexing at the provider after a timeout; refunding
+// on it would risk wallet refund + payout delivered (double spend).
+export const RECONCILE_NOT_FOUND_GRACE_SECONDS = 15 * 60;
 
 type PendingTx = {
   id: string;
@@ -459,6 +464,42 @@ async function reconcileOne(
       'still pending upstream',
     );
     return;
+  }
+
+  // -1 grace period: getTransactionStatusWithRaw maps -1 to 'failed'.
+  // For a young transaction that is NOT proof of absence — skip and
+  // retry next tick; log every occurrence so operators can see it.
+  if (rawResponse['status'] === -1) {
+    const ageSeconds = (Date.now() - new Date(tx.created_at).getTime()) / 1000;
+    if (ageSeconds < RECONCILE_NOT_FOUND_GRACE_SECONDS) {
+      log.warn(
+        {
+          event: 'transaction_not_found_within_grace',
+          reference: tx.reference,
+          transactionId: tx.id,
+          direction: tx.direction,
+          status: tx.status,
+          amount: tx.amount,
+          ageSeconds: Math.round(ageSeconds),
+          graceSeconds: RECONCILE_NOT_FOUND_GRACE_SECONDS,
+          latencyMs,
+        },
+        'Unipesa reports order not found but tx is younger than grace period — not refunding yet',
+      );
+      return;
+    }
+    log.warn(
+      {
+        event: 'transaction_not_found_after_grace',
+        reference: tx.reference,
+        transactionId: tx.id,
+        direction: tx.direction,
+        status: tx.status,
+        amount: tx.amount,
+        ageSeconds: Math.round(ageSeconds),
+      },
+      'Unipesa reports order not found after grace period — resolving as failed',
+    );
   }
 
   // Map to the UniPay DB status text expected by process_wallet_provider_callback.

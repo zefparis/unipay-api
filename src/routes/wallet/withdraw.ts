@@ -11,6 +11,7 @@ import { getLimits } from '../../utils/kyc-limits';
 import { isSandboxAllowed } from '../../lib/sandbox-mode';
 import { validatePhoneOperatorMatch } from '../../lib/phone-normalization';
 import { walletFee } from '../../lib/wallet-fees';
+import { classifyPayoutFailure, mapClaimError, replayStatusCode } from '../../lib/wallet-withdraw-outcome';
 
 const WALLET_OPERATORS: Channel[] = ['orange', 'airtel', 'afrimoney'];
 
@@ -19,7 +20,31 @@ interface WithdrawBody {
   operator: Channel;
   amount: number;
   currency?: string;
+  idempotency_key?: string;
 }
+
+interface ClaimResult {
+  idempotent: boolean;
+  claimed: boolean;
+  transaction_id: string;
+  status?: string;
+  amount?: number;
+  fee?: number;
+  net_amount?: number;
+  currency?: string;
+  new_balance?: number;
+}
+
+const WITHDRAW_RESPONSE_PROPS = {
+  transaction_id: { type: 'string' },
+  status:         { type: 'string' },
+  amount:         { type: 'number' },
+  fee:            { type: 'number' },
+  net_amount:     { type: 'number' },
+  currency:       { type: 'string' },
+  sandbox:        { type: 'boolean' },
+  idempotent:     { type: 'boolean' },
+} as const;
 
 const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: WithdrawBody }>(
@@ -35,19 +60,23 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
             operator: { type: 'string', enum: WALLET_OPERATORS },
             amount:   { type: 'number', minimum: 100 },
             currency: { type: 'string', enum: ['CDF'], default: 'CDF' },
+            idempotency_key: { type: 'string', minLength: 8, maxLength: 128 },
           },
         },
         response: {
-          201: {
+          201: { type: 'object', properties: WITHDRAW_RESPONSE_PROPS },
+          202: {
+            type: 'object',
+            properties: { ...WITHDRAW_RESPONSE_PROPS, message: { type: 'string' } },
+          },
+          409: {
             type: 'object',
             properties: {
+              error:          { type: 'string' },
               transaction_id: { type: 'string' },
               status:         { type: 'string' },
-              amount:         { type: 'number' },
-              fee:            { type: 'number' },
-              net_amount:     { type: 'number' },
-              currency:       { type: 'string' },
-              sandbox:        { type: 'boolean' },
+              idempotent:     { type: 'boolean' },
+              statusCode:     { type: 'number' },
             },
           },
         },
@@ -70,29 +99,73 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      // ── Atomic KYC daily limit check + balance debit (M3) ──────
-      // Previously this was a TOCTOU: the daily limit was checked in
-      // a SELECT, then the balance debited in a separate UPDATE. Two
-      // concurrent requests could both pass the limit check before
-      // either debit was visible. Now both checks + the debit happen
-      // atomically in a single RPC (FOR UPDATE on wallet_users).
+      // ── Phone-operator match — BEFORE any debit ───────────────
+      // A B2C to an operator whose network doesn't own the phone number
+      // is rejected by the operator (MSISDN INCORRECT, code 10401).
+      // Checking here means no claim, hence no refund, for this case.
+      const phoneOpCheck = validatePhoneOperatorMatch(normalizedPhone, operator);
+      if (!phoneOpCheck.ok) {
+        fastify.log.warn(
+          { walletId, operator, phone: normalizedPhone, detected: phoneOpCheck.detected },
+          '[wallet/withdraw] phone-operator mismatch — blocking B2C',
+        );
+        return reply.status(400).send({
+          error: 'OPERATOR_PHONE_MISMATCH',
+          message: phoneOpCheck.message,
+          detected_operator: phoneOpCheck.detected,
+          statusCode: 400,
+        });
+      }
+
       const kycLevel = Number(wallet.kyc_level ?? 0);
       const limits   = getLimits(kycLevel);
       const fee            = walletFee(amount);
       const totalDeducted  = Math.round((amount + fee) * 100) / 100;
       const netAmount      = amount;
       const currentBalance = Number(wallet.balance_cdf ?? 0);
+      const isSandbox = isSandboxAllowed(env.NODE_ENV, request.headers['x-unipay-mode']);
 
-      const { data: debitResult, error: debitError } = await fastify.supabase
-        .rpc('wallet_debit_with_kyc_limit', {
-          p_user_id: walletId,
-          p_amount: totalDeducted,
-          p_daily_limit: limits.withdraw_daily,
+      const txId      = crypto.randomUUID();
+      const reference = `WW-${txId.slice(0, 8).toUpperCase()}`;
+
+      // Idempotency key: header wins, then body, else server-generated so
+      // EVERY CDF withdrawal goes through the atomic claim RPC.
+      const headerKey = request.headers['idempotency-key'];
+      const idempotencyKey =
+        (typeof headerKey === 'string' && headerKey.length >= 8 && headerKey.length <= 128 ? headerKey : undefined)
+        ?? request.body.idempotency_key
+        ?? `srv:${crypto.randomUUID()}`;
+
+      // ── Atomic claim: idempotency + KYC limit + balance + insert + debit ──
+      // Replaces wallet_debit_with_kyc_limit + a separate insert. Under
+      // the wallet FOR UPDATE lock the RPC either returns the existing
+      // transaction for a replayed key, or inserts the 'pending' payout
+      // row and debits amount + fee in the same DB transaction.
+      const { data: claimData, error: claimError } = await fastify.supabase
+        .rpc('wallet_withdraw_claim', {
+          p_user_id:         walletId,
+          p_total_amount:    totalDeducted,
+          p_daily_limit:     limits.withdraw_daily,
+          p_idempotency_key: idempotencyKey,
+          p_tx_id:           txId,
+          p_operator:        operator,
+          p_phone:           normalizedPhone,
+          p_amount:          amount,
+          p_fee:             fee,
+          p_net_amount:      netAmount,
+          p_currency:        currency,
+          p_reference:       reference,
+          p_metadata:        { source: 'wallet_withdraw', sandbox: isSandbox },
         });
 
-      if (debitError) {
-        const msg = debitError.message ?? '';
-        if (msg.includes('KYC_LIMIT_EXCEEDED')) {
+      if (claimError) {
+        const msg = claimError.message ?? '';
+        const mapped = mapClaimError(msg);
+        if (!mapped) {
+          fastify.log.error({ err: claimError, walletId }, '[withdraw] claim RPC failed');
+          return reply.status(500).send({ error: 'Debit failed', statusCode: 500 });
+        }
+        if (mapped.error === 'KYC_LIMIT_EXCEEDED') {
           const match = msg.match(/daily_used ([\d.]+), requested ([\d.]+), limit ([\d.]+)/);
           return reply.status(403).send({
             error:      'KYC_LIMIT_EXCEEDED',
@@ -102,54 +175,53 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
             statusCode: 403,
           });
         }
-        if (msg.includes('INSUFFICIENT_FUNDS')) {
+        if (mapped.status === 402) {
           return reply.status(402).send({
-            error:        'Insufficient balance',
+            error:        mapped.error,
             balance_cdf:  currentBalance,
             required_cdf: totalDeducted,
             statusCode:   402,
           });
         }
-        if (msg.includes('WALLET_SUSPENDED')) {
-          return reply.status(403).send({
-            error:      'Account is suspended',
-            statusCode: 403,
-          });
-        }
-        fastify.log.error({ err: debitError, walletId }, '[withdraw] Atomic debit+KYC failed');
-        return reply.status(500).send({ error: 'Debit failed', statusCode: 500 });
+        return reply.status(mapped.status).send({ error: mapped.error, statusCode: mapped.status });
       }
 
-      const isSandbox = isSandboxAllowed(env.NODE_ENV, request.headers['x-unipay-mode']);
+      const claim = claimData as ClaimResult;
 
-      const txId      = crypto.randomUUID();
-      const reference = `WW-${txId.slice(0, 8).toUpperCase()}`;
+      // ── Replay: same shape as the first response, idempotent: true ──
+      if (claim.idempotent) {
+        const status = claim.status ?? 'pending';
+        fastify.log.info({ walletId, txId: claim.transaction_id, status }, '[withdraw] idempotent replay');
+        if (replayStatusCode(status) === 409) {
+          return reply.status(409).send({
+            error:          'WITHDRAWAL_ALREADY_FAILED',
+            transaction_id: claim.transaction_id,
+            status,
+            idempotent:     true,
+            statusCode:     409,
+          });
+        }
+        return reply.status(201).send({
+          transaction_id: claim.transaction_id,
+          status,
+          amount:         claim.amount,
+          fee:            claim.fee,
+          net_amount:     claim.net_amount,
+          currency:       claim.currency,
+          sandbox:        false,
+          idempotent:     true,
+        });
+      }
 
-      fastify.log.info(
-        { walletId, txId, debitResult },
-        '[withdraw] Atomic KYC+debit succeeded',
-      );
+      fastify.log.info({ walletId, txId, claim }, '[withdraw] claim succeeded');
 
       // ── Sandbox path ──────────────────────────────────────────
       if (isSandbox) {
         const mockRef = sandboxPayout(amount).avada_transaction_id;
 
-        await fastify.supabase.from('transactions').insert({
-          id:                   txId,
-          wallet_user_id:       walletId,
-          operator,
-          direction:            'payout',
-          amount,
-          fee,
-          net_amount:           netAmount,
-          currency,
-          phone:                normalizedPhone,
-          reference,
-          avada_transaction_id: mockRef,
-          blockchain_tx_hash:   null,
-          status:               'success',
-          metadata:             { sandbox: true, source: 'wallet_withdraw' },
-        });
+        await fastify.supabase.from('transactions')
+          .update({ status: 'success', avada_transaction_id: mockRef })
+          .eq('id', txId);
 
         fastify.log.info({ txId, walletId, isSandbox: true }, 'Wallet withdraw (sandbox)');
 
@@ -169,62 +241,12 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
           net_amount:     netAmount,
           currency,
           sandbox:        true,
+          idempotent:     false,
         });
       }
 
       // ── Live path ─────────────────────────────────────────────
-      const { error: insertError } = await fastify.supabase
-        .from('transactions')
-        .insert({
-          id:             txId,
-          wallet_user_id: walletId,
-          operator,
-          direction:      'payout',
-          amount,
-          fee,
-          net_amount:     netAmount,
-          currency,
-          phone:          normalizedPhone,
-          reference,
-          blockchain_tx_hash: null,
-          status:         'pending',
-          metadata:       { source: 'wallet_withdraw' },
-        });
-
-      if (insertError) {
-        // Compensate — refund deducted balance
-        await fastify.supabase
-          .rpc('wallet_credit_cdf', { p_user_id: walletId, p_amount: totalDeducted });
-        fastify.log.error({ err: insertError, txId }, 'Wallet withdraw insert failed — balance refunded');
-        return reply.status(500).send({ error: 'Failed to create withdrawal', statusCode: 500 });
-      }
-
-      // Call provider (payout to user's mobile money)
       const service = getProviderService(operator);
-
-      // ── Phone-operator match validation ─────────────────────
-      // A B2C to an operator whose network doesn't own the phone number
-      // is rejected by the operator (MSISDN INCORRECT, code 10401).
-      // Detect this BEFORE sending the doomed B2C to save a round-trip
-      // and give the caller a clear, actionable error.
-      const phoneOpCheck = validatePhoneOperatorMatch(normalizedPhone, operator);
-      if (!phoneOpCheck.ok) {
-        fastify.log.warn(
-          { txId, walletId, operator, phone: normalizedPhone, detected: phoneOpCheck.detected },
-          '[wallet/withdraw] phone-operator mismatch — blocking B2C',
-        );
-        // Refund the deducted balance
-        await fastify.supabase.rpc('wallet_credit_cdf', { p_user_id: walletId, p_amount: totalDeducted });
-        await fastify.supabase.from('transactions')
-          .update({ status: 'failed', metadata: { source: 'wallet_withdraw', error: 'OPERATOR_PHONE_MISMATCH', detected_operator: phoneOpCheck.detected } })
-          .eq('id', txId);
-        return reply.status(400).send({
-          error: 'OPERATOR_PHONE_MISMATCH',
-          message: phoneOpCheck.message,
-          detected_operator: phoneOpCheck.detected,
-          statusCode: 400,
-        });
-      }
 
       try {
         const providerRes = await service.initiatePayment({
@@ -269,20 +291,67 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
           net_amount:     netAmount,
           currency,
           sandbox:        false,
+          idempotent:     false,
         });
       } catch (err) {
-        // Provider failed — refund balance and mark transaction failed
         const errMsg = (err as Error)?.message ?? 'unknown error';
-        fastify.log.error({ err: errMsg, txId, operator }, 'Wallet withdraw provider error — refunding');
-        await fastify.supabase
-          .rpc('wallet_credit_cdf', { p_user_id: walletId, p_amount: totalDeducted });
+        const outcome = classifyPayoutFailure(err);
+
+        if (outcome.kind === 'definitive') {
+          // Provider provably created nothing → the single atomic
+          // refund path (tx lock → wallet credit amount+fee → 'failed').
+          // A callback racing us hits already_terminal and credits nothing.
+          fastify.log.error(
+            { err: errMsg, txId, operator, outcome },
+            '[withdraw] provider rejected payout — refunding via wallet_withdraw_fail_and_refund',
+          );
+          const { data: refund, error: refundErr } = await fastify.supabase
+            .rpc('wallet_withdraw_fail_and_refund', { p_tx_id: txId, p_reason: outcome.reason });
+          if (refundErr) {
+            fastify.log.error(
+              { err: refundErr, txId },
+              '[withdraw] refund RPC failed — tx left pending for reconciliation',
+            );
+          } else {
+            fastify.log.info({ txId, refund }, '[withdraw] refunded');
+          }
+          return reply.status(502).send({
+            error: 'Provider service unavailable',
+            statusCode: 502,
+          });
+        }
+
+        // Ambiguous (timeout / network / 5xx / unreadable / unknown
+        // code): the payout MAY exist at Unipesa. NO refund here — the
+        // row stays 'pending' (debited) until the reconciliation worker
+        // resolves it via /status by order_id = reference.
+        fastify.log.error(
+          { err: errMsg, txId, operator, reference, outcome },
+          '[withdraw] provider outcome ambiguous — NOT refunding, awaiting reconciliation',
+        );
         await fastify.supabase
           .from('transactions')
-          .update({ status: 'failed', metadata: { source: 'wallet_withdraw', error: 'PROVIDER_FAILED', provider_error: errMsg } })
+          .update({
+            metadata: {
+              source: 'wallet_withdraw',
+              sandbox: false,
+              error: 'PROVIDER_AMBIGUOUS',
+              provider_error: errMsg,
+              awaiting_reconciliation: true,
+            },
+          })
           .eq('id', txId);
-        return reply.status(502).send({
-          error: 'Provider service unavailable',
-          statusCode: 502,
+
+        return reply.status(202).send({
+          transaction_id: txId,
+          status:         'pending',
+          amount,
+          fee,
+          net_amount:     netAmount,
+          currency,
+          sandbox:        false,
+          idempotent:     false,
+          message:        'Withdrawal is being verified. Your balance will be updated once the operator confirms.',
         });
       }
     },
