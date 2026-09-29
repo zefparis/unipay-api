@@ -1841,7 +1841,7 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
     sort?: string;
   }
 
-  const AVADA_FEE_RATE = 0.03;
+  const AVADA_FEE_RATE = Number(env.AVADA_FEE_RATE);
   const CLIENT_FEE_RATE = Number(env.MERCHANT_FEE_RATE); // 0.05 default
   const MARGIN_RATE = CLIENT_FEE_RATE - AVADA_FEE_RATE; // 0.02
 

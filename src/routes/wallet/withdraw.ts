@@ -34,7 +34,7 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
             phone_mm: { type: 'string', pattern: '^\\+?[1-9]\\d{7,14}$' },
             operator: { type: 'string', enum: WALLET_OPERATORS },
             amount:   { type: 'number', minimum: 100 },
-            currency: { type: 'string', minLength: 3, maxLength: 3, default: 'CDF' },
+            currency: { type: 'string', enum: ['CDF'], default: 'CDF' },
           },
         },
         response: {
@@ -282,7 +282,6 @@ const walletWithdrawRoute: FastifyPluginAsync = async (fastify) => {
           .eq('id', txId);
         return reply.status(502).send({
           error: 'Provider service unavailable',
-          detail: errMsg,
           statusCode: 502,
         });
       }
