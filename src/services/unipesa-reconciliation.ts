@@ -33,6 +33,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getTransactionStatusWithRaw, type AvadaStatus } from './avada';
 import { notifyMerchantWebhook } from '../lib/merchant-webhook';
+import { env } from '../config/env';
 
 const WORKER_NAME = 'unipay_unipesa_reconciliation';
 const LOCK_TTL_SECONDS = 120;
@@ -53,6 +54,11 @@ const MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
 // earlier may be late indexing at the provider after a timeout; refunding
 // on it would risk wallet refund + payout delivered (double spend).
 export const RECONCILE_NOT_FOUND_GRACE_SECONDS = 15 * 60;
+
+/** Raw -1 seen at Unipesa /status, for logs (value + typeof). */
+function rawStatusLog(raw: unknown): { raw_status: unknown; raw_status_type: string } {
+  return { raw_status: raw, raw_status_type: raw === null ? 'null' : typeof raw };
+}
 
 type PendingTx = {
   id: string;
@@ -471,18 +477,37 @@ async function reconcileOne(
   // retry next tick; log every occurrence so operators can see it.
   if (rawResponse['status'] === -1) {
     const ageSeconds = (Date.now() - new Date(tx.created_at).getTime()) / 1000;
+    const base = {
+      reference: tx.reference,
+      transactionId: tx.id,
+      direction: tx.direction,
+      status: tx.status,
+      amount: tx.amount,
+      ageSeconds: Math.round(ageSeconds),
+      ...rawStatusLog(rawResponse['status']),
+      latencyMs,
+    };
+
+    // Auto-refund disabled (default): NEVER refund on -1. The row stays
+    // 'pending' and is logged every tick for manual review — an automatic
+    // refund on a provider "not found" risks refund + delivered payout.
+    if (!env.RECONCILE_AUTO_REFUND_NOT_FOUND) {
+      log.warn(
+        { event: 'transaction_not_found_manual_review', ...base, autoRefund: false },
+        'Unipesa reports order not found — auto-refund disabled, manual review required',
+      );
+      return;
+    }
+
+    // Auto-refund enabled: -1 is only trusted as terminal "never created"
+    // once past the grace period; younger rows retry next tick.
     if (ageSeconds < RECONCILE_NOT_FOUND_GRACE_SECONDS) {
       log.warn(
         {
           event: 'transaction_not_found_within_grace',
-          reference: tx.reference,
-          transactionId: tx.id,
-          direction: tx.direction,
-          status: tx.status,
-          amount: tx.amount,
-          ageSeconds: Math.round(ageSeconds),
+          ...base,
           graceSeconds: RECONCILE_NOT_FOUND_GRACE_SECONDS,
-          latencyMs,
+          autoRefund: true,
         },
         'Unipesa reports order not found but tx is younger than grace period — not refunding yet',
       );
@@ -491,12 +516,8 @@ async function reconcileOne(
     log.warn(
       {
         event: 'transaction_not_found_after_grace',
-        reference: tx.reference,
-        transactionId: tx.id,
-        direction: tx.direction,
-        status: tx.status,
-        amount: tx.amount,
-        ageSeconds: Math.round(ageSeconds),
+        ...base,
+        autoRefund: true,
       },
       'Unipesa reports order not found after grace period — resolving as failed',
     );

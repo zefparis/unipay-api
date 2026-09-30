@@ -105,7 +105,15 @@ stubModule('../../services/avada', {
 stubModule('../merchant-webhook', { notifyMerchantWebhook: async () => undefined });
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+const { env } = require('../../config/env') as typeof import('../../config/env');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { runReconciliationTick, RECONCILE_NOT_FOUND_GRACE_SECONDS } = require('../../services/unipesa-reconciliation') as typeof import('../../services/unipesa-reconciliation');
+
+function setAutoRefund(on: boolean): void {
+  // The flag is read from the parsed env object at tick time — mutate it
+  // directly so both branches can be exercised in one process.
+  (env as { RECONCILE_AUTO_REFUND_NOT_FOUND: boolean }).RECONCILE_AUTO_REFUND_NOT_FOUND = on;
+}
 
 const logged: { level: string; data: Record<string, unknown> }[] = [];
 const log = {
@@ -132,6 +140,7 @@ function reset(): void {
        DELETE FROM public.wallet_users;
        INSERT INTO public.wallet_users (id, phone, pin_hash, kyc_level, balance_cdf) VALUES ('${W}', 'TESTRECON', 'x', 1, ${START_BALANCE});`);
   logged.length = 0; statusCalls.length = 0;
+  setAutoRefund(false); // default: never auto-refund on -1
 }
 const balance = () => Number(one<string>(`SELECT balance_cdf AS v FROM public.wallet_users WHERE id = '${W}'`));
 const txStatus = (id = TX) => one<string>(`SELECT status AS v FROM public.transactions WHERE id = '${id}'`);
@@ -182,7 +191,34 @@ describe('unipesa reconciliation worker — pending wallet payouts', { skip: !DB
     });
   }
 
-  it('(d) /status=-1 at 10 min → NO refund, logged as within grace', async () => {
+  it('(d) flag off (default): /status=-1 NEVER refunds — manual_review log, still pending even past grace', async () => {
+    // env.RECONCILE_AUTO_REFUND_NOT_FOUND defaults to false
+    seedPendingPayout(TX, 10 * 60); unipesaStatus = -1;
+    await runReconciliationTick(fakeSupabase() as never, log);
+    assert.equal(statusCalls.length, 1);
+    assert.equal(txStatus(), 'pending');
+    assert.equal(balance(), START_BALANCE);
+    const ev = logged.find((l) => l.data.event === 'transaction_not_found_manual_review');
+    assert.ok(ev, 'manual_review log emitted');
+    assert.equal(ev!.level, 'warn');
+    assert.equal(ev!.data.raw_status, -1);
+    assert.equal(ev!.data.raw_status_type, 'number');
+    assert.equal(ev!.data.autoRefund, false);
+    assert.ok(!events().includes('transaction_reconciled'));
+
+    // Even well past the grace period: still NO refund, still pending.
+    run(`UPDATE public.transactions SET reconcile_attempted_at = NULL, created_at = now() - interval '60 minutes' WHERE id = '${TX}'`);
+    logged.length = 0;
+    await runReconciliationTick(fakeSupabase() as never, log);
+    assert.equal(txStatus(), 'pending');
+    assert.equal(balance(), START_BALANCE);
+    const ev2 = logged.find((l) => l.data.event === 'transaction_not_found_manual_review');
+    assert.ok(ev2, 'manual_review logged again at 60 min');
+    assert.equal((ev2!.data.ageSeconds as number) > 3590, true);
+  });
+
+  it('(e) flag on: /status=-1 at 10 min → NO refund (within grace)', async () => {
+    setAutoRefund(true);
     seedPendingPayout(TX, 10 * 60); unipesaStatus = -1;
     await runReconciliationTick(fakeSupabase() as never, log);
     assert.equal(statusCalls.length, 1);
@@ -192,15 +228,21 @@ describe('unipesa reconciliation worker — pending wallet payouts', { skip: !DB
     assert.ok(ev, 'grace log emitted');
     assert.equal(ev!.level, 'warn');
     assert.equal(ev!.data.graceSeconds, 900);
+    assert.equal(ev!.data.raw_status, -1);
+    assert.equal(ev!.data.raw_status_type, 'number');
     assert.ok(!events().includes('transaction_reconciled'));
   });
 
-  it('(e) /status=-1 at 16 min → refund once', async () => {
+  it('(e) flag on: /status=-1 at 16 min → refund once', async () => {
+    setAutoRefund(true);
     seedPendingPayout(TX, 16 * 60); unipesaStatus = -1;
     await runReconciliationTick(fakeSupabase() as never, log);
     assert.equal(txStatus(), 'failed');
     assert.equal(balance(), START_BALANCE + 105);
-    assert.ok(events().includes('transaction_not_found_after_grace'));
+    const ev = logged.find((l) => l.data.event === 'transaction_not_found_after_grace');
+    assert.ok(ev, 'after-grace log emitted');
+    assert.equal(ev!.data.raw_status, -1);
+    assert.equal(ev!.data.raw_status_type, 'number');
     run(`UPDATE public.transactions SET reconcile_attempted_at = NULL WHERE id = '${TX}'`);
     await runReconciliationTick(fakeSupabase() as never, log);
     assert.equal(balance(), START_BALANCE + 105, 'second tick does not credit again');

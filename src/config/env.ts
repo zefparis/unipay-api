@@ -31,6 +31,16 @@ const envSchema = z.object({
   // production — a [WARN] is logged at boot and at each bypassed call.
   UNIPESA_SKIP_FIXIE_CHECK: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
 
+  // Reconciliation safety: when 'true', a Unipesa /status answer of
+  // -1 (PARENT OPERATION NOT FOUND) refunds a wallet payout after the
+  // 15-minute grace period. Default false — a -1 only logs
+  // transaction_not_found_manual_review and leaves the row pending,
+  // because a premature "not found" could be late indexing and an
+  // automatic refund would risk a double spend (refund + payout).
+  RECONCILE_AUTO_REFUND_NOT_FOUND: z
+    .preprocess((v) => (v === '' ? undefined : v), z.string().optional())
+    .transform((v) => v !== undefined && ['1', 'true', 'yes'].includes(v.toLowerCase())),
+
   // Vodacash — direct integration (coming soon)
   VODACASH_API_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
   VODACASH_API_KEY: z.string().optional(),
