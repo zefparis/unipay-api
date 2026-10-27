@@ -12,6 +12,7 @@
  */
 import crypto from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
+import { PROVIDER_FEE_RATE } from '../../lib/partner-commission';
 import { env } from '../../config/env';
 import { requireActiveWallet, walletIdFromRequest } from '../../lib/wallet-auth';
 import {
@@ -385,6 +386,7 @@ const walletUnipesaRoute: FastifyPluginAsync = async (fastify) => {
         p_new_status: dbStatus,
         p_provider_transaction_id: String(transaction_id),
         p_payload: body,
+        p_provider_fee_rate: PROVIDER_FEE_RATE,
       },
     );
 

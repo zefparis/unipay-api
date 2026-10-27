@@ -14,6 +14,7 @@ interface RegisterBody {
   company_name?: string;
   company_rccm?: string;
   company_idnat?: string;
+  ref?: string;
 }
 
 const registerRoute: FastifyPluginAsync = async (fastify) => {
@@ -34,6 +35,7 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
             company_name:  { type: 'string', maxLength: 256 },
             company_rccm:  { type: 'string', maxLength: 128 },
             company_idnat: { type: 'string', maxLength: 128 },
+            ref:         { type: 'string', maxLength: 64 },
           },
         },
         response: {
@@ -50,7 +52,7 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      const { name, email, password, phone, country, company_name, company_rccm, company_idnat } = request.body;
+      const { name, email, password, phone, country, company_name, company_rccm, company_idnat, ref } = request.body;
 
       // 1. Check email uniqueness in merchants table
       const { data: existing } = await fastify.supabase
@@ -63,7 +65,28 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(409).send({ error: 'Email already registered', statusCode: 409 });
       }
 
-      // 2. Hash password
+      // 2. Resolve referral code (optional, non-blocking)
+      //    A valid code belonging to an ACTIVE partner links the new
+      //    merchant via referred_by_partner_id. An invalid/inactive
+      //    code is ignored with a warn — it must never block signup.
+      let referredByPartnerId: string | null = null;
+      if (ref) {
+        const { data: partner } = await fastify.supabase
+          .from('merchants')
+          .select('id, status, is_partner')
+          .eq('partner_code', ref)
+          .eq('is_partner', true)
+          .eq('status', 'active')
+          .maybeSingle();
+
+        if (partner) {
+          referredByPartnerId = partner.id as string;
+        } else {
+          fastify.log.warn({ ref, email }, 'Invalid or inactive partner ref code — registering without referral');
+        }
+      }
+
+      // 3. Hash password
       const passwordHash = await bcrypt.hash(password, 12);
 
       // 3. Insert merchant
@@ -80,6 +103,7 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
           company_name:   company_name  ?? null,
           company_rccm:   company_rccm  ?? null,
           company_idnat:  company_idnat ?? null,
+          referred_by_partner_id: referredByPartnerId,
         })
         .select('id')
         .single();

@@ -26,6 +26,7 @@ import merchantModeRoute from './routes/merchant/mode';
 import merchantSupportRoute from './routes/merchant/support';
 import merchantSettlementRoute from './routes/merchant/settlement';
 import merchantProfileRoute from './routes/merchant/profile';
+import merchantPartnerRoute from './routes/merchant/partner';
 import merchantPasswordResetRoute from './routes/merchant/password-reset';
 import adminKycRoute from './routes/admin/kyc';
 import adminSettlementRoute from './routes/admin/settlements';
@@ -47,6 +48,7 @@ import walletReconcileRoute from './routes/admin/wallet-reconcile';
 import walletInspectRoute from './routes/admin/wallet-inspect';
 import adminWalletRoute from './routes/admin/wallet';
 import adminMerchantsRoute from './routes/admin/merchants';
+import adminPartnerRoute from './routes/admin/partner';
 import adminSupportRoute from './routes/admin/support';
 import wcgltSwapRoute from './routes/wallet/wcglt-swap';
 import walletInternalRoute from './routes/wallet/internal';
@@ -124,6 +126,27 @@ export async function buildServer() {
   // Security headers
   await server.register(helmet, { global: true });
 
+  // Uniform error envelope: every error response MUST carry
+  // { error, statusCode } so the frontend can display it. Older
+  // routes reply.send({ error: '...' }) without statusCode — inject
+  // it here instead of patching hundreds of call sites. Only touches
+  // statusCode >= 400 with an object payload that has a string `error`
+  // and no `statusCode` field. 2xx payloads are never modified.
+  server.addHook('preSerialization', async (request, reply, payload) => {
+    if (
+      reply.statusCode >= 400 &&
+      payload !== null &&
+      typeof payload === 'object' &&
+      !Array.isArray(payload)
+    ) {
+      const p = payload as Record<string, unknown>;
+      if (typeof p.error === 'string' && p.statusCode === undefined) {
+        p.statusCode = reply.statusCode;
+      }
+    }
+    return payload;
+  });
+
   // Multipart (for KYC document uploads)
   await server.register(multipart, { limits: { fileSize: 10 * 1024 * 1024, files: 3 } });
 
@@ -177,6 +200,7 @@ export async function buildServer() {
       v1.register(merchantSupportRoute);
       v1.register(merchantSettlementRoute);
       v1.register(merchantProfileRoute);
+      v1.register(merchantPartnerRoute);
       v1.register(merchantPasswordResetRoute);
       v1.register(adminKycRoute);
       v1.register(adminSettlementRoute);
@@ -197,6 +221,7 @@ export async function buildServer() {
       v1.register(walletInspectRoute);
       v1.register(adminWalletRoute);
       v1.register(adminMerchantsRoute);
+      v1.register(adminPartnerRoute);
       v1.register(adminSupportRoute);
       v1.register(wcgltSwapRoute);
       v1.register(walletInternalRoute);
