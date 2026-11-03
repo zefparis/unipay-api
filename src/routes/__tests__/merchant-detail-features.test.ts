@@ -167,3 +167,30 @@ describe('status/operators.ts uses shared lib (no duplication)', () => {
     assert.doesNotMatch(STATUS_OPERATORS, /function isProviderOutageFailure/);
   });
 });
+
+describe('Feature 4: Webhook secret management (admin)', () => {
+  it('merchant detail never returns webhook_secret in clear', () => {
+    assert.match(MERCHANTS_ROUTE, /has_webhook_secret/);
+    // Le secret brut ne doit pas être spreadé dans la réponse détail.
+    const detail = MERCHANTS_ROUTE.split('GET /v1/admin/merchants/:id')[1] ?? '';
+    assert.match(MERCHANTS_ROUTE, /webhook_secret.*rest|rest.*webhook_secret|const \{ webhook_secret/);
+  });
+
+  it('defines GET /admin/merchants/:id/webhook-secret (reveal, journaled)', () => {
+    assert.match(MERCHANTS_ROUTE, /'\/admin\/merchants\/:id\/webhook-secret'/);
+    assert.match(MERCHANTS_ROUTE, /merchant\.webhook_secret_reveal/);
+    assert.match(MERCHANTS_ROUTE, /logAdminAction\(fastify\.supabase, 'merchant\.webhook_secret_reveal'/);
+  });
+
+  it('defines POST /admin/merchants/:id/webhook-secret/regenerate (audit, immédiat)', () => {
+    assert.match(MERCHANTS_ROUTE, /'\/admin\/merchants\/:id\/webhook-secret\/regenerate'/);
+    assert.match(MERCHANTS_ROUTE, /randomBytes\(32\)\.toString\('hex'\)/);
+    assert.match(MERCHANTS_ROUTE, /merchant\.webhook_secret_regenerate/);
+    assert.match(MERCHANTS_ROUTE, /logAdminAction\(fastify\.supabase, 'merchant\.webhook_secret_regenerate'/);
+  });
+
+  it('auto-génère un secret whsec_ à l enregistrement de l URL si absent', () => {
+    assert.match(MERCHANTS_ROUTE, /whsec_\$\{crypto\.randomBytes\(32\)\.toString\('hex'\)\}/);
+    assert.match(MERCHANTS_ROUTE, /secret_generated/);
+  });
+});

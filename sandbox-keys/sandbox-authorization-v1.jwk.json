@@ -1,0 +1,19 @@
+{
+  "environment": "sandbox",
+  "kid": "sandbox-authorization-v1",
+  "privateJwk": {
+    "crv": "Ed25519",
+    "d": "9_CAvRiaupHb6HXLU1mjpDi8JWXEeb-5OFO6TGX2lL0",
+    "x": "Apa8aM07AhO_NOfgO6_QgKU8Vsb4edPCY5RewyMMySY",
+    "kty": "OKP",
+    "kid": "sandbox-authorization-v1"
+  },
+  "publicJwk": {
+    "crv": "Ed25519",
+    "x": "Apa8aM07AhO_NOfgO6_QgKU8Vsb4edPCY5RewyMMySY",
+    "kty": "OKP",
+    "kid": "sandbox-authorization-v1",
+    "alg": "EdDSA",
+    "use": "sig"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "environment": "sandbox",
+  "keys": [
+    {
+      "crv": "Ed25519",
+      "x": "BUYEHXegs4MSPChNOE71ySOHneyn9P5q4j2BYRvfJ4M",
+      "kty": "OKP",
+      "kid": "sandbox-decision-v1",
+      "alg": "EdDSA",
+      "use": "sig"
+    },
+    {
+      "crv": "Ed25519",
+      "x": "YxEJcvLj2wV-QLLO27EOsU9Tm0wxZHcyB3KJ-tlBETU",
+      "kty": "OKP",
+      "kid": "sandbox-authorization-v1",
+      "alg": "EdDSA",
+      "use": "sig"
+    },
+    {
+      "crv": "Ed25519",
+      "x": "jxOo-4ZzflLS3VRXaFVHoJLUpG1s6TOkm5TOH1cyomo",
+      "kty": "OKP",
+      "kid": "sandbox-execution-v1",
+      "alg": "EdDSA",
+      "use": "sig"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "environment": "sandbox",
+  "kid": "sandbox-decision-v1",
+  "privateJwk": {
+    "crv": "Ed25519",
+    "d": "nB9OsUidIRx4DBk8ein786lWSpaT13x-zUR_7q8gqJs",
+    "x": "4W71POhnNigrci4e-mprYk5kH89BC1CR8AnpfR6Dz2Y",
+    "kty": "OKP",
+    "kid": "sandbox-decision-v1"
+  },
+  "publicJwk": {
+    "crv": "Ed25519",
+    "x": "4W71POhnNigrci4e-mprYk5kH89BC1CR8AnpfR6Dz2Y",
+    "kty": "OKP",
+    "kid": "sandbox-decision-v1",
+    "alg": "EdDSA",
+    "use": "sig"
+  }
+}

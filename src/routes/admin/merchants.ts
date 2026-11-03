@@ -395,9 +395,19 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         signDoc(merchantData?.rep_id_file_url),
       ]);
 
-      const merchantWithDocs = merchantData
+      // Le secret de webhook n'est jamais exposé en clair dans la fiche :
+      // seul un indicateur est renvoyé ; lecture explicite via
+      // GET /admin/merchants/:id/webhook-secret (journalisée).
+      const merchantMasked = merchantData
+        ? (() => {
+            const { webhook_secret, ...rest } = merchantData as typeof merchantData & { webhook_secret?: string | null };
+            return { ...rest, has_webhook_secret: Boolean(webhook_secret) };
+          })()
+        : merchantData;
+
+      const merchantWithDocs = merchantMasked
         ? {
-            ...merchantData,
+            ...merchantMasked,
             rccm_file_signed_url:   rccmSigned,
             idnat_file_signed_url:  idnatSigned,
             rep_id_file_signed_url: repIdSigned,
@@ -825,6 +835,25 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         }
       }
 
+      // Génère un secret si le marchand définit une URL sans en avoir :
+      // 32 octets aléatoires encodés hexadécimal (format whsec_<64 hex>).
+      let generatedSecret = false;
+      if (webhook_url) {
+        const { data: existing } = await fastify.supabase
+          .from('merchants')
+          .select('webhook_secret')
+          .eq('id', id)
+          .maybeSingle();
+        if (existing && !existing.webhook_secret) {
+          const secret = `whsec_${crypto.randomBytes(32).toString('hex')}`;
+          const { error: sErr } = await fastify.supabase
+            .from('merchants')
+            .update({ webhook_secret: secret })
+            .eq('id', id);
+          if (!sErr) generatedSecret = true;
+        }
+      }
+
       const { data, error } = await fastify.supabase
         .from('merchants')
         .update({ webhook_url: webhook_url || null })
@@ -837,7 +866,80 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
 
       void logAdminAction(fastify.supabase, 'merchant.webhook_url_update', 'merchant', id, { webhook_url }, fastify.log);
 
-      return reply.send({ ok: true, webhook_url: data.webhook_url });
+      return reply.send({ ok: true, webhook_url: data.webhook_url, secret_generated: generatedSecret });
+    },
+  );
+
+  /* ── GET /v1/admin/merchants/:id/webhook-secret ─────────────
+     Reveals the merchant's webhook secret (X-UniPay-Signature key).
+     Admin-only, explicitly requested and journaled — the value is never
+     included in the plain merchant detail response. */
+  fastify.get<{ Params: { id: string } }>(
+    '/admin/merchants/:id/webhook-secret',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required', statusCode: 403 });
+      }
+      const { id } = request.params;
+
+      const { data, error } = await fastify.supabase
+        .from('merchants')
+        .select('webhook_secret')
+        .eq('id', id)
+        .maybeSingle();
+      if (error) return reply.status(500).send({ error: error.message });
+      if (!data) return reply.status(404).send({ error: 'Merchant not found' });
+      if (!data.webhook_secret) {
+        return reply.status(404).send({ error: 'No webhook secret configured', statusCode: 404 });
+      }
+
+      void logAdminAction(fastify.supabase, 'merchant.webhook_secret_reveal', 'merchant', id, {}, fastify.log);
+      return reply.send({ webhook_secret: data.webhook_secret });
+    },
+  );
+
+  /* ── POST /v1/admin/merchants/:id/webhook-secret/regenerate ──
+     Replaces the secret immediately: the previous value stops signing
+     callbacks as soon as this write lands. The new value is returned
+     once — it is up to the operator to copy it. */
+  fastify.post<{ Params: { id: string } }>(
+    '/admin/merchants/:id/webhook-secret/regenerate',
+    {
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireAdmin(request.isAdmin)) {
+        return reply.status(403).send({ error: 'Admin access required', statusCode: 403 });
+      }
+      const { id } = request.params;
+
+      const secret = `whsec_${crypto.randomBytes(32).toString('hex')}`;
+      const { data, error } = await fastify.supabase
+        .from('merchants')
+        .update({ webhook_secret: secret })
+        .eq('id', id)
+        .select('id')
+        .maybeSingle();
+      if (error) return reply.status(500).send({ error: error.message });
+      if (!data) return reply.status(404).send({ error: 'Merchant not found' });
+
+      void logAdminAction(fastify.supabase, 'merchant.webhook_secret_regenerate', 'merchant', id, {}, fastify.log);
+      return reply.send({ ok: true, webhook_secret: secret });
     },
   );
 

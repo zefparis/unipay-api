@@ -1,0 +1,86 @@
+{
+  "environment": "sandbox",
+  "intent": {
+    "payload": {
+      "source_account": "wlt_src_001",
+      "rail": "fake",
+      "currency": "CDF",
+      "amount": "25000",
+      "beneficiary": "+243990000001",
+      "fees": "250",
+      "quote_id": "q-demo-1",
+      "quote_expires_at": "2026-10-13T12:56:04.459Z",
+      "policy_ref": "policy:sandbox:default",
+      "approvers": [
+        "wallet_approver_2"
+      ],
+      "intent_id": "6f4a857d-4179-4268-85f4-39ab9e06ea2f",
+      "revision": 1,
+      "tenant": "unipay-congo",
+      "actor": "wallet_initiator_1",
+      "created_at": "2026-10-13T12:51:04.574Z",
+      "environment": "sandbox"
+    },
+    "intent_digest": "a5c2d682c4a4f6e40871f3c185d382951ebb2c0016b99a2032610a83c835424e"
+  },
+  "decision": {
+    "payload": {
+      "typ": "unipay-decision",
+      "intent_id": "6f4a857d-4179-4268-85f4-39ab9e06ea2f",
+      "revision": 1,
+      "intent_digest": "a5c2d682c4a4f6e40871f3c185d382951ebb2c0016b99a2032610a83c835424e",
+      "tenant": "unipay-congo",
+      "environment": "sandbox",
+      "verdict": "ALLOW",
+      "nonce": "2615ab06-edfa-4e0f-a539-9c172f54f075",
+      "jti": "0b0db38a-de8e-45e7-b6a7-be265df1113c",
+      "iat": 1791895864,
+      "exp": 1791896164
+    },
+    "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6InNhbmRib3gtZGVjaXNpb24tdjEiLCJ0eXAiOiJKV1MifQ.eyJlbnZpcm9ubWVudCI6InNhbmRib3giLCJleHAiOjE3OTE4OTYxNjQsImlhdCI6MTc5MTg5NTg2NCwiaW50ZW50X2RpZ2VzdCI6ImE1YzJkNjgyYzRhNGY2ZTQwODcxZjNjMTg1ZDM4Mjk1MWViYjJjMDAxNmI5OWEyMDMyNjEwYTgzYzgzNTQyNGUiLCJpbnRlbnRfaWQiOiI2ZjRhODU3ZC00MTc5LTQyNjgtODVmNC0zOWFiOWUwNmVhMmYiLCJqdGkiOiIwYjBkYjM4YS1kZThlLTQ1ZTctYjZhNy1iZTI2NWRmMTExM2MiLCJub25jZSI6IjI2MTVhYjA2LWVkZmEtNGUwZi1hNTM5LTljMTcyZjU0ZjA3NSIsInJldmlzaW9uIjoxLCJ0ZW5hbnQiOiJ1bmlwYXktY29uZ28iLCJ0eXAiOiJ1bmlwYXktZGVjaXNpb24iLCJ2ZXJkaWN0IjoiQUxMT1cifQ.7b6vprbTUEYfD2YkNl0XHhQdALPAhHlcywIT1JtI54J4QQDUc4GCOEjLUd7cDKSsEXQ2edNxVXjjMHv0d-P8BQ"
+  },
+  "authorization": {
+    "payload": {
+      "typ": "unipay-authorization",
+      "intent_id": "6f4a857d-4179-4268-85f4-39ab9e06ea2f",
+      "revision": 1,
+      "intent_digest": "a5c2d682c4a4f6e40871f3c185d382951ebb2c0016b99a2032610a83c835424e",
+      "tenant": "unipay-congo",
+      "environment": "sandbox",
+      "jti": "5717b39b-6b24-41e3-8e5f-7961b77265ff",
+      "nonce": "0c3c2b2c-a5a5-4dd5-8c6d-44ea133bc524",
+      "scope": "execute",
+      "aud": "unipay-executor",
+      "iat": 1791895864,
+      "exp": 1791896164,
+      "approved": {
+        "amount": "25000",
+        "currency": "CDF",
+        "beneficiary": "+243990000001",
+        "rail": "fake",
+        "source_account": "wlt_src_001",
+        "fees": "250",
+        "quote_id": "q-demo-1",
+        "quote_expires_at": "2026-10-13T12:56:04.459Z"
+      }
+    },
+    "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6InNhbmRib3gtYXV0aG9yaXphdGlvbi12MSIsInR5cCI6IkpXUyJ9.eyJhcHByb3ZlZCI6eyJhbW91bnQiOiIyNTAwMCIsImJlbmVmaWNpYXJ5IjoiKzI0Mzk5MDAwMDAwMSIsImN1cnJlbmN5IjoiQ0RGIiwiZmVlcyI6IjI1MCIsInF1b3RlX2V4cGlyZXNfYXQiOiIyMDI2LTEwLTEzVDEyOjU2OjA0LjQ1OVoiLCJxdW90ZV9pZCI6InEtZGVtby0xIiwicmFpbCI6ImZha2UiLCJzb3VyY2VfYWNjb3VudCI6IndsdF9zcmNfMDAxIn0sImF1ZCI6InVuaXBheS1leGVjdXRvciIsImVudmlyb25tZW50Ijoic2FuZGJveCIsImV4cCI6MTc5MTg5NjE2NCwiaWF0IjoxNzkxODk1ODY0LCJpbnRlbnRfZGlnZXN0IjoiYTVjMmQ2ODJjNGE0ZjZlNDA4NzFmM2MxODVkMzgyOTUxZWJiMmMwMDE2Yjk5YTIwMzI2MTBhODNjODM1NDI0ZSIsImludGVudF9pZCI6IjZmNGE4NTdkLTQxNzktNDI2OC04NWY0LTM5YWI5ZTA2ZWEyZiIsImp0aSI6IjU3MTdiMzliLTZiMjQtNDFlMy04ZTVmLTc5NjFiNzcyNjVmZiIsIm5vbmNlIjoiMGMzYzJiMmMtYTVhNS00ZGQ1LThjNmQtNDRlYTEzM2JjNTI0IiwicmV2aXNpb24iOjEsInNjb3BlIjoiZXhlY3V0ZSIsInRlbmFudCI6InVuaXBheS1jb25nbyIsInR5cCI6InVuaXBheS1hdXRob3JpemF0aW9uIn0.5G_zadV6j9LtW4bchTc4lFj1wSIMVnw8aTwtTmpV6kUlO1CzlPZwT_kBchFWpeIzYrDANT-6IY8bivc9kSHACA"
+  },
+  "execution_receipt": {
+    "payload": {
+      "typ": "unipay-execution-receipt",
+      "intent_id": "6f4a857d-4179-4268-85f4-39ab9e06ea2f",
+      "revision": 1,
+      "intent_digest": "a5c2d682c4a4f6e40871f3c185d382951ebb2c0016b99a2032610a83c835424e",
+      "tenant": "unipay-congo",
+      "environment": "sandbox",
+      "authorization_jti": "5717b39b-6b24-41e3-8e5f-7961b77265ff",
+      "connector_ref": "fake-ok-6f4a857d-4179-4268-85f4-39ab9e06ea2f:1",
+      "idempotency_key": "6f4a857d-4179-4268-85f4-39ab9e06ea2f:1",
+      "outcome": "confirmed",
+      "jti": "d15b5ddc-5609-4fd9-9577-afb7438c0943",
+      "iat": 1791895864
+    },
+    "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6InNhbmRib3gtZXhlY3V0aW9uLXYxIiwidHlwIjoiSldTIn0.eyJhdXRob3JpemF0aW9uX2p0aSI6IjU3MTdiMzliLTZiMjQtNDFlMy04ZTVmLTc5NjFiNzcyNjVmZiIsImNvbm5lY3Rvcl9yZWYiOiJmYWtlLW9rLTZmNGE4NTdkLTQxNzktNDI2OC04NWY0LTM5YWI5ZTA2ZWEyZjoxIiwiZW52aXJvbm1lbnQiOiJzYW5kYm94IiwiaWF0IjoxNzkxODk1ODY0LCJpZGVtcG90ZW5jeV9rZXkiOiI2ZjRhODU3ZC00MTc5LTQyNjgtODVmNC0zOWFiOWUwNmVhMmY6MSIsImludGVudF9kaWdlc3QiOiJhNWMyZDY4MmM0YTRmNmU0MDg3MWYzYzE4NWQzODI5NTFlYmIyYzAwMTZiOTlhMjAzMjYxMGE4M2M4MzU0MjRlIiwiaW50ZW50X2lkIjoiNmY0YTg1N2QtNDE3OS00MjY4LTg1ZjQtMzlhYjllMDZlYTJmIiwianRpIjoiZDE1YjVkZGMtNTYwOS00ZmQ5LTk1NzctYWZiNzQzOGMwOTQzIiwib3V0Y29tZSI6ImNvbmZpcm1lZCIsInJldmlzaW9uIjoxLCJ0ZW5hbnQiOiJ1bmlwYXktY29uZ28iLCJ0eXAiOiJ1bmlwYXktZXhlY3V0aW9uLXJlY2VpcHQifQ.6RCFBWrHPUtFOE_dF_lH0jSAzTLBv284STVs00ry_J5OCN-7D2bDjZKX_7qpPwX_4TuEOTzapGcYpd4G68i0BA"
+  }
+}
