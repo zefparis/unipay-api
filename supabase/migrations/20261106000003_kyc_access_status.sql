@@ -31,3 +31,10 @@ CREATE INDEX IF NOT EXISTS merchant_kyc_events_merchant_idx
 
 REVOKE ALL ON public.merchant_kyc_events FROM PUBLIC;
 GRANT SELECT, INSERT ON public.merchant_kyc_events TO service_role;
+
+-- Cas c : actifs sous préavis — deadline à J+7 sans coupure immédiate
+ALTER TABLE public.merchants
+  ADD COLUMN IF NOT EXISTS kyc_deadline TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS merchants_kyc_deadline_idx
+  ON public.merchants (kyc_deadline)
+  WHERE kyc_deadline IS NOT NULL;

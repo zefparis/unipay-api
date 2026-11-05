@@ -861,3 +861,52 @@ export async function sendKycReceivedEmail(to: string, name: string): Promise<vo
     to: [{ email: to, name }],
   });
 }
+
+/* ── sendKycNoticeEmail — préavis 7 jours (cas c) ───────────── */
+export async function sendKycNoticeEmail(to: string, name: string, deadline: string): Promise<void> {
+  const api = getClient();
+  if (!api) return;
+
+  const body = `
+    <p style="margin:0 0 12px">Bonjour${name ? ` <strong>${name}</strong>` : ''},</p>
+    <p style="margin:0 0 12px">
+      En tant qu'opérateur de paiement agréé, UniPay renforce ses procédures de vérification
+      des marchands. Tous les comptes doivent disposer d'un dossier complet et validé pour
+      continuer à utiliser la plateforme.
+    </p>
+    <p style="margin:0 0 12px">
+      <strong>Votre dossier est actuellement incomplet. Votre compte reste pleinement actif
+      jusqu'au ${deadline}.</strong> Sans dossier complet à cette date, il sera suspendu
+      temporairement, sans perte de vos données ni de votre historique.
+    </p>
+    <p style="margin:0 0 12px">
+      Pour compléter votre dossier, connectez-vous à votre espace marchand et envoyez les
+      trois documents suivants :
+    </p>
+    <ul style="margin:0 0 16px;padding-left:22px">
+      <li>RCCM</li>
+      <li>Identification nationale (ID NAT)</li>
+      <li>Pièce d'identité du représentant légal</li>
+    </ul>
+    <p style="margin:0 0 12px">
+      Certains d'entre vous ont rencontré des difficultés pour envoyer leurs documents ces
+      dernières semaines, en particulier avec des fichiers volumineux. Le problème est corrigé.
+    </p>
+    <p style="margin:0 0 20px">
+      Dès que votre dossier est validé, vous recevez une confirmation par email et ce
+      message disparaît de votre espace.
+    </p>
+    <a href="https://unipaycongo.com/fr/dashboard/kyc"
+       style="display:inline-block;background:#1D9E75;color:#fff;text-decoration:none;
+              padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;">
+      Compléter mon dossier →
+    </a>
+    <p style="margin:20px 0 0">L'équipe UniPay</p>`;
+
+  await api.transactionalEmails.sendTransacEmail({
+    subject: `UniPay : votre dossier de vérification à compléter avant le ${deadline}`,
+    htmlContent: layout(body),
+    sender: { name: env.BREVO_SENDER_NAME, email: env.BREVO_SENDER_EMAIL },
+    to: [{ email: to, name }],
+  });
+}

@@ -146,6 +146,7 @@ const merchantKycRoute: FastifyPluginAsync = async (fastify) => {
             properties: {
               kyc_status:        { type: 'string' },
               access_status:     { type: 'string' },
+              kyc_deadline:      { type: ['string', 'null'] },
               kyc_submitted_at:  { type: ['string', 'null'] },
               kyc_reviewed_at:   { type: ['string', 'null'] },
               kyc_notes:         { type: ['string', 'null'] },
@@ -168,13 +169,14 @@ const merchantKycRoute: FastifyPluginAsync = async (fastify) => {
 
       const { data } = await fastify.supabase
         .from('merchants')
-        .select('kyc_status, access_status, kyc_submitted_at, kyc_reviewed_at, kyc_notes, company_name, company_rccm, company_idnat, rccm_file_url, idnat_file_url, rep_id_file_url')
+        .select('kyc_status, access_status, kyc_deadline, kyc_submitted_at, kyc_reviewed_at, kyc_notes, company_name, company_rccm, company_idnat, rccm_file_url, idnat_file_url, rep_id_file_url')
         .eq('id', auth.payload.merchant_id)
         .maybeSingle();
 
       return reply.send({
         kyc_status:       data?.kyc_status       ?? 'pending',
         access_status:    data?.access_status    ?? 'active',
+        kyc_deadline:     data?.kyc_deadline     ?? null,
         kyc_submitted_at: data?.kyc_submitted_at ?? null,
         kyc_reviewed_at:  data?.kyc_reviewed_at  ?? null,
         kyc_notes:        data?.kyc_notes        ?? null,
