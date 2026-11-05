@@ -22,7 +22,10 @@ const now = Date.now();
 const nowIso = new Date(now).toISOString();
 
 const EXCLUDE = new Set([
-  '9c3e78bd-2292-47b2-8c01-3328cf55d84f', // Friktune
+  '9c3e78bd-2292-47b2-8c01-3328cf55d84f', // Friktune (partenaire PRT-69D5A3E8, dossier hors système)
+  '06ada919-15fd-4c34-9f88-3e7e22c4b3dd', // Congo Gaming (entité propriétaire)
+  '8a377991-62b9-431d-af5c-f1b1fdc8dfd3', // IA-SOLUTION
+  '00009263-dcc5-479d-8928-aa15d25a6f5c', // Ndako
 ]);
 
 const hasEvent = async (mid: string, ev: string) => {
