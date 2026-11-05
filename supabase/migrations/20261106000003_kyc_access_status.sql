@@ -38,3 +38,11 @@ ALTER TABLE public.merchants
 CREATE INDEX IF NOT EXISTS merchants_kyc_deadline_idx
   ON public.merchants (kyc_deadline)
   WHERE kyc_deadline IS NOT NULL;
+
+-- Clés internes : bypass du gate access_status sur routes internes/cglt
+-- seulement. Les clés env (CONGOGAMING_API_KEY, GAMING_API_KEY,
+-- BRIDGE_INBOUND_API_KEY) sont des secrets env — hors api_keys.
+ALTER TABLE public.api_keys
+  ADD COLUMN IF NOT EXISTS is_internal BOOLEAN NOT NULL DEFAULT false;
+-- Aucune clé interne identifiée dans api_keys aujourd'hui — la colonne
+-- protège le jour où une clé interne y serait stockée.
