@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import '@fastify/multipart';
 import { env } from '../../config/env.js';
-import { requireActiveMerchant, merchantIdFromRequest } from '../../lib/merchant-auth.js';
+import { requireMerchantSession, merchantIdFromRequest } from '../../lib/merchant-auth.js';
 import { rateLimitKey } from '../../lib/client-ip.js';
 
 // Clé rate-limit KYC : par merchant_id (route authentifiée — contexte
@@ -12,6 +12,7 @@ const kycMerchantKey = (req: Parameters<typeof merchantIdFromRequest>[0]) => {
   return mid ? `kyc:${mid}` : rateLimitKey(req as Parameters<typeof rateLimitKey>[0]);
 };
 import { errorResponses } from '../../lib/error-schema.js';
+import { sendKycReceivedEmail } from '../../services/email.js';
 
 /* ── upload validation ─────────────────────────────────────── */
 const BUCKET = 'merchant-kyc-docs';
@@ -63,6 +64,21 @@ const DOC_LABELS: Record<DocField, string> = {
 
 const merchantKycRoute: FastifyPluginAsync = async (fastify) => {
 
+  /** Journalise l'event kyc_submitted + envoie le mail « dossier reçu ». */
+  const onKycSubmitted = (merchantId: string, name: string) => {
+    void fastify.supabase.from('merchant_kyc_events').insert({
+      merchant_id: merchantId, event: 'kyc_submitted', actor: 'merchant', details: {},
+    }).then(() => {});
+    void (async () => {
+      try {
+        const { data: m } = await fastify.supabase.from('merchants').select('email').eq('id', merchantId).maybeSingle();
+        if (m) await sendKycReceivedEmail(m.email as string, name);
+      } catch (e) {
+        fastify.log.error({ err: e, merchantId }, '[kyc] received email failed');
+      }
+    })();
+  };
+
   /* ── POST /v1/merchant/kyc/upload-url ─────────────────────
      Émet une URL signée d'upload direct navigateur → Supabase
      Storage. Le fichier ne transite ni par Vercel ni par x3.
@@ -87,7 +103,7 @@ const merchantKycRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth not configured', statusCode: 500 });
-      const auth = await requireActiveMerchant(request, fastify.supabase);
+      const auth = await requireMerchantSession(request, fastify.supabase);
       if (!auth.ok) return reply.status(auth.status).send(auth.error);
 
       const { field, filename, size, mime } = request.body;
@@ -129,6 +145,7 @@ const merchantKycRoute: FastifyPluginAsync = async (fastify) => {
             type: 'object',
             properties: {
               kyc_status:        { type: 'string' },
+              access_status:     { type: 'string' },
               kyc_submitted_at:  { type: ['string', 'null'] },
               kyc_reviewed_at:   { type: ['string', 'null'] },
               kyc_notes:         { type: ['string', 'null'] },
@@ -146,17 +163,18 @@ const merchantKycRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth not configured', statusCode: 500 });
-      const auth = await requireActiveMerchant(request, fastify.supabase);
+      const auth = await requireMerchantSession(request, fastify.supabase);
       if (!auth.ok) return reply.status(auth.status).send(auth.error);
 
       const { data } = await fastify.supabase
         .from('merchants')
-        .select('kyc_status, kyc_submitted_at, kyc_reviewed_at, kyc_notes, company_name, company_rccm, company_idnat, rccm_file_url, idnat_file_url, rep_id_file_url')
+        .select('kyc_status, access_status, kyc_submitted_at, kyc_reviewed_at, kyc_notes, company_name, company_rccm, company_idnat, rccm_file_url, idnat_file_url, rep_id_file_url')
         .eq('id', auth.payload.merchant_id)
         .maybeSingle();
 
       return reply.send({
         kyc_status:       data?.kyc_status       ?? 'pending',
+        access_status:    data?.access_status    ?? 'active',
         kyc_submitted_at: data?.kyc_submitted_at ?? null,
         kyc_reviewed_at:  data?.kyc_reviewed_at  ?? null,
         kyc_notes:        data?.kyc_notes        ?? null,
@@ -184,7 +202,7 @@ const merchantKycRoute: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth not configured', statusCode: 500 });
-      const auth = await requireActiveMerchant(request, fastify.supabase);
+      const auth = await requireMerchantSession(request, fastify.supabase);
       if (!auth.ok) return reply.status(auth.status).send(auth.error);
 
       const merchantId = auth.payload.merchant_id;
@@ -282,6 +300,7 @@ const merchantKycRoute: FastifyPluginAsync = async (fastify) => {
         }
 
         fastify.log.info({ merchantId, company_name }, 'KYC submitted (signed urls)');
+        onKycSubmitted(merchantId, company_name);
         return reply.send({ ok: true, kyc_status: 'submitted' });
       }
 
@@ -406,6 +425,7 @@ const merchantKycRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       fastify.log.info({ merchantId, company_name }, 'KYC submitted');
+      onKycSubmitted(merchantId, company_name);
       return reply.send({ ok: true, kyc_status: 'submitted' });
     },
   );

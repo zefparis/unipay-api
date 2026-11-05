@@ -54,7 +54,7 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
 
     const { data: keys, error } = await fastify.supabase
       .from('api_keys')
-      .select('*, merchants!inner(id, name, email, status, webhook_url)')
+      .select('*, merchants!inner(id, name, email, status, access_status, webhook_url)')
       .eq('key_prefix', prefix)
       .eq('is_active', true);
 
@@ -86,6 +86,16 @@ const hmacPlugin: FastifyPluginAsync = async (fastify) => {
       return reply.status(403).send({
         error: 'Forbidden',
         message: 'Operator account is not active',
+        statusCode: 403,
+      });
+    }
+
+    // Conformité KYC : clés sandbox ET live bloquées tant que le dossier
+    // n'est pas validé (access_status ≠ 'active').
+    if ((matched.merchants as { access_status?: string }).access_status !== 'active') {
+      return reply.status(403).send({
+        error: 'Vérification de votre dossier requise — envoyez vos documents KYC depuis votre espace marchand.',
+        code: 'KYC_REQUIRED',
         statusCode: 403,
       });
     }

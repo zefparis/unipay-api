@@ -785,3 +785,79 @@ export async function sendPasswordResetEmail(
     console.error('[email] password reset → failed:', err);
   }
 }
+
+/* ── sendKycIncompleteEmail — dossier incomplet → suspension ── */
+export async function sendKycIncompleteEmail(to: string, name: string): Promise<void> {
+  const api = getClient();
+  if (!api) return;
+
+  const body = `
+    <p style="margin:0 0 12px">Bonjour${name ? ` <strong>${name}</strong>` : ''},</p>
+    <p style="margin:0 0 12px">
+      En tant qu'opérateur de paiement agréé, UniPay renforce ses procédures de vérification
+      des marchands. Désormais, l'accès à la plateforme, y compris à l'environnement de test,
+      est réservé aux comptes dont le dossier est complet et validé.
+    </p>
+    <p style="margin:0 0 12px">
+      <strong>Votre dossier est actuellement incomplet. Votre compte est donc suspendu
+      temporairement. Vos données et votre historique sont conservés.</strong>
+    </p>
+    <p style="margin:0 0 12px">
+      Pour le réactiver, il suffit de vous connecter à votre espace marchand et d'envoyer
+      les trois documents suivants :
+    </p>
+    <ul style="margin:0 0 16px;padding-left:22px">
+      <li>RCCM</li>
+      <li>Identification nationale (ID NAT)</li>
+      <li>Pièce d'identité du représentant légal</li>
+    </ul>
+    <p style="margin:0 0 12px">
+      Certains d'entre vous ont rencontré des difficultés pour envoyer leurs documents ces
+      dernières semaines, en particulier avec des fichiers volumineux. Le problème est
+      corrigé, et nous vous prions de nous excuser pour la gêne occasionnée.
+    </p>
+    <p style="margin:0 0 20px">
+      Dès que votre dossier est validé, votre compte est réactivé automatiquement et vous
+      recevez une confirmation par email.
+    </p>
+    <a href="https://unipaycongo.com/fr/dashboard/kyc"
+       style="display:inline-block;background:#1D9E75;color:#fff;text-decoration:none;
+              padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;">
+      Envoyer mes documents →
+    </a>
+    <p style="margin:20px 0 0">L'équipe UniPay</p>`;
+
+  await api.transactionalEmails.sendTransacEmail({
+    subject: 'UniPay : mise à jour de votre dossier de vérification',
+    htmlContent: layout(body),
+    sender: { name: env.BREVO_SENDER_NAME, email: env.BREVO_SENDER_EMAIL },
+    to: [{ email: to, name }],
+  });
+}
+
+/* ── sendKycReceivedEmail — dossier reçu, en cours de vérification ── */
+export async function sendKycReceivedEmail(to: string, name: string): Promise<void> {
+  const api = getClient();
+  if (!api) return;
+
+  const body = `
+    <h2 style="color:#1D9E75;margin:0 0 16px">Dossier reçu ✓</h2>
+    <p style="margin:0 0 12px">Bonjour${name ? ` <strong>${name}</strong>` : ''},</p>
+    <p style="margin:0 0 12px">
+      Nous avons bien reçu vos documents de vérification (RCCM, ID NAT et pièce d'identité
+      du représentant légal). Votre dossier est <strong>en cours de vérification</strong>
+      par notre équipe.
+    </p>
+    <p style="margin:0 0 20px">
+      Vous serez notifié par email dès que votre dossier sera validé et votre compte
+      réactivé automatiquement.
+    </p>
+    <p style="margin:0">L'équipe UniPay</p>`;
+
+  await api.transactionalEmails.sendTransacEmail({
+    subject: 'UniPay : votre dossier est en cours de vérification',
+    htmlContent: layout(body),
+    sender: { name: env.BREVO_SENDER_NAME, email: env.BREVO_SENDER_EMAIL },
+    to: [{ email: to, name }],
+  });
+}

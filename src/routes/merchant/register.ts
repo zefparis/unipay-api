@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import type { FastifyPluginAsync } from 'fastify';
 import { sendWelcomeEmail, sendAdminNewMerchantEmail } from '../../services/email.js';
@@ -43,7 +42,8 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
               merchant_id: { type: 'string' },
               name:        { type: 'string' },
               email:       { type: 'string' },
-              api_key:     { type: 'string' },
+              api_key:     { type: ['string', 'null'] },
+              message:     { type: 'string' },
             },
           },
         },
@@ -76,6 +76,7 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
           phone:          phone         ?? null,
           country:        country       ?? 'CD',
           status:         'active',
+          access_status:  'kyc_required',   // conformité : aucune clé API avant validation du dossier
           kyc_status:     'pending',
           company_name:   company_name  ?? null,
           company_rccm:   company_rccm  ?? null,
@@ -107,25 +108,9 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
         fastify.log.error({ err: opError, merchantId }, 'Operator rows creation failed');
       }
 
-      // 5. Generate API key: plaintext = "up_<32 random hex>", store bcrypt hash
-      const rawKey    = `up_${crypto.randomBytes(16).toString('hex')}`;
-      const keyHash   = await bcrypt.hash(rawKey, 10);
-      const keyPrefix = rawKey.slice(0, 12);
-
-      const { error: keyError } = await fastify.supabase
-        .from('api_keys')
-        .insert({
-          merchant_id:  merchantId,
-          key_hash:     keyHash,
-          key_prefix:   keyPrefix,
-          label:        'default',
-          is_active:    true,
-        });
-
-      if (keyError) {
-        fastify.log.error({ err: keyError, merchantId }, 'API key insert failed');
-        return reply.status(500).send({ error: 'API key generation failed', statusCode: 500 });
-      }
+      // 5. Pas de clé API : le compte démarre en access_status='kyc_required',
+      // la clé (sandbox puis live) sera émise par un admin après validation
+      // des 3 documents obligatoires.
 
       fastify.log.info({ merchantId, email }, 'Merchant registered');
 
@@ -143,7 +128,8 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
         merchant_id: merchantId,
         name,
         email,
-        api_key: rawKey,
+        api_key: null,
+        message: 'Compte créé. Envoyez vos documents KYC depuis votre espace marchand pour activer votre accès.',
       });
     },
   );

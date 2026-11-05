@@ -37,6 +37,41 @@ export function merchantIdFromRequest(
  *   if (!auth.ok) return reply.status(auth.status).send(auth.error);
  *   const merchantId = auth.payload.merchant_id;
  */
+/**
+ * Session marchand valide SANS gate de statut : JWT vérifié + merchant
+ * existant + token_version à jour. Utilisée pour les routes accessibles
+ * même en suspension KYC (soumission KYC, consultation du dossier).
+ */
+export async function requireMerchantSession(
+  request: { headers: Record<string, string | string[] | undefined> },
+  supabase: SupabaseClient,
+): Promise<
+  | { ok: true; payload: JwtPayload }
+  | { ok: false; status: 401 | 404; error: { error: string; statusCode: number } }
+> {
+  const payload = requireMerchantAuth(request);
+  if (!payload) {
+    return { ok: false, status: 401, error: { error: 'Unauthorized', statusCode: 401 } };
+  }
+
+  const { data, error } = await supabase
+    .from('merchants')
+    .select('status, access_status, token_version')
+    .eq('id', payload.merchant_id)
+    .maybeSingle();
+
+  if (error || !data) {
+    return { ok: false, status: 404, error: { error: 'Merchant not found', statusCode: 404 } };
+  }
+
+  const dbTokenVersion = (data as { token_version?: number }).token_version ?? 0;
+  if (payload.token_version !== dbTokenVersion) {
+    return { ok: false, status: 401, error: { error: 'TOKEN_REVOKED', statusCode: 401 } };
+  }
+
+  return { ok: true, payload };
+}
+
 export async function requireActiveMerchant(
   request: { headers: Record<string, string | string[] | undefined> },
   supabase: SupabaseClient,
@@ -55,7 +90,7 @@ export async function requireActiveMerchant(
 
   const { data, error } = await supabase
     .from('merchants')
-    .select('status, token_version')
+    .select('status, access_status, token_version')
     .eq('id', payload.merchant_id)
     .maybeSingle();
 
@@ -85,6 +120,21 @@ export async function requireActiveMerchant(
       ok: false,
       status: 403,
       error: { error: 'Compte suspendu', statusCode: 403 },
+    };
+  }
+
+  // Conformité KYC : pas d'accès tant que le dossier n'est pas validé
+  // (kyc_required = en attente de validation, suspended_kyc = incomplet).
+  const accessStatus = (data as { access_status?: string }).access_status ?? 'active';
+  if (accessStatus !== 'active') {
+    return {
+      ok: false,
+      status: 403,
+      error: {
+        error: 'Vérification de votre dossier requise — envoyez vos documents KYC depuis votre espace marchand.',
+        code: 'KYC_REQUIRED',
+        statusCode: 403,
+      } as { error: string; statusCode: number },
     };
   }
 

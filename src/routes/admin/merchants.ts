@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { sendAdminDirectEmail } from '../../services/email.js';
+import { sendAdminDirectEmail, sendKycRejectedEmail } from '../../services/email.js';
 import { env } from '../../config/env.js';
 import { logAdminAction } from '../../lib/admin-action-log.js';
 import { buildEmailTemplates, type MerchantTemplateData } from '../../lib/email-templates.js';
@@ -1433,6 +1433,9 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
           kyc_reviewed_at: nowIso,
           kyc_notes:       null,
           mode:            'live',
+          access_status:   'active',
+          access_status_changed_at: nowIso,
+          access_status_reason: null,
           ...(submittedAt ? {} : { kyc_submitted_at: nowIso }),
         })
         .eq('id', id)
@@ -1443,6 +1446,9 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       if (!data) return reply.status(404).send({ error: 'Merchant not found' });
       fastify.log.info({ merchantId: id }, '[admin] KYC approved, mode set to live');
       void logAdminAction(fastify.supabase, 'merchant.kyc_approve', 'merchant', id, { previous_mode: 'sandbox', new_mode: 'live' }, fastify.log);
+      void fastify.supabase.from('merchant_kyc_events').insert({
+        merchant_id: id, event: 'kyc_approved', actor: 'admin', details: { mode: 'live' },
+      }).then(() => {});
 
       // Auto-send "KYC approuvé" email (fire-and-forget, non-blocking)
       const m = data as MerchantTemplateData;
@@ -1475,13 +1481,17 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(403).send({ error: 'Admin access required' });
       }
       const { id } = request.params;
-      const notes = request.body?.notes ?? null;
+      const notes = request.body?.notes?.trim() ?? '';
+      if (!notes) return reply.status(400).send({ error: 'Un motif de refus est obligatoire.' });
       const { data, error } = await fastify.supabase
         .from('merchants')
         .update({
           kyc_status:      'rejected',
           kyc_reviewed_at: new Date().toISOString(),
           kyc_notes:       notes,
+          access_status:   'suspended_kyc',
+          access_status_changed_at: new Date().toISOString(),
+          access_status_reason: notes,
         })
         .eq('id', id)
         .select('id, email, kyc_status')
@@ -1491,6 +1501,18 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       if (!data) return reply.status(404).send({ error: 'Merchant not found' });
       fastify.log.info({ merchantId: id, notes }, '[admin] KYC rejected');
       void logAdminAction(fastify.supabase, 'merchant.kyc_reject', 'merchant', id, { notes: notes ?? null }, fastify.log);
+      void fastify.supabase.from('merchant_kyc_events').insert({
+        merchant_id: id, event: 'kyc_rejected', actor: 'admin', details: { reason: notes },
+      }).then(() => {});
+      // Mail au marchand avec le motif (fire-and-forget)
+      void (async () => {
+        try {
+          const { data: m } = await fastify.supabase.from('merchants').select('email, name').eq('id', id).maybeSingle();
+          if (m) await sendKycRejectedEmail(m.email as string, m.name as string, notes);
+        } catch (e) {
+          fastify.log.error({ err: e, merchantId: id }, '[admin] KYC reject email failed');
+        }
+      })();
       return reply.send({ ok: true, merchant: data });
     },
   );
