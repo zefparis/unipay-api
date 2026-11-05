@@ -126,3 +126,29 @@ describe('source — server.ts', () => {
     assert.match(source('src/routes/payment/initiate.ts'), /keyGenerator: apiKeyLimitKey/);
   });
 });
+
+describe('email login limiter (CGNAT-safe)', () => {
+  it('bloque à la 6e tentative sur le même email, pas sur un autre', async () => {
+    const { loginEmailAllowed, resetEmailLimiter } = await import('../email-login-limiter.js');
+    resetEmailLimiter();
+    for (let i = 0; i < 5; i++) assert.equal(loginEmailAllowed('marchand@test.cd'), true);
+    assert.equal(loginEmailAllowed('marchand@test.cd'), false);
+    assert.equal(loginEmailAllowed('autre@test.cd'), true);
+    assert.equal(loginEmailAllowed('MARCHAND@test.cd'), false); // normalisé
+  });
+
+  it('la route login a une limite par email + garde IP large', () => {
+    const login = source('src/routes/merchant/login.ts');
+    assert.match(login, /loginEmailAllowed\(email\)/);
+    assert.match(login, /keyGenerator: rateLimitKey/);
+    assert.match(login, /max: 60, timeWindow: '1 minute'/);
+  });
+});
+
+describe('KYC — clé par merchant_id', () => {
+  it('les deux routes KYC sont limitées par merchant', () => {
+    const kyc = source('src/routes/merchant/kyc.ts');
+    assert.match(kyc, /merchantIdFromRequest/);
+    assert.equal((kyc.match(/keyGenerator: kycMerchantKey/g) ?? []).length, 2);
+  });
+});

@@ -2,6 +2,8 @@ import bcrypt from 'bcryptjs';
 import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../../config/env';
 import { signToken } from '../../utils/jwt';
+import { loginEmailAllowed } from '../../lib/email-login-limiter';
+import { rateLimitKey } from '../../lib/client-ip';
 
 // Dummy hash for constant-time login (M8: eliminate timing oracle).
 // This hash is used when the account doesn't exist, so bcrypt.compare
@@ -18,7 +20,10 @@ const loginRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: LoginBody }>(
     '/merchant/login',
     {
-      config: { rateLimit: { max: 10, timeWindow: '1 minute', keyGenerator: (req) => req.ip } },
+      // CGNAT RDC : pas de limite stricte par IP (des milliers de
+      // clients partagent une IP mobile). Garde large anti-bourrage ;
+      // la vraie limite est par identifiant dans le handler.
+      config: { rateLimit: { max: 60, timeWindow: '1 minute', keyGenerator: rateLimitKey } },
       schema: {
         body: {
           type: 'object',
@@ -50,6 +55,12 @@ const loginRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       const { email, password } = request.body;
+
+      // Limite par identifiant : 5 tentatives/min par email (bloque le
+      // stuffing ciblé sans pénaliser les voisins de CGNAT).
+      if (!loginEmailAllowed(email)) {
+        return reply.status(429).send({ error: 'Trop de tentatives de connexion, réessayez dans une minute.', statusCode: 429 });
+      }
 
       const { data: merchant, error } = await fastify.supabase
         .from('merchants')

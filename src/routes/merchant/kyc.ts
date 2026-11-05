@@ -1,8 +1,16 @@
 import type { FastifyPluginAsync } from 'fastify';
 import '@fastify/multipart';
 import { env } from '../../config/env.js';
-import { requireActiveMerchant } from '../../lib/merchant-auth.js';
+import { requireActiveMerchant, merchantIdFromRequest } from '../../lib/merchant-auth.js';
 import { rateLimitKey } from '../../lib/client-ip.js';
+
+// Clé rate-limit KYC : par merchant_id (route authentifiée — contexte
+// RDC, CGNAT massif : limiter par IP punirait les autres clients du
+// même opérateur). Sans JWT valide → repli sur l'IP réelle.
+const kycMerchantKey = (req: Parameters<typeof merchantIdFromRequest>[0]) => {
+  const mid = merchantIdFromRequest(req);
+  return mid ? `kyc:${mid}` : rateLimitKey(req as Parameters<typeof rateLimitKey>[0]);
+};
 import { errorResponses } from '../../lib/error-schema.js';
 
 /* ── upload validation ─────────────────────────────────────── */
@@ -63,7 +71,7 @@ const merchantKycRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: { field?: string; filename?: string; size?: number; mime?: string } }>(
     '/merchant/kyc/upload-url',
     {
-      config: { rateLimit: { max: 20, timeWindow: '1 hour', keyGenerator: rateLimitKey } },
+      config: { rateLimit: { max: 20, timeWindow: '1 hour', keyGenerator: kycMerchantKey } },
       schema: {
         body: {
           type: 'object',
@@ -172,7 +180,7 @@ const merchantKycRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/merchant/kyc',
     {
-      config: { rateLimit: { max: 20, timeWindow: '1 hour', keyGenerator: rateLimitKey } },
+      config: { rateLimit: { max: 20, timeWindow: '1 hour', keyGenerator: kycMerchantKey } },
     },
     async (request, reply) => {
       if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth not configured', statusCode: 500 });
