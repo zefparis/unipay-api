@@ -13,6 +13,11 @@ const envSchema = z.object({
   HMAC_SECRET: z.string().min(16),
   OPERATOR_WEBHOOK_SECRET: z.string().optional(),
 
+  // Secret partagé BFF Vercel ↔ API : signe x-unipay-client-ip pour
+  // transporter l'IP réelle du client à travers le BFF. Optionnel :
+  // absent, l'en-tête est simplement ignoré (repli sur req.ip).
+  BFF_IP_SECRET: z.string().optional(),
+
   // Unipesa aggregator (Orange, Airtel, Afrimoney)
   UNIPESA_API_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
   UNIPESA_PUBLIC_ID: z.string().optional(),

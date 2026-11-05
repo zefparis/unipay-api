@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import '@fastify/multipart';
 import { env } from '../../config/env.js';
 import { requireActiveMerchant } from '../../lib/merchant-auth.js';
+import { rateLimitKey } from '../../lib/client-ip.js';
 import { errorResponses } from '../../lib/error-schema.js';
 
 /* ── upload validation ─────────────────────────────────────── */
@@ -62,6 +63,7 @@ const merchantKycRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: { field?: string; filename?: string; size?: number; mime?: string } }>(
     '/merchant/kyc/upload-url',
     {
+      config: { rateLimit: { max: 20, timeWindow: '1 hour', keyGenerator: rateLimitKey } },
       schema: {
         body: {
           type: 'object',
@@ -169,6 +171,9 @@ const merchantKycRoute: FastifyPluginAsync = async (fastify) => {
   ─────────────────────────────────────────────────────────── */
   fastify.post(
     '/merchant/kyc',
+    {
+      config: { rateLimit: { max: 20, timeWindow: '1 hour', keyGenerator: rateLimitKey } },
+    },
     async (request, reply) => {
       if (!env.JWT_SECRET) return reply.status(500).send({ error: 'Auth not configured', statusCode: 500 });
       const auth = await requireActiveMerchant(request, fastify.supabase);

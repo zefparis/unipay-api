@@ -6,6 +6,7 @@ import type { Channel, Direction } from '../../types/payment';
 import { env } from '../../config/env';
 import { isSandboxAllowed } from '../../lib/sandbox-mode';
 import { isValidDrcPhone, validatePhoneOperatorMatch } from '../../lib/phone-normalization';
+import { apiKeyLimitKey } from '../../lib/client-ip';
 
 const FEE_RATE = Number(env.MERCHANT_FEE_RATE); // 5% default (configurable via MERCHANT_FEE_RATE env var)
 
@@ -67,6 +68,9 @@ const initiateRoute: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: InitiateBody }>(
     '/payment/initiate',
     {
+      // Limite dédiée par clé API : un marchand ne partage son compteur
+      // qu'avec ses propres clés, jamais avec l'IP de sortie Vercel.
+      config: { rateLimit: { max: 30, timeWindow: '1 minute', keyGenerator: apiKeyLimitKey } },
       schema: {
         body: {
           type: 'object',

@@ -67,15 +67,17 @@ import adminExpenseEntitiesRoute from './routes/admin/expense-entities';
 import cgltHealthRoute from './routes/admin/cglt-health';
 import adminOnchainReconciliationRoute from './routes/admin/onchain-reconciliation';
 import { validateCgltConfig } from './config/cglt-config-validator';
+import { trustedProxy, rateLimitKey } from './lib/client-ip';
 
 export async function buildServer() {
   const server = Fastify({
-    // Trust the X-Forwarded-For / X-Forwarded-* headers set by the
-    // Render proxy so that req.ip reflects the real client IP. Without
-    // this, req.ip is the proxy's IP and every user shares one rate-limit
-    // bucket (unintended DoS), and the global rate-limit keyGenerator
-    // cannot distinguish attackers.
-    trustProxy: true,
+    // Ne faire confiance qu'aux sauts privés : cloudflared tourne sur le
+    // même hôte (socket 127.0.0.1) et l'entrée XFF ajoutée en queue par
+    // Cloudflare est le premier saut non privé → req.ip = IP réelle du
+    // client. Un X-Forwarded-For forgé en tête de chaîne est ignoré.
+    // Les clients du BFF Vercel sont départagés par l'en-tête signé
+    // (voir rateLimitKey dans lib/client-ip).
+    trustProxy: trustedProxy,
     logger: {
       level: env.NODE_ENV === 'production' ? 'info' : 'debug',
       ...(env.NODE_ENV !== 'production' && {
@@ -110,10 +112,11 @@ export async function buildServer() {
     global: true,
     max: 60,
     timeWindow: '1 minute',
-    // Key solely on req.ip — now reliable thanks to trustProxy. Never
-    // trust a client-supplied header (x-api-key) for the rate-limit key:
-    // an attacker can rotate it to get a fresh counter on every request.
-    keyGenerator: (req) => req.ip,
+    // IP signée du BFF quand elle est valide (les marchands via Vercel
+    // ne partagent plus le compteur des IP de sortie Vercel), sinon
+    // req.ip — déjà corrigée par trustProxy restreint aux sauts privés.
+    // Jamais un en-tête client non vérifié (x-api-key) ici.
+    keyGenerator: rateLimitKey,
     errorResponseBuilder: () => ({
       error: 'Too Many Requests',
       message: 'Rate limit exceeded, retry after 1 minute',
