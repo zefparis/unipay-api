@@ -72,6 +72,9 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       todayCountRes,
       toRelaunchRes,
       inactiveRes,
+      accessActiveRes,
+      accessKycRequiredRes,
+      accessSuspendedRes,
     ] = await Promise.all([
       fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).is('deleted_at', null),
       fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).eq('mode', 'sandbox').is('deleted_at', null),
@@ -92,6 +95,9 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         .gte('created_at', todayStart),
       fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).eq('inactivity_status', 'to_relaunch').is('deleted_at', null),
       fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).eq('inactivity_status', 'inactive').is('deleted_at', null),
+      fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).eq('access_status', 'active').is('deleted_at', null),
+      fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).eq('access_status', 'kyc_required').is('deleted_at', null),
+      fastify.supabase.from('merchants').select('id', { count: 'exact', head: true }).eq('access_status', 'suspended_kyc').is('deleted_at', null),
     ]);
 
     // Aggregate volume by currency
@@ -118,6 +124,11 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
       inactivity_breakdown: {
         to_relaunch: toRelaunchRes.count ?? 0,
         inactive: inactiveRes.count ?? 0,
+      },
+      access_status_breakdown: {
+        active: accessActiveRes.count ?? 0,
+        kyc_required: accessKycRequiredRes.count ?? 0,
+        suspended_kyc: accessSuspendedRes.count ?? 0,
       },
     });
   });
