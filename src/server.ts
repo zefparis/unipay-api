@@ -160,6 +160,23 @@ export async function buildServer() {
   );
 
   // Public operator status — no auth (public status page)
+  // Log d'accès une ligne par requête : IP socket + IP réelle
+  // (CF-Connecting-IP en priorité), méthode, chemin sans query
+  // (tokens/signatures/clés jamais journalisés), code de réponse.
+  server.addHook('onResponse', async (request, reply) => {
+    const cf = request.headers['cf-connecting-ip'];
+    const realIp = (Array.isArray(cf) ? cf[0] : cf)?.trim() || request.ip;
+    request.log.info({
+      event: 'access',
+      method: request.method,
+      url: request.url.split('?')[0],
+      remoteAddress: request.ip,
+      realIp,
+      statusCode: reply.statusCode,
+      ms: Math.round(reply.elapsedTime),
+    }, 'access');
+  });
+
   // Enveloppe d'erreur uniforme : toute payload d'erreur (>=400) reçoit
   // statusCode si absent — cohérent avec errorResponses des routes.
   server.addHook('preSerialization', async (request, reply, payload) => {
