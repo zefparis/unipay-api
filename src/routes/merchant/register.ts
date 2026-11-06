@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
 import type { FastifyPluginAsync } from 'fastify';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { sendWelcomeEmail, sendAdminNewMerchantEmail } from '../../services/email.js';
 
 const OPERATORS = ['orange', 'airtel', 'afrimoney'] as const;
@@ -19,19 +20,25 @@ const BLOCKED_EMAIL_DOMAINS = new Set([
 ]);
 const MAX_PER_EMAIL_DOMAIN_24H = 3;
 const MAX_PER_IP_PER_DAY = 10;
-const ipDayCounter = new Map<string, number>();
-function ipRegistrationsToday(ip: string): number {
-  const key = `${ip}:${new Date().toISOString().slice(0, 10)}`;
-  return ipDayCounter.get(key) ?? 0;
+
+/** Inscriptions du jour (UTC) pour une IP — table registration_attempts.
+ *  Erreur DB (table absente avant migration) → warn + fail open. */
+async function ipRegistrationsToday(supabase: SupabaseClient, ip: string): Promise<number> {
+  const today = new Date().toISOString().slice(0, 10);
+  const { count, error } = await supabase
+    .from('registration_attempts')
+    .select('id', { count: 'exact', head: true })
+    .eq('ip', ip)
+    .gte('created_at', `${today}T00:00:00Z`);
+  if (error) return -1;
+  return count ?? 0;
 }
-function bumpIpRegistrations(ip: string): void {
-  const key = `${ip}:${new Date().toISOString().slice(0, 10)}`;
-  ipDayCounter.set(key, (ipDayCounter.get(key) ?? 0) + 1);
-  // purge paresseuse des clés des jours précédents
-  if (ipDayCounter.size > 5000) {
-    const today = new Date().toISOString().slice(0, 10);
-    for (const k of ipDayCounter.keys()) if (!k.endsWith(today)) ipDayCounter.delete(k);
-  }
+
+function recordIpRegistration(
+  supabase: SupabaseClient, ip: string, merchantId: string,
+): void {
+  void supabase.from('registration_attempts')
+    .insert({ ip, merchant_id: merchantId }).then(() => {});
 }
 
 interface RegisterBody {
@@ -109,8 +116,12 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
       if (BLOCKED_EMAIL_DOMAINS.has(domain)) {
         return reply.status(400).send({ error: 'Ce domaine d’email n’est pas accepté.', statusCode: 400 });
       }
-      if (ipRegistrationsToday(request.ip) >= MAX_PER_IP_PER_DAY) {
+      const ipCount = await ipRegistrationsToday(fastify.supabase, request.ip);
+      if (ipCount >= MAX_PER_IP_PER_DAY) {
         return reply.status(429).send({ error: 'Trop de comptes créés depuis cette adresse IP aujourd’hui.', statusCode: 429 });
+      }
+      if (ipCount < 0) {
+        fastify.log.warn('registration_attempts indisponible — quota IP sauté (migration en attente)');
       }
       {
         const cutoff = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
@@ -164,7 +175,7 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       const merchantId: string = merchant.id as string;
-      bumpIpRegistrations(request.ip);
+      recordIpRegistration(fastify.supabase, request.ip, merchantId);
 
       // 4. Create one operators row per operator
       const operatorRows = OPERATORS.map((op) => ({
