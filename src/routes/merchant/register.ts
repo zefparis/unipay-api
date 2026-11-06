@@ -4,6 +4,36 @@ import { sendWelcomeEmail, sendAdminNewMerchantEmail } from '../../services/emai
 
 const OPERATORS = ['orange', 'airtel', 'afrimoney'] as const;
 
+/* ── garde-fous anti-abus ──────────────────────────────────────
+   Domaines email réservés (RFC 2606) ou jetables connus — refusés.
+   Limite par domaine email (créations /24h) et par IP (comptes /jour,
+   compteur en mémoire — mono-instance x3). */
+const BLOCKED_EMAIL_DOMAINS = new Set([
+  // réservés / documentation
+  'example.com', 'example.net', 'example.org', 'test.com', 'invalid', 'localhost',
+  // jetables courants
+  'mailinator.com', 'yopmail.com', 'yopmail.fr', 'guerrillamail.com',
+  '10minutemail.com', 'temp-mail.org', 'tempmail.com', 'throwawaymail.com',
+  'sharklasers.com', 'getnada.com', 'dispostable.com', 'maildrop.cc',
+  'fldubai.com', // domaine interne des comptes de test
+]);
+const MAX_PER_EMAIL_DOMAIN_24H = 3;
+const MAX_PER_IP_PER_DAY = 10;
+const ipDayCounter = new Map<string, number>();
+function ipRegistrationsToday(ip: string): number {
+  const key = `${ip}:${new Date().toISOString().slice(0, 10)}`;
+  return ipDayCounter.get(key) ?? 0;
+}
+function bumpIpRegistrations(ip: string): void {
+  const key = `${ip}:${new Date().toISOString().slice(0, 10)}`;
+  ipDayCounter.set(key, (ipDayCounter.get(key) ?? 0) + 1);
+  // purge paresseuse des clés des jours précédents
+  if (ipDayCounter.size > 5000) {
+    const today = new Date().toISOString().slice(0, 10);
+    for (const k of ipDayCounter.keys()) if (!k.endsWith(today)) ipDayCounter.delete(k);
+  }
+}
+
 interface RegisterBody {
   name: string;
   email: string;
@@ -74,6 +104,26 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
         }
       }
 
+      // 0. Garde-fous : domaine bloqué, quotas IP et domaine email
+      const domain = email.split('@')[1]?.toLowerCase() ?? '';
+      if (BLOCKED_EMAIL_DOMAINS.has(domain)) {
+        return reply.status(400).send({ error: 'Ce domaine d’email n’est pas accepté.', statusCode: 400 });
+      }
+      if (ipRegistrationsToday(request.ip) >= MAX_PER_IP_PER_DAY) {
+        return reply.status(429).send({ error: 'Trop de comptes créés depuis cette adresse IP aujourd’hui.', statusCode: 429 });
+      }
+      {
+        const cutoff = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+        const { count } = await fastify.supabase
+          .from('merchants')
+          .select('id', { count: 'exact', head: true })
+          .ilike('email', `%@${domain}`)
+          .gte('created_at', cutoff);
+        if ((count ?? 0) >= MAX_PER_EMAIL_DOMAIN_24H) {
+          return reply.status(429).send({ error: 'Trop de comptes créés récemment avec ce domaine d’email.', statusCode: 429 });
+        }
+      }
+
       // 1. Check email uniqueness in merchants table
       const { data: existing } = await fastify.supabase
         .from('merchants')
@@ -114,6 +164,7 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       const merchantId: string = merchant.id as string;
+      bumpIpRegistrations(request.ip);
 
       // 4. Create one operators row per operator
       const operatorRows = OPERATORS.map((op) => ({

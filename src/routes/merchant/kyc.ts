@@ -13,15 +13,15 @@ const kycMerchantKey = (req: Parameters<typeof merchantIdFromRequest>[0]) => {
 };
 import { errorResponses } from '../../lib/error-schema.js';
 import { sendKycReceivedEmail } from '../../services/email.js';
+import {
+  KYC_ALLOWED_MIME, KYC_MAX_FILE_BYTES, KYC_MIN_FILE_BYTES,
+  detectKycFileType, serverFilename, validateKycFileBytes,
+} from '../../lib/kyc-file-validation.js';
 
 /* ── upload validation ─────────────────────────────────────── */
 const BUCKET = 'merchant-kyc-docs';
-const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB (matches server multipart limit)
-const ALLOWED_MIME = new Set([
-  'application/pdf',
-  'image/jpeg',
-  'image/png',
-]);
+const MAX_FILE_BYTES = KYC_MAX_FILE_BYTES;
+const ALLOWED_MIME = KYC_ALLOWED_MIME;
 const ALLOWED_EXT = /\.(pdf|jpe?g|png)$/i;
 
 /** Sanitise a user-supplied filename into a safe storage path segment. */
@@ -37,16 +37,7 @@ interface KycDocFiles {
 
 /** Validate one uploaded file; returns an error string or null when valid. */
 function validateFile(file: { buffer: Buffer; filename: string; mimetype: string }, label: string): string | null {
-  if (!ALLOWED_MIME.has(file.mimetype)) {
-    return `${label}: type de fichier non autorisé (PDF, JPG ou PNG uniquement).`;
-  }
-  if (!ALLOWED_EXT.test(file.filename)) {
-    return `${label}: extension de fichier non autorisée (.pdf, .jpg, .png).`;
-  }
-  if (file.buffer.length > MAX_FILE_BYTES) {
-    return `${label}: le fichier dépasse la taille maximale de 10 Mo.`;
-  }
-  return null;
+  return validateKycFileBytes(file, label);
 }
 
 const DOC_FIELDS = ['rccm', 'idnat', 'rep_id'] as const;
@@ -115,8 +106,8 @@ const merchantKycRoute: FastifyPluginAsync = async (fastify) => {
       if (!ALLOWED_EXT.test(filename!)) {
         return reply.status(400).send({ error: `${label} : extension non autorisée (.pdf, .jpg, .png).`, statusCode: 400 });
       }
-      if (size! > MAX_FILE_BYTES) {
-        return reply.status(400).send({ error: `${label} : le fichier dépasse la taille maximale de 10 Mo.`, statusCode: 400 });
+      if (size! < KYC_MIN_FILE_BYTES || size! > MAX_FILE_BYTES) {
+        return reply.status(400).send({ error: `${label} : taille invalide (1 Ko à 10 Mo).`, statusCode: 400 });
       }
 
       const merchantId = auth.payload.merchant_id;
@@ -262,11 +253,32 @@ const merchantKycRoute: FastifyPluginAsync = async (fastify) => {
             return reply.status(400).send({ error: `${DOC_LABELS[f]} : fichier introuvable, renvoyez-le.`, statusCode: 400 });
           }
           const meta = (obj as { metadata?: { size?: number; mimetype?: string } }).metadata ?? {};
-          if ((meta.size ?? 0) > MAX_FILE_BYTES) {
-            return reply.status(400).send({ error: `${DOC_LABELS[f]} : le fichier dépasse la taille maximale de 10 Mo.`, statusCode: 400 });
+          const declaredMime = meta.mimetype ?? 'application/octet-stream';
+          if ((meta.size ?? 0) > MAX_FILE_BYTES || (meta.size ?? 0) < KYC_MIN_FILE_BYTES) {
+            return reply.status(400).send({ error: `${DOC_LABELS[f]} : taille invalide (1 Ko à 10 Mo).`, statusCode: 400 });
           }
           if (meta.mimetype && !ALLOWED_MIME.has(meta.mimetype)) {
             return reply.status(400).send({ error: `${DOC_LABELS[f]} : type de fichier non autorisé (PDF, JPG ou PNG uniquement).`, statusCode: 400 });
+          }
+
+          // Relecture des octets réels depuis le storage : la signature
+          // magique doit correspondre au type déclaré ET à l'extension.
+          const { data: blob, error: dlErr } = await fastify.supabase.storage
+            .from(BUCKET)
+            .download(p);
+          if (dlErr || !blob) {
+            return reply.status(400).send({ error: `${DOC_LABELS[f]} : fichier illisible, renvoyez-le.`, statusCode: 400 });
+          }
+          const bytes = Buffer.from(await blob.arrayBuffer());
+          const byteErr = validateKycFileBytes(
+            { buffer: bytes, filename: name, mimetype: declaredMime },
+            DOC_LABELS[f],
+          );
+          if (byteErr) {
+            // Fichier piégé : on supprime l'objet pour ne pas laisser de payload
+            void fastify.supabase.storage.from(BUCKET).remove([p]).then(() => {});
+            fastify.log.warn({ merchantId, path: p, reason: byteErr }, '[merchant/kyc] trapped file rejected at confirm');
+            return reply.status(400).send({ error: byteErr, statusCode: 400 });
           }
         }
 

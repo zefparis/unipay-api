@@ -390,9 +390,14 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
 
       const signDoc = async (path: string | null | undefined): Promise<string | null> => {
         if (!path) return null;
+        // URL courte (5 min) + Content-Disposition: attachment via l'option
+        // download — les pièces sont téléchargées, jamais rendues inline
+        // (un HTML déguisé en PDF ne peut pas s'exécuter côté navigateur).
         const { data: signed, error: sErr } = await fastify.supabase.storage
           .from('merchant-kyc-docs')
-          .createSignedUrl(path, 3600);
+          .createSignedUrl(path, 300, {
+            download: path.slice(path.lastIndexOf('/') + 1),
+          });
         if (sErr || !signed?.signedUrl) {
           fastify.log.warn({ err: sErr, path }, '[admin/merchants/:id] signed URL failed for KYC doc');
           return null;
@@ -453,7 +458,9 @@ const adminMerchantsRoute: FastifyPluginAsync = async (fastify) => {
         if (!path) return null;
         const { data: signed, error: sErr } = await fastify.supabase.storage
           .from('merchant-kyc-docs')
-          .createSignedUrl(path, 3600);
+          .createSignedUrl(path, 300, {
+            download: path.slice(path.lastIndexOf('/') + 1),
+          });
         if (sErr || !signed?.signedUrl) {
           fastify.log.warn({ err: sErr, path, id }, '[admin/merchants/:id/kyc-docs] signed URL failed');
           return null;

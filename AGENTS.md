@@ -21,6 +21,15 @@
 - NE JAMAIS éditer `/opt/unipay-api` directement ni rsync manuel
 - Secrets/env : `/etc/unipay-api.env` (root 600) — jamais copié sur x2
 
+## RÈGLE — jamais de tests ni fixtures en production
+
+Interdiction de créer des comptes, d'envoyer des fichiers (uploads KYC ou
+autres) ou de lancer des tests contre la production : unipaycongo.com,
+api.unipaycongo.com, base Supabase de prod. Les tests se font en local ou sur
+un environnement de test. Des fixtures de test détectées en prod
+(comptes @fldubai.com/@example.com, fichiers "evil.pdf") sont à signaler et à
+nettoyer — 12 comptes suspendus le 2026-11-06, en attente de suppression.
+
 ## RÈGLE — flux de paiement gelé
 
 Aucune modification de `src/routes/payment/callback.ts`,
