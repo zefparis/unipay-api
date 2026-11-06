@@ -1,0 +1,371 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const bcryptjs_1 = __importDefault(require("bcryptjs"));
+const env_1 = require("../../config/env");
+const wallet_jwt_1 = require("../../utils/wallet-jwt");
+const blockchain_1 = require("../../services/blockchain");
+const cdp_1 = require("../../services/cdp");
+const email_1 = require("../../services/email");
+const phone_normalization_1 = require("../../lib/phone-normalization");
+const pin_lockout_1 = require("../../lib/pin-lockout");
+// Dummy hash for constant-time login (M8: eliminate timing oracle).
+// This hash is used when the account doesn't exist, so bcrypt.compare
+// always runs — whether the account exists or not, the response time
+// includes a full bcrypt comparison.
+const DUMMY_HASH = '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy';
+/**
+ * Normalize a wallet phone number to strict E.164 (multi-country).
+ * Delegates to libphonenumber-js with a DRC-defensive fallback; returns null
+ * when the input cannot be resolved to a valid international number.
+ */
+function normalizePhone(raw) {
+    return (0, phone_normalization_1.normalizeToE164)(raw);
+}
+const walletAuthRoute = async (fastify) => {
+    /* ── POST /v1/wallet/register ───────────────────────────── */
+    fastify.post('/wallet/register', {
+        config: { rateLimit: { max: 5, timeWindow: '1 minute', keyGenerator: (req) => req.ip } },
+        schema: {
+            body: {
+                type: 'object',
+                required: ['phone', 'pin'],
+                properties: {
+                    phone: { type: 'string', pattern: '^\\+?[0-9\\s\\-().]{8,20}$' },
+                    full_name: { type: 'string', minLength: 2, maxLength: 100 },
+                    pin: { type: 'string', minLength: 4, maxLength: 8, pattern: '^[0-9]+$' },
+                    email: { type: 'string', format: 'email', maxLength: 254 },
+                    lang: { type: 'string', enum: ['fr', 'en'], default: 'fr' },
+                },
+            },
+            response: {
+                201: {
+                    type: 'object',
+                    properties: {
+                        wallet_id: { type: 'string' },
+                        phone: { type: 'string' },
+                        full_name: { type: ['string', 'null'] },
+                    },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        const { phone, full_name, pin, email, lang } = request.body;
+        const normalizedPhone = normalizePhone(phone);
+        if (!normalizedPhone) {
+            return reply.status(400).send({
+                error: 'INVALID_PHONE',
+                message: 'Numéro de téléphone invalide. Format international attendu (ex. +243 853 315 944, +33 6 12 34 56 78).',
+            });
+        }
+        const { data: existing } = await fastify.supabase
+            .from('wallet_users')
+            .select('id')
+            .eq('phone', normalizedPhone)
+            .maybeSingle();
+        if (existing) {
+            return reply.status(409).send({ error: 'Phone already registered', statusCode: 409 });
+        }
+        const pinHash = await bcryptjs_1.default.hash(pin, 12);
+        const blockchainWallet = (0, blockchain_1.generateWallet)();
+        const encryptedPrivateKey = (0, blockchain_1.encryptPrivateKey)(blockchainWallet.privateKey);
+        const { data: wallet, error } = await fastify.supabase
+            .from('wallet_users')
+            .insert({
+            phone: normalizedPhone,
+            full_name: full_name ?? null,
+            pin_hash: pinHash,
+            blockchain_address: blockchainWallet.address,
+            blockchain_private_key_encrypted: encryptedPrivateKey,
+            cglt_balance: 0,
+            email: email ?? null,
+            lang: lang ?? 'fr',
+        })
+            .select('id, phone, full_name')
+            .single();
+        if (error || !wallet) {
+            fastify.log.error({ err: error, phone: normalizedPhone }, 'Wallet register failed');
+            return reply.status(500).send({ error: 'Registration failed', statusCode: 500 });
+        }
+        fastify.log.info({ walletId: wallet.id, phone: normalizedPhone }, 'Wallet user registered');
+        if (wallet && email) {
+            (0, email_1.sendWalletWelcomeEmail)(email, full_name ?? '', normalizedPhone, lang ?? 'fr');
+        }
+        if (process.env.CDP_API_KEY_ID) {
+            fastify.log.info({ walletId: wallet.id }, 'CDP wallet creation starting for userId: ' + wallet.id);
+            (0, cdp_1.createUserWallet)(wallet.id)
+                .then((cdpAddress) => {
+                return fastify.supabase
+                    .from('wallet_users')
+                    .update({ cdp_wallet_address: cdpAddress })
+                    .eq('id', wallet.id);
+            })
+                .then(({ error: cdpErr }) => {
+                if (cdpErr)
+                    fastify.log.error({ err: cdpErr, walletId: wallet.id }, 'CDP wallet address save failed');
+                else
+                    fastify.log.info({ walletId: wallet.id }, 'CDP wallet address saved');
+            })
+                .catch((err) => {
+                const msg = err instanceof Error ? err.message : String(err);
+                fastify.log.error({ err, walletId: wallet.id }, 'CDP wallet creation failed: ' + msg);
+            });
+        }
+        return reply.status(201).send({
+            wallet_id: wallet.id,
+            phone: wallet.phone,
+            full_name: wallet.full_name ?? null,
+        });
+    });
+    /* ── POST /v1/wallet/login ──────────────────────────────── */
+    fastify.post('/wallet/login', {
+        // Explicit IP-based keyGenerator (do NOT inherit the global one,
+        // which could be changed in the future). With trustProxy enabled,
+        // req.ip is the real client IP behind the Render proxy.
+        config: { rateLimit: { max: 5, timeWindow: '1 minute', keyGenerator: (req) => req.ip } },
+        schema: {
+            body: {
+                type: 'object',
+                required: ['phone', 'pin'],
+                properties: {
+                    phone: { type: 'string', pattern: '^\\+?[0-9\\s\\-().]{8,20}$' },
+                    pin: { type: 'string', minLength: 4, maxLength: 8, pattern: '^[0-9]+$' },
+                },
+            },
+            response: {
+                200: {
+                    type: 'object',
+                    properties: {
+                        access_token: { type: 'string' },
+                        token_type: { type: 'string' },
+                        expires_in: { type: 'number' },
+                        wallet_id: { type: 'string' },
+                        phone: { type: 'string' },
+                        full_name: { type: ['string', 'null'] },
+                    },
+                },
+                423: {
+                    type: 'object',
+                    properties: {
+                        error: { type: 'string' },
+                        statusCode: { type: 'number' },
+                        retry_after: { type: 'number' },
+                    },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        if (!env_1.env.JWT_SECRET) {
+            return reply.status(500).send({ error: 'Auth service not configured', statusCode: 500 });
+        }
+        const { phone: rawPhone, pin } = request.body;
+        // Unparseable input falls back to the raw string — the lookup simply
+        // misses and the uniform 401 path applies.
+        const phone = normalizePhone(rawPhone) ?? rawPhone;
+        const { data: wallet, error } = await fastify.supabase
+            .from('wallet_users')
+            .select('id, phone, full_name, pin_hash, is_active, failed_pin_attempts, locked_until, pin_lockout_count, token_version')
+            .eq('phone', phone)
+            .maybeSingle();
+        // M8: uniform 401 "Invalid credentials" in all failure cases.
+        // The real reason is logged server-side for support/debugging.
+        // bcrypt.compare always runs (against DUMMY_HASH if account
+        // doesn't exist) to eliminate the timing oracle.
+        const accountExists = !error && wallet;
+        const hashToCompare = accountExists
+            ? wallet.pin_hash
+            : DUMMY_HASH;
+        // Always run bcrypt.compare to eliminate timing oracle
+        const pinMatch = await bcryptjs_1.default.compare(pin, hashToCompare);
+        if (!accountExists) {
+            fastify.log.info({ phone, reason: 'account_not_found' }, '[wallet-login] failed');
+            return reply.status(401).send({ error: 'Invalid credentials', statusCode: 401 });
+        }
+        if (!wallet.is_active) {
+            fastify.log.info({ walletId: wallet.id, phone, reason: 'inactive_account' }, '[wallet-login] failed');
+            return reply.status(401).send({ error: 'Invalid credentials', statusCode: 401 });
+        }
+        // ── Lockout check ──
+        const lockoutState = {
+            failed_pin_attempts: wallet.failed_pin_attempts,
+            locked_until: wallet.locked_until,
+            pin_lockout_count: wallet.pin_lockout_count,
+        };
+        const lockedUntil = (0, pin_lockout_1.getLockoutDeadline)(lockoutState);
+        if (lockedUntil) {
+            const retryAfter = Math.max(1, Math.ceil((new Date(lockedUntil).getTime() - Date.now()) / 1000));
+            fastify.log.warn({ walletId: wallet.id, lockedUntil, reason: 'locked' }, '[wallet-login] rejected — account locked');
+            return reply.status(423).send({
+                error: 'Account temporarily locked due to too many failed PIN attempts. Try again later.',
+                statusCode: 423,
+                retry_after: retryAfter,
+            });
+        }
+        if (!pinMatch) {
+            const result = await (0, pin_lockout_1.recordFailedPinAttempt)(fastify.supabase, wallet.id, lockoutState.failed_pin_attempts ?? 0, lockoutState.pin_lockout_count ?? 0);
+            fastify.log.warn({ walletId: wallet.id, phone, reason: 'invalid_pin', failedAttempts: (lockoutState.failed_pin_attempts ?? 0) + 1, locked: result.locked, lockoutCount: result.lockoutCount }, '[wallet-login] PIN verification failed');
+            if (result.locked) {
+                const retryAfter = result.lockedUntil
+                    ? Math.max(1, Math.ceil((new Date(result.lockedUntil).getTime() - Date.now()) / 1000))
+                    : undefined;
+                return reply.status(423).send({
+                    error: 'Account locked due to too many failed PIN attempts. Try again later.',
+                    statusCode: 423,
+                    ...(retryAfter !== undefined ? { retry_after: retryAfter } : {}),
+                });
+            }
+            return reply.status(401).send({ error: 'Invalid credentials', statusCode: 401 });
+        }
+        // ── Success — reset lockout counters ──
+        await (0, pin_lockout_1.resetPinLockout)(fastify.supabase, wallet.id);
+        const ACCESS_TTL = 3_600;
+        const REFRESH_TTL = 2_592_000;
+        const tokenVersion = wallet.token_version ?? 0;
+        const accessToken = (0, wallet_jwt_1.signWalletToken)({ wallet_id: wallet.id, phone: wallet.phone, role: 'wallet', token_version: tokenVersion }, env_1.env.JWT_SECRET, ACCESS_TTL);
+        const refreshToken = (0, wallet_jwt_1.signRefreshToken)({ wallet_id: wallet.id, token_version: tokenVersion }, env_1.env.JWT_SECRET, REFRESH_TTL);
+        fastify.log.info({ walletId: wallet.id }, 'Wallet login');
+        return {
+            access_token: accessToken,
+            refresh_token: refreshToken,
+            token_type: 'Bearer',
+            expires_in: ACCESS_TTL,
+            wallet_id: wallet.id,
+            phone: wallet.phone,
+            full_name: wallet.full_name ?? null,
+        };
+    });
+    /* ── POST /v1/wallet/auth/refresh ──────────────────────── */
+    fastify.post('/wallet/auth/refresh', {
+        config: { rateLimit: { max: 10, timeWindow: '1 minute', keyGenerator: (req) => req.ip } },
+        schema: {
+            body: {
+                type: 'object',
+                required: ['refresh_token'],
+                properties: { refresh_token: { type: 'string' } },
+            },
+        },
+    }, async (request, reply) => {
+        if (!env_1.env.JWT_SECRET)
+            return reply.status(500).send({ error: 'Auth service not configured' });
+        const payload = (0, wallet_jwt_1.verifyRefreshToken)(request.body.refresh_token, env_1.env.JWT_SECRET);
+        if (!payload)
+            return reply.status(401).send({ error: 'Invalid or expired refresh token' });
+        const { data: wallet } = await fastify.supabase
+            .from('wallet_users')
+            .select('id, phone, is_active, token_version')
+            .eq('id', payload.wallet_id)
+            .maybeSingle();
+        if (!wallet || !wallet.is_active) {
+            return reply.status(401).send({ error: 'Account not found or suspended' });
+        }
+        // ── Token revocation check ──────────────────────────────
+        // Reject refresh tokens with a stale token_version before
+        // issuing a new access token. This ensures that a PIN change
+        // or admin block also invalidates the 30-day refresh token.
+        const dbTokenVersion = wallet.token_version ?? 0;
+        if (payload.token_version !== dbTokenVersion) {
+            return reply.status(401).send({ error: 'TOKEN_REVOKED', statusCode: 401 });
+        }
+        const accessToken = (0, wallet_jwt_1.signWalletToken)({ wallet_id: wallet.id, phone: wallet.phone, role: 'wallet', token_version: dbTokenVersion }, env_1.env.JWT_SECRET, 3_600);
+        return { access_token: accessToken, expires_in: 3_600 };
+    });
+    /* ── POST /v1/wallet/auth/change-pin ────────────────────── */
+    fastify.post('/wallet/auth/change-pin', {
+        config: { rateLimit: { max: 5, timeWindow: '1 minute', keyGenerator: (req) => req.ip } },
+        schema: {
+            body: {
+                type: 'object',
+                required: ['current_pin', 'new_pin', 'confirm_pin'],
+                properties: {
+                    current_pin: { type: 'string', minLength: 4, maxLength: 8, pattern: '^[0-9]+$' },
+                    new_pin: { type: 'string', minLength: 4, maxLength: 8, pattern: '^[0-9]+$' },
+                    confirm_pin: { type: 'string', minLength: 4, maxLength: 8, pattern: '^[0-9]+$' },
+                },
+            },
+            response: {
+                200: { type: 'object', properties: { ok: { type: 'boolean' } } },
+            },
+        },
+    }, async (request, reply) => {
+        if (!env_1.env.JWT_SECRET)
+            return reply.status(500).send({ error: 'Auth service not configured' });
+        const wp = (0, wallet_jwt_1.requireWallet)(request.headers.authorization, env_1.env.JWT_SECRET);
+        if (!wp)
+            return reply.status(401).send({ error: 'Unauthorized', statusCode: 401 });
+        const { current_pin, new_pin, confirm_pin } = request.body;
+        if (new_pin !== confirm_pin) {
+            return reply.status(400).send({ error: 'New PIN and confirmation do not match', statusCode: 400 });
+        }
+        const { data: walletRow, error: fetchErr } = await fastify.supabase
+            .from('wallet_users')
+            .select('pin_hash, email, full_name, phone, lang, failed_pin_attempts, locked_until, pin_lockout_count')
+            .eq('id', wp.wallet_id)
+            .maybeSingle();
+        if (fetchErr || !walletRow) {
+            return reply.status(404).send({ error: 'Wallet not found', statusCode: 404 });
+        }
+        // ── Lockout check (defense-in-depth: even with a valid JWT, a
+        // locked account cannot change its PIN). ──
+        const lockoutState = {
+            failed_pin_attempts: walletRow.failed_pin_attempts,
+            locked_until: walletRow.locked_until,
+            pin_lockout_count: walletRow.pin_lockout_count,
+        };
+        const lockedUntil = (0, pin_lockout_1.getLockoutDeadline)(lockoutState);
+        if (lockedUntil) {
+            const retryAfter = Math.max(1, Math.ceil((new Date(lockedUntil).getTime() - Date.now()) / 1000));
+            fastify.log.warn({ walletId: wp.wallet_id, lockedUntil }, 'change-pin rejected — account locked');
+            return reply.status(423).send({
+                error: 'Account temporarily locked due to too many failed PIN attempts.',
+                statusCode: 423,
+                retry_after: retryAfter,
+            });
+        }
+        const match = await bcryptjs_1.default.compare(current_pin, walletRow.pin_hash);
+        if (!match) {
+            const result = await (0, pin_lockout_1.recordFailedPinAttempt)(fastify.supabase, wp.wallet_id, lockoutState.failed_pin_attempts ?? 0, lockoutState.pin_lockout_count ?? 0);
+            fastify.log.warn({ walletId: wp.wallet_id, locked: result.locked, lockoutCount: result.lockoutCount }, 'change-pin: current PIN incorrect');
+            if (result.locked) {
+                const retryAfter = result.lockedUntil
+                    ? Math.max(1, Math.ceil((new Date(result.lockedUntil).getTime() - Date.now()) / 1000))
+                    : undefined;
+                return reply.status(423).send({
+                    error: 'Account locked due to too many failed PIN attempts.',
+                    statusCode: 423,
+                    ...(retryAfter !== undefined ? { retry_after: retryAfter } : {}),
+                });
+            }
+            return reply.status(401).send({ error: 'Current PIN is incorrect', statusCode: 401 });
+        }
+        // Current PIN is correct — reset lockout counters before updating.
+        await (0, pin_lockout_1.resetPinLockout)(fastify.supabase, wp.wallet_id);
+        const newHash = await bcryptjs_1.default.hash(new_pin, 12);
+        const { error: updateErr } = await fastify.supabase
+            .from('wallet_users')
+            .update({ pin_hash: newHash })
+            .eq('id', wp.wallet_id);
+        if (updateErr) {
+            fastify.log.error({ err: updateErr, walletId: wp.wallet_id }, 'PIN change failed');
+            return reply.status(500).send({ error: 'PIN change failed', statusCode: 500 });
+        }
+        // ── Increment token_version (invalidates all existing JWTs) ──
+        // This is the core H2 fix: changing PIN expels any attacker who
+        // holds a valid access or refresh token. Done AFTER the PIN
+        // update succeeds, so a failed PIN change doesn't log out the
+        // legitimate user.
+        const { error: revokeErr } = await fastify.supabase.rpc('increment_wallet_token_version', { p_wallet_id: wp.wallet_id });
+        if (revokeErr) {
+            fastify.log.error({ err: revokeErr, walletId: wp.wallet_id }, '[change-pin] Failed to increment token_version');
+        }
+        fastify.log.info({ walletId: wp.wallet_id }, 'PIN changed');
+        const wr = walletRow;
+        if (wr?.email) {
+            (0, email_1.sendWalletPinChangedEmail)({ to: wr.email, name: wr.full_name ?? '', phone: wr.phone ?? '', lang: wr.lang ?? 'fr' });
+        }
+        return reply.send({ ok: true });
+    });
+};
+exports.default = walletAuthRoute;
+//# sourceMappingURL=auth.js.map

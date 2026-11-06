@@ -1,0 +1,167 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const stripe_1 = __importDefault(require("stripe"));
+const wallet_auth_1 = require("../../lib/wallet-auth");
+const MIN_USD = 5;
+const walletStripeRoute = async (fastify) => {
+    const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+    if (!stripeSecretKey) {
+        fastify.log.warn('[stripe] STRIPE_SECRET_KEY not set — Stripe routes disabled');
+        return;
+    }
+    const stripe = new stripe_1.default(stripeSecretKey);
+    /* ─────────────────────────────────────────────────────────────
+     * POST /v1/wallet/deposit/stripe/create-intent
+     * Creates a Stripe PaymentIntent for a USD diaspora deposit.
+     * Auth: wallet_token cookie (JWT)
+     * Body: { amount_usd: number }  — minimum 5 USD
+     * Returns: { client_secret, payment_intent_id }
+     * ───────────────────────────────────────────────────────────── */
+    fastify.post('/wallet/deposit/stripe/create-intent', {
+        config: { rateLimit: { max: 20, timeWindow: '1 hour', keyGenerator: wallet_auth_1.walletIdFromRequest } },
+        schema: {
+            body: {
+                type: 'object',
+                required: ['amount_usd'],
+                properties: {
+                    amount_usd: { type: 'number', minimum: MIN_USD },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        const auth = await (0, wallet_auth_1.requireActiveWallet)(request, fastify.supabase, 'id, phone');
+        if (!auth.ok)
+            return reply.status(auth.status).send(auth.error);
+        const wallet = auth.wallet;
+        const { amount_usd } = request.body;
+        const amountCents = Math.round(amount_usd * 100);
+        const intent = await stripe.paymentIntents.create({
+            amount: amountCents,
+            currency: 'usd',
+            automatic_payment_methods: { enabled: true },
+            metadata: {
+                wallet_user_id: wallet.id,
+                phone: wallet.phone,
+            },
+        });
+        fastify.log.info({ walletId: wallet.id, amountUsd: amount_usd, intentId: intent.id }, '[stripe] payment intent created');
+        return reply.status(201).send({
+            client_secret: intent.client_secret,
+            payment_intent_id: intent.id,
+        });
+    });
+    /* ─────────────────────────────────────────────────────────────
+     * POST /v1/wallet/deposit/stripe/create-checkout
+     * Creates a Stripe Checkout Session (hosted payment page).
+     * No Stripe.js needed on the frontend — just redirect to session.url.
+     * Auth: wallet_token (JWT)
+     * Body: { amount_usd, success_url, cancel_url }
+     * Returns: { url }
+     * ───────────────────────────────────────────────────────────── */
+    fastify.post('/wallet/deposit/stripe/create-checkout', {
+        config: { rateLimit: { max: 20, timeWindow: '1 hour', keyGenerator: wallet_auth_1.walletIdFromRequest } },
+        schema: {
+            body: {
+                type: 'object',
+                required: ['amount_usd', 'success_url', 'cancel_url'],
+                properties: {
+                    amount_usd: { type: 'number', minimum: MIN_USD },
+                    success_url: { type: 'string' },
+                    cancel_url: { type: 'string' },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        const auth = await (0, wallet_auth_1.requireActiveWallet)(request, fastify.supabase, 'id, phone');
+        if (!auth.ok)
+            return reply.status(auth.status).send(auth.error);
+        const wallet = auth.wallet;
+        const { amount_usd, success_url, cancel_url } = request.body;
+        const session = await stripe.checkout.sessions.create({
+            mode: 'payment',
+            payment_method_types: ['card'],
+            line_items: [{
+                    price_data: {
+                        currency: 'usd',
+                        unit_amount: Math.round(amount_usd * 100),
+                        product_data: {
+                            name: 'Dépôt UnipayCongo',
+                            description: `Dépôt de ${amount_usd.toFixed(2)} USD sur votre portefeuille`,
+                        },
+                    },
+                    quantity: 1,
+                }],
+            payment_intent_data: {
+                metadata: { wallet_user_id: wallet.id, phone: wallet.phone ?? '' },
+            },
+            metadata: { wallet_user_id: wallet.id, phone: wallet.phone ?? '' },
+            success_url,
+            cancel_url,
+        });
+        fastify.log.info({ walletId: wallet.id, amountUsd: amount_usd, sessionId: session.id }, '[stripe] checkout session created');
+        return reply.status(201).send({ url: session.url });
+    });
+    /* ─────────────────────────────────────────────────────────────
+     * POST /v1/wallet/deposit/stripe/webhook
+     * Stripe event webhook — public, signature-verified.
+     * On payment_intent.succeeded → credit usd_balance (idempotent).
+     * Configure in Stripe Dashboard:
+     *   URL: https://api.unipaycongo.com/v1/wallet/deposit/stripe/webhook
+     *   Events: payment_intent.succeeded
+     * ───────────────────────────────────────────────────────────── */
+    fastify.register(async (sub) => {
+        // Fastify v4 inherits the parent JSON parser — remove it before registering the buffer parser
+        sub.removeContentTypeParser('application/json');
+        sub.addContentTypeParser('application/json', { parseAs: 'buffer' }, (_req, body, done) => {
+            done(null, body);
+        });
+        sub.post('/wallet/deposit/stripe/webhook', async (request, reply) => {
+            const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+            if (!webhookSecret) {
+                fastify.log.error('[stripe] STRIPE_WEBHOOK_SECRET not configured');
+                return reply.status(500).send({ error: 'misconfigured' });
+            }
+            const sig = request.headers['stripe-signature'];
+            let event;
+            try {
+                event = stripe.webhooks.constructEvent(request.body, sig, webhookSecret);
+            }
+            catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                fastify.log.warn({ msg }, '[stripe] webhook signature verification failed');
+                return reply.status(400).send({ error: 'invalid_signature' });
+            }
+            if (event.type !== 'payment_intent.succeeded') {
+                return reply.status(200).send({ received: true });
+            }
+            const intent = event.data.object;
+            const walletUserId = intent.metadata?.wallet_user_id;
+            const amountUsd = intent.amount / 100;
+            if (!walletUserId) {
+                fastify.log.warn({ intentId: intent.id }, '[stripe] missing wallet_user_id in metadata');
+                return reply.status(200).send({ received: true });
+            }
+            const { data: processResult, error: processError } = await fastify.supabase.rpc('process_stripe_wallet_deposit', {
+                p_payment_intent_id: intent.id,
+                p_wallet_user_id: walletUserId,
+                p_amount: amountUsd,
+                p_payload: { stripe_event_id: event.id },
+            });
+            if (processError) {
+                fastify.log.error({ processError, walletUserId, amountUsd }, '[stripe] atomic deposit failed');
+                return reply.status(500).send({ error: 'credit_failed' });
+            }
+            const processed = processResult?.processed === true;
+            if (!processed) {
+                return reply.status(200).send({ received: true, already_processed: true });
+            }
+            fastify.log.info({ walletUserId, amountUsd, intentId: intent.id }, '[stripe] deposit credited');
+            return reply.status(200).send({ received: true });
+        });
+    });
+};
+exports.default = walletStripeRoute;
+//# sourceMappingURL=stripe.js.map

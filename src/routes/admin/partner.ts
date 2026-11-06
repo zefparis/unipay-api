@@ -38,6 +38,7 @@ interface CommissionsQuery {
 interface BackfillBody {
   date_from: string;
   date_to: string;
+  merchant_id?: string;
 }
 
 function generatePartnerCode(): string {
@@ -409,6 +410,7 @@ const adminPartnerRoute: FastifyPluginAsync = async (fastify) => {
           properties: {
             date_from: { type: 'string', format: 'date-time' },
             date_to:   { type: 'string', format: 'date-time' },
+            merchant_id: { type: 'string', format: 'uuid' },
           },
           additionalProperties: false,
         },
@@ -419,17 +421,21 @@ const adminPartnerRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(403).send({ error: 'Admin access required', statusCode: 403 });
       }
 
-      const { date_from, date_to } = request.body;
+      const { date_from, date_to, merchant_id: merchantId } = request.body;
       if (new Date(date_from) >= new Date(date_to)) {
         return reply.status(400).send({ error: 'date_from must be before date_to', statusCode: 400 });
       }
 
+      // p_merchant_id omis → signature 3-args (rétrocompatible tant que la
+      // migration 20261106110000 n'est pas appliquée). Une fois appliquée,
+      // merchant_id filtre le backfill sur un seul marchand rattaché.
       const { data: result, error: rpcErr } = await fastify.supabase.rpc(
         'backfill_partner_commissions',
         {
           p_date_from: date_from,
           p_date_to: date_to,
           p_provider_fee_rate: PROVIDER_FEE_RATE,
+          ...(merchantId ? { p_merchant_id: merchantId } : {}),
         },
       );
 
@@ -442,6 +448,7 @@ const adminPartnerRoute: FastifyPluginAsync = async (fastify) => {
         event: 'partner_commission_backfill',
         date_from,
         date_to,
+        merchant_id: merchantId ?? null,
         result,
       }, 'partner commission backfill completed');
 
@@ -449,8 +456,8 @@ const adminPartnerRoute: FastifyPluginAsync = async (fastify) => {
         fastify.supabase,
         'partner_commission.backfill',
         'partner_commission',
-        null,
-        { date_from, date_to, result },
+        merchantId ?? null,
+        { date_from, date_to, merchant_id: merchantId ?? null, result },
         fastify.log,
       );
 

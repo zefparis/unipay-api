@@ -1,0 +1,63 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+require("dotenv/config");
+const server_1 = require("./server");
+const env_1 = require("./config/env");
+const bscscan_1 = require("./services/bscscan");
+const gas_monitor_1 = require("./services/gas-monitor");
+const onchain_reconciliation_1 = require("./services/onchain-reconciliation");
+const unipesa_reconciliation_1 = require("./services/unipesa-reconciliation");
+/**
+ * Fail-closed check: in production, FIXIE_URL is required for Unipesa/Avada
+ * payment calls that rely on IP whitelisting. Without it, the service would
+ * silently fall back to a direct connection and get rejected by the whitelist
+ * — or worse, work unpredictably if the whitelist is not strict.
+ *
+ * The per-call guard in avada.ts/unipesa.ts throws FIXIE_PROXY_REQUIRED
+ * regardless of NODE_ENV. This boot check is an early, loud failure so the
+ * service never starts in a broken state in production.
+ */
+function assertFixieConfigured() {
+    const skip = env_1.env.UNIPESA_SKIP_FIXIE_CHECK === '1' || env_1.env.UNIPESA_SKIP_FIXIE_CHECK === 'true';
+    if (skip) {
+        console.warn('[WARN] UNIPESA_SKIP_FIXIE_CHECK is set — Unipesa/Avada calls will bypass the Fixie proxy. This must NEVER be used in production.');
+        return;
+    }
+    if (env_1.env.NODE_ENV === 'production' && !env_1.env.FIXIE_URL) {
+        console.error('[FATAL] FIXIE_URL is not set in production. Unipesa/Avada payment calls require a whitelisted egress IP. Refusing to start.');
+        process.exit(1);
+    }
+    if (env_1.env.NODE_ENV !== 'production' && !env_1.env.FIXIE_URL) {
+        console.warn('[WARN] FIXIE_URL is not set — Unipesa/Avada calls will throw FIXIE_PROXY_REQUIRED at call time. Set UNIPESA_SKIP_FIXIE_CHECK=1 for local dev/mock only.');
+    }
+}
+const start = async () => {
+    assertFixieConfigured();
+    const server = await (0, server_1.buildServer)();
+    try {
+        await server.listen({ port: parseInt(env_1.env.PORT), host: '0.0.0.0' });
+        if (env_1.env.ONCHAIN_ENABLED) {
+            // Start BSC deposit poller (no-op when BSCSCAN_API_KEY or UNIPAY_HD_WALLET_MNEMONIC absent)
+            (0, bscscan_1.startBscPoller)(server.supabase, { info: server.log.info.bind(server.log), error: server.log.error.bind(server.log) });
+            // Start BSC gas monitor (no-op when BSC_OWNER_KEY absent)
+            (0, gas_monitor_1.startGasMonitor)({ info: server.log.info.bind(server.log), warn: server.log.warn.bind(server.log), error: server.log.error.bind(server.log) });
+            (0, onchain_reconciliation_1.startOnchainReconciler)(server.supabase, server.log);
+        }
+        else {
+            server.log.info('[boot] ONCHAIN_ENABLED=false — on-chain workers disabled');
+        }
+        // Start Unipesa payment reconciliation (polls /status for stuck
+        // processing transactions, resolves them via process_wallet_provider_callback).
+        (0, unipesa_reconciliation_1.startUnipesaReconciler)(server.supabase, server.log);
+    }
+    catch (err) {
+        server.log.error(err);
+        process.exit(1);
+    }
+};
+process.on('unhandledRejection', (err) => {
+    console.error('Unhandled rejection:', err);
+    process.exit(1);
+});
+start();
+//# sourceMappingURL=app.js.map

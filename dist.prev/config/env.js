@@ -1,0 +1,167 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.env = void 0;
+const zod_1 = require("zod");
+const envSchema = zod_1.z.object({
+    PORT: zod_1.z.string().default('3000'),
+    NODE_ENV: zod_1.z.enum(['development', 'production', 'test']).default('development'),
+    SUPABASE_URL: zod_1.z.string().url(),
+    SUPABASE_SERVICE_KEY: zod_1.z.string().min(1),
+    // Public base URL of this API (shown to merchants in emails, docs, etc.)
+    PUBLIC_API_BASE_URL: zod_1.z.string().url().default('https://api.unipaycongo.com'),
+    HMAC_SECRET: zod_1.z.string().min(16),
+    OPERATOR_WEBHOOK_SECRET: zod_1.z.string().optional(),
+    // Secret partagé BFF Vercel ↔ API : signe x-unipay-client-ip pour
+    // transporter l'IP réelle du client à travers le BFF. Optionnel :
+    // absent, l'en-tête est simplement ignoré (repli sur req.ip).
+    BFF_IP_SECRET: zod_1.z.string().optional(),
+    // Unipesa aggregator (Orange, Airtel, Afrimoney)
+    UNIPESA_API_URL: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().url().optional()),
+    UNIPESA_PUBLIC_ID: zod_1.z.string().optional(),
+    UNIPESA_MERCHANT_ID: zod_1.z.string().optional(),
+    UNIPESA_SECRET_KEY: zod_1.z.string().optional(),
+    // Wallet flow callback (USD deposits/withdrawals via /v1/wallet/unipesa/callback)
+    UNIPESA_CALLBACK_URL: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().url().optional()),
+    // Merchant flow callback (CDF/USD collections/payouts via /v1/payment/callback)
+    // Falls back to UNIPESA_CALLBACK_URL for backward compatibility if not set.
+    UNIPESA_MERCHANT_CALLBACK_URL: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().url().optional()),
+    // Fixie proxy — whitelisted IP for Unipesa API calls
+    FIXIE_URL: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().url().optional()),
+    // Explicit bypass for local dev/mock only. When set to '1' or 'true',
+    // Unipesa/Avada calls skip the Fixie proxy requirement. MUST NOT be set in
+    // production — a [WARN] is logged at boot and at each bypassed call.
+    UNIPESA_SKIP_FIXIE_CHECK: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().optional()),
+    // Reconciliation safety: when 'true', a Unipesa /status answer of
+    // -1 (PARENT OPERATION NOT FOUND) refunds a wallet payout after the
+    // 15-minute grace period. Default false — a -1 only logs
+    // transaction_not_found_manual_review and leaves the row pending,
+    // because a premature "not found" could be late indexing and an
+    // automatic refund would risk a double spend (refund + payout).
+    RECONCILE_AUTO_REFUND_NOT_FOUND: zod_1.z
+        .preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().optional())
+        .transform((v) => v !== undefined && ['1', 'true', 'yes'].includes(v.toLowerCase())),
+    // Vodacash — direct integration (coming soon)
+    VODACASH_API_URL: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().url().optional()),
+    VODACASH_API_KEY: zod_1.z.string().optional(),
+    // On-chain workers (BSC poller, gas monitor, on-chain reconciler).
+    // Set ONCHAIN_ENABLED=false to skip starting them at boot — allows running
+    // without UNIPAY_HD_WALLET_MNEMONIC / HOT_WALLET_USDT_PRIVATE_KEY /
+    // BSC_OWNER_KEY / CGLT_MINTER_KEY. Payment and KYC routes are unaffected.
+    ONCHAIN_ENABLED: zod_1.z
+        .string()
+        .transform((v) => v.toLowerCase() !== 'false')
+        .default('true'),
+    // ── CGLT Blockchain containment (Phase 03) ──
+    CGLT_BLOCKCHAIN_MODE: zod_1.z.enum(['disabled', 'read_only', 'enabled']).default('disabled'),
+    WCGLT_DEPOSIT_PROCESSOR: zod_1.z.enum(['disabled', 'bridge', 'bscscan']).default('disabled'),
+    CGLT_CHAIN_ID: zod_1.z.string().regex(/^\d+$/).default('242626'),
+    // USDT on-chain
+    USDT_WALLET_ADDRESS: zod_1.z.string().optional(),
+    CGLT_NODE_URL: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().url().optional()),
+    CGLT_CONTRACT_ADDRESS: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional()),
+    CGLT_RESERVE_ADDRESS: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional()),
+    CGLT_MINTER_KEY: zod_1.z.string().optional(),
+    USDT_ADDRESS: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional()),
+    ENCRYPTION_KEY: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().regex(/^[0-9a-fA-F]{64}$/).optional()),
+    // CGLT Bridge API — required for wCGLT minting on BSC
+    BRIDGE_API_URL: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().url().optional()),
+    BRIDGE_API_KEY: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().min(16).optional()),
+    // ── Phase 05B0: Trust boundary separation ──
+    // New distinct variables for separated trust boundaries.
+    // Legacy GAMING_API_KEY / BRIDGE_API_KEY remain as temporary fallbacks
+    // during the dual-key rotation period (Phase 05B1).
+    // Trust boundary 1: CongoGaming → UniPay API (receiver side)
+    CONGOGAMING_API_KEY: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().min(8).optional()),
+    // Trust boundary 2: Bridge → UniPay API (receiver side)
+    BRIDGE_INBOUND_API_KEY: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().min(8).optional()),
+    // Trust boundary 3: UniPay API → Bridge (sender side)
+    UNIPAY_BRIDGE_API_KEY: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().min(16).optional()),
+    // BSC wCGLT contract — must match bridge's BSC_WCGLT to avoid double-credit
+    BSC_WCGLT_ADDRESS: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional()),
+    // Merchant JWT
+    JWT_SECRET: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().min(32).optional()),
+    // Admin secret (plain header — interactive admin dashboard access via unipay-congo)
+    // Rotate if you suspect a leak. Independent from CRON_SERVICE_SECRET.
+    ADMIN_SECRET: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().min(16).optional()),
+    // Cron service secret (plain header — automated Render cron jobs only)
+    // Separate from ADMIN_SECRET so cron rotations never break the admin dashboard
+    // and vice versa. Accepted as equivalent admin auth in hmac.ts.
+    CRON_SERVICE_SECRET: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().min(16).optional()),
+    // Congo Gaming ↔ UniPay shared secret — LEGACY, kept for dual-key rotation only
+    GAMING_API_KEY: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().min(8).optional()),
+    // Fiat USD↔CDF conversion rate (manual oracle; update on Render when rate changes)
+    FIAT_USD_CDF_RATE: zod_1.z.string().regex(/^\d+(\.\d+)?$/).default('2850'),
+    // Merchant commission fee rate (applied to each transaction amount).
+    // Default 0.05 = 5%. Update via Render env var to adjust without redeploy.
+    // Note: Avada takes 0.03 (3%) of the same amount; UniPay net margin = fee − 0.03.
+    MERCHANT_FEE_RATE: zod_1.z.string().regex(/^0\.\d+$/).default('0.05'),
+    // Wallet (grand public) fee rate — deposit and withdraw.
+    // Default 0.05 = 5%, aligned with the merchant rate. The Avada
+    // provider cost (3%) is internal-only and never user-facing.
+    WALLET_FEE_RATE: zod_1.z.string().regex(/^0\.\d+$/).default('0.05'),
+    // Avada/Unipesa provider cost rate (internal-only, never user-facing).
+    // Default 0.03 = 3%. UniPay net margin = WALLET_FEE_RATE − AVADA_FEE_RATE.
+    AVADA_FEE_RATE: zod_1.z.string().regex(/^0\.\d+$/).default('0.03'),
+    // Stripe — diaspora card deposits
+    STRIPE_SECRET_KEY: zod_1.z.string().min(1).optional(),
+    STRIPE_WEBHOOK_SECRET: zod_1.z.string().min(1).optional(),
+    // Brevo transactional email
+    BREVO_API_KEY: zod_1.z.string().min(1).optional(),
+    BREVO_SENDER_EMAIL: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().email().optional()).default('contact@unipaycongo.com'),
+    BREVO_SENDER_NAME: zod_1.z.string().default('UniPay Congo'),
+    // BSC crypto deposits (Option B — one address per user)
+    BSCSCAN_API_KEY: zod_1.z.string().min(1).optional(),
+    // Etherscan API V2 unified key — preferred for treasury on-chain verification
+    // Falls back to BSCSCAN_API_KEY when absent.
+    ETHERSCAN_API_KEY: zod_1.z.string().min(1).optional(),
+    UNIPAY_HD_WALLET_MNEMONIC: zod_1.z.string().min(1).optional(), // 12-word BIP-39 phrase — keep in Render Secrets
+    // Transak fiat→USDT (all optional — routes disabled when API key absent)
+    TRANSAK_API_KEY: zod_1.z.string().min(1).optional(),
+    TRANSAK_SECRET: zod_1.z.string().min(1).optional(), // webhook HMAC secret
+    TRANSAK_ENVIRONMENT: zod_1.z.enum(['STAGING', 'PRODUCTION']).default('STAGING'),
+    // Public app URL (used to build Transak redirectURL)
+    APP_URL: zod_1.z.string().url().default('https://app.unipaycongo.com'),
+    // Merchant portal URL (used for password reset links)
+    MERCHANT_PORTAL_URL: zod_1.z.string().url().default('https://unipaycongo.com'),
+    // Web Push (VAPID) — generate with: npx web-push generate-vapid-keys
+    VAPID_PUBLIC_KEY: zod_1.z.string().min(1).optional(),
+    VAPID_PRIVATE_KEY: zod_1.z.string().min(1).optional(),
+    VAPID_SUBJECT: zod_1.z.string().default('mailto:support@unipaycongo.com'),
+    // BSC hot wallet — direct USDT on-chain withdrawals
+    HOT_WALLET_USDT_PRIVATE_KEY: zod_1.z.preprocess((v) => (typeof v === 'string' && /^0x[0-9a-fA-F]{64}$/.test(v) ? v : undefined), zod_1.z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional()),
+    // BSC owner wallet — signs wCGLT bridge transactions; monitored for gas
+    BSC_OWNER_KEY: zod_1.z.preprocess((v) => (typeof v === 'string' && /^0x[0-9a-fA-F]{64}$/.test(v) ? v : undefined), zod_1.z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional()),
+    BSC_RPC_URL: zod_1.z.string().url().default('https://bsc-rpc.publicnode.com'),
+    USDT_BSC_CONTRACT: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional()),
+    // Anthropic — LLM for merchant support bot
+    ANTHROPIC_API_KEY: zod_1.z.string().min(1).optional(),
+    // ── Merchant settlement soft limits ──────────────────────────
+    // Above these thresholds, settlement requests go to admin review
+    // instead of automatic payout. Configurable via env, with sensible
+    // defaults for the DRC market (in CDF).
+    SETTLEMENT_AUTO_MAX_PER_REQUEST: zod_1.z.string().regex(/^\d+(\.\d+)?$/).default('500000'),
+    SETTLEMENT_AUTO_MAX_DAILY: zod_1.z.string().regex(/^\d+(\.\d+)?$/).default('2000000'),
+    // Admin access — comma-separated list of allowed emails for admin routes
+    ADMIN_EMAILS: zod_1.z.string().default('b.barrere@congogaming.com'),
+    // Support escalation recipient
+    SUPPORT_ESCALATION_EMAIL: zod_1.z.string().email().default('contact@ia-solution.fr'),
+    // Coinbase CDP — EVM server accounts (one per wallet user, Base network)
+    CDP_API_KEY_ID: zod_1.z.string().min(1).optional(),
+    CDP_API_KEY_SECRET: zod_1.z.string().min(1).optional(),
+    CDP_WALLET_SECRET: zod_1.z.string().min(1).optional(),
+    // ── Dev Expenses Tracker ───────────────────────────────────
+    // Anthropic Console API key for usage cost pull
+    ANTHROPIC_ADMIN_API_KEY: zod_1.z.string().min(1).optional(),
+    // Vercel team billing API
+    VERCEL_API_TOKEN: zod_1.z.string().min(1).optional(),
+    VERCEL_TEAM_ID: zod_1.z.string().min(1).optional(),
+    // Public report page origin (Netlify) — used for CORS whitelist + share URL
+    DEV_EXPENSES_PUBLIC_ORIGIN: zod_1.z.preprocess((v) => (v === '' ? undefined : v), zod_1.z.string().url().optional()).default('https://dev-expenses.netlify.app'),
+});
+const result = envSchema.safeParse(process.env);
+if (!result.success) {
+    console.error(result.error.format());
+    process.exit(1);
+}
+exports.env = result.data;
+//# sourceMappingURL=env.js.map

@@ -1,0 +1,217 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const support_bot_js_1 = require("../../services/support-bot.js");
+const email_js_1 = require("../../services/email.js");
+const merchant_auth_js_1 = require("../../lib/merchant-auth.js");
+const merchantSupportRoute = async (fastify) => {
+    /* ── POST /v1/merchant/support/message ─────────────────────── */
+    fastify.post('/merchant/support/message', {
+        schema: {
+            body: {
+                type: 'object',
+                required: ['message'],
+                properties: {
+                    conversation_id: { type: 'string', format: 'uuid' },
+                    message: { type: 'string', minLength: 1, maxLength: 4000 },
+                },
+            },
+        },
+        config: {
+            rateLimit: {
+                max: 10,
+                timeWindow: '1 hour',
+                keyGenerator: (req) => (0, merchant_auth_js_1.merchantIdFromRequest)(req) ?? req.ip,
+            },
+        },
+    }, async (request, reply) => {
+        const auth = await (0, merchant_auth_js_1.requireActiveMerchant)(request, fastify.supabase);
+        if (!auth.ok)
+            return reply.status(auth.status).send(auth.error);
+        const merchantId = auth.payload.merchant_id;
+        const { message, conversation_id } = request.body;
+        // Find or create conversation — ALWAYS scoped to this merchant
+        let conversationId = conversation_id;
+        if (conversationId) {
+            // Verify ownership: conversation must belong to this merchant
+            const { data: conv, error: convError } = await fastify.supabase
+                .from('support_conversations')
+                .select('id, status, merchant_id')
+                .eq('id', conversationId)
+                .eq('merchant_id', merchantId) // CRITICAL: prevents cross-merchant access
+                .maybeSingle();
+            if (convError || !conv) {
+                return reply.status(404).send({ error: 'Conversation not found', statusCode: 404 });
+            }
+            if (conv.status === 'resolved') {
+                return reply.status(400).send({ error: 'Conversation is resolved', statusCode: 400 });
+            }
+        }
+        else {
+            // Create new conversation
+            const { data: newConv, error: createError } = await fastify.supabase
+                .from('support_conversations')
+                .insert({ merchant_id: merchantId, status: 'open' })
+                .select('id')
+                .single();
+            if (createError || !newConv) {
+                fastify.log.error({ err: createError, merchantId }, '[support] conversation creation failed');
+                return reply.status(500).send({ error: 'Failed to create conversation', statusCode: 500 });
+            }
+            conversationId = newConv.id;
+        }
+        // Save merchant message
+        const { error: msgError } = await fastify.supabase
+            .from('support_messages')
+            .insert({
+            conversation_id: conversationId,
+            role: 'merchant',
+            content: message,
+        });
+        if (msgError) {
+            fastify.log.error({ err: msgError, conversationId }, '[support] message save failed');
+            return reply.status(500).send({ error: 'Failed to save message', statusCode: 500 });
+        }
+        // Fetch merchant context — ONLY this merchant's data
+        const [merchantRes, keysRes, txRes, historyRes] = await Promise.all([
+            fastify.supabase
+                .from('merchants')
+                .select('id, name, email, kyc_status, mode, status, company_name')
+                .eq('id', merchantId)
+                .maybeSingle(),
+            fastify.supabase
+                .from('api_keys')
+                .select('is_active')
+                .eq('merchant_id', merchantId)
+                .eq('is_active', true)
+                .limit(1),
+            fastify.supabase
+                .from('transactions')
+                .select('direction, operator, amount, currency, status, created_at')
+                .eq('merchant_id', merchantId) // CRITICAL: only this merchant's transactions
+                .order('created_at', { ascending: false })
+                .limit(10),
+            fastify.supabase
+                .from('support_messages')
+                .select('role, content')
+                .eq('conversation_id', conversationId)
+                .order('created_at', { ascending: true }),
+        ]);
+        if (merchantRes.error || !merchantRes.data) {
+            return reply.status(500).send({ error: 'Merchant context fetch failed', statusCode: 500 });
+        }
+        const merchant = merchantRes.data;
+        const context = {
+            name: merchant.name,
+            email: merchant.email,
+            kyc_status: merchant.kyc_status,
+            mode: merchant.mode,
+            status: merchant.status,
+            company_name: merchant.company_name,
+            api_key_active: (keysRes.data?.length ?? 0) > 0,
+            recent_transactions: (txRes.data ?? []).map((t) => ({
+                direction: t.direction,
+                operator: t.operator,
+                amount: t.amount,
+                currency: t.currency,
+                status: t.status,
+                created_at: t.created_at,
+            })),
+        };
+        const history = (historyRes.data ?? []).map((m) => ({
+            role: m.role,
+            content: m.content,
+        }));
+        // Generate bot reply
+        const injectionCheck = (0, support_bot_js_1.detectPromptInjection)(message);
+        if (injectionCheck.detected) {
+            fastify.log.warn({ conversationId, merchantId, message: message.slice(0, 500), labels: injectionCheck.labels }, '[support] potential prompt injection detected — message still forwarded to LLM');
+        }
+        const botReply = await (0, support_bot_js_1.generateBotReply)(history, context);
+        // Save bot message
+        const { error: botMsgError } = await fastify.supabase
+            .from('support_messages')
+            .insert({
+            conversation_id: conversationId,
+            role: 'bot',
+            content: botReply.content,
+        });
+        if (botMsgError) {
+            fastify.log.error({ err: botMsgError, conversationId }, '[support] bot message save failed');
+        }
+        // Handle escalation / status update
+        let conversationStatus = 'open';
+        if (botReply.escalated) {
+            conversationStatus = 'escalated';
+            await fastify.supabase
+                .from('support_conversations')
+                .update({ status: 'escalated', updated_at: new Date().toISOString() })
+                .eq('id', conversationId);
+            // Send escalation email (non-blocking)
+            (0, email_js_1.sendSupportEscalationEmail)(merchant.name, merchant.email, conversationId, message.slice(0, 200)).catch((err) => {
+                fastify.log.error({ err, conversationId }, '[support] escalation email failed');
+            });
+        }
+        else {
+            // Bot replied successfully without escalation.
+            // If the conversation was previously 'escalated' (e.g. due to a
+            // transient API error that has since been fixed), revert it to
+            // 'open' so the "a human will respond" banner disappears from
+            // the merchant UI. 'resolved' conversations are blocked earlier
+            // (line 58-60) and never reach this point.
+            await fastify.supabase
+                .from('support_conversations')
+                .update({ status: 'open', updated_at: new Date().toISOString() })
+                .eq('id', conversationId);
+        }
+        return reply.send({
+            conversation_id: conversationId,
+            reply: botReply.content,
+            status: conversationStatus,
+            escalated: botReply.escalated,
+        });
+    });
+    /* ── GET /v1/merchant/support/conversations ────────────────── */
+    fastify.get('/merchant/support/conversations', async (request, reply) => {
+        const auth = await (0, merchant_auth_js_1.requireActiveMerchant)(request, fastify.supabase);
+        if (!auth.ok)
+            return reply.status(auth.status).send(auth.error);
+        const { data, error } = await fastify.supabase
+            .from('support_conversations')
+            .select('id, status, created_at, updated_at')
+            .eq('merchant_id', auth.payload.merchant_id) // CRITICAL: only own conversations
+            .order('updated_at', { ascending: false });
+        if (error)
+            return reply.status(500).send({ error: error.message });
+        return reply.send({ data: data ?? [] });
+    });
+    /* ── GET /v1/merchant/support/conversations/:id/messages ──── */
+    fastify.get('/merchant/support/conversations/:id/messages', async (request, reply) => {
+        const auth = await (0, merchant_auth_js_1.requireActiveMerchant)(request, fastify.supabase);
+        if (!auth.ok)
+            return reply.status(auth.status).send(auth.error);
+        const { id } = request.params;
+        // CRITICAL: verify conversation belongs to this merchant
+        const { data: conv, error: convError } = await fastify.supabase
+            .from('support_conversations')
+            .select('id, merchant_id, status')
+            .eq('id', id)
+            .eq('merchant_id', auth.payload.merchant_id) // prevents cross-merchant access
+            .maybeSingle();
+        if (convError || !conv) {
+            return reply.status(404).send({ error: 'Conversation not found', statusCode: 404 });
+        }
+        const { data: messages, error: msgError } = await fastify.supabase
+            .from('support_messages')
+            .select('id, role, content, channel, subject, created_at')
+            .eq('conversation_id', id)
+            .order('created_at', { ascending: true });
+        if (msgError)
+            return reply.status(500).send({ error: msgError.message });
+        return reply.send({
+            conversation: conv,
+            messages: messages ?? [],
+        });
+    });
+};
+exports.default = merchantSupportRoute;
+//# sourceMappingURL=support.js.map
