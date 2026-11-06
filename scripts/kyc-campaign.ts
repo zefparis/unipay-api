@@ -90,18 +90,19 @@ async function main() {
 
   const { data: merchants, error } = await sb
     .from('merchants')
-    .select('id, name, email, mode, kyc_status, rccm_file_url, idnat_file_url, rep_id_file_url')
+    .select('id, name, email, mode, kyc_status, email_unreachable, rccm_file_url, idnat_file_url, rep_id_file_url')
     .eq('status', 'active')
     .is('deleted_at', null);
   if (error) throw error;
 
   const actions: Action[] = [];
-  let excluded = 0, alreadyDone = 0, blacklisted = 0, approvedSkipped = 0;
+  let excluded = 0, alreadyDone = 0, blacklisted = 0, approvedSkipped = 0, unreachable = 0;
   const blockedList: string[] = [];
 
   for (const m of merchants ?? []) {
     if (EXCLUDE.has(m.id as string)) { excluded++; continue; }
     if (done.has(m.id as string)) { alreadyDone++; continue; }
+    if (m.email_unreachable === true) { unreachable++; continue; }
     const docs = [m.rccm_file_url, m.idnat_file_url, m.rep_id_file_url].filter(Boolean).length;
     // Skip = approved ET 3 pièces présentes. Un approved sans pièces
     // complètes retombe dans les cas a (inactif) ou c (actif).
@@ -138,7 +139,7 @@ async function main() {
   if (Number.isFinite(LIMIT)) run = run.slice(0, LIMIT);
 
   console.log(`\n${EXECUTE ? 'EXECUTION' : 'DRY-RUN'} : ${actions.length} marchands à traiter`);
-  console.log(`  exclusions : ${excluded} manuelles · ${approvedSkipped} approved+3docs · ${alreadyDone} déjà traités (${CAMPAIGN}) · ${blacklisted} blacklist Brevo (sur ${blocked.size} contacts bloqués)`);
+  console.log(`  exclusions : ${excluded} manuelles · ${approvedSkipped} approved+3docs · ${alreadyDone} déjà traités (${CAMPAIGN}) · ${blacklisted} blacklist Brevo (sur ${blocked.size} contacts bloqués) · ${unreachable} email_unreachable`);
   if (blockedList.length) for (const b of blockedList) console.log(`    blacklist: ${b}`);
   console.log(`  a-suspended_kyc: ${counts.a} · b-kyc_required: ${counts.b} · c-préavis J+7: ${counts.c} (deadline ${deadlineFr})`);
   for (const a of actions) if (a.target === 'c') console.log(`    c: ${a.name} <${a.email}> mode=${a.mode}`);

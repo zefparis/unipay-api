@@ -11,12 +11,21 @@ set -euo pipefail
 FORCE=0
 for arg in "$@"; do [ "$arg" = "--force" ] && FORCE=1; done
 
+# ── 0. Garde git : seule la branche main, arbre propre ────────────
+LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+BRANCH="$(git -C "$LOCAL_DIR" rev-parse --abbrev-ref HEAD)"
+DIRTY="$(git -C "$LOCAL_DIR" status --porcelain | grep -v '^??' || true)"
+if [ "$BRANCH" != "main" ] || [ -n "$DIRTY" ]; then
+  warn "branche=$BRANCH, modifs non commitées=${DIRTY:+oui}"
+  [ "$FORCE" -eq 1 ] || die "déploiement refusé : mergez dans main et committez (ou --force)"
+  warn "--force : déploiement depuis $BRANCH malgré tout"
+fi
+
 X3="unipaycongo@192.168.1.166"
 APP=/opt/unipay-api
 BACKUP_DIR=/opt/unipay-api-backups
 HEALTH_URL="http://localhost:3100/health"
 TS="$(date +%Y%m%d-%H%M%S)"
-LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 step() { printf '\n\033[1;36m══ %s ══\033[0m\n' "$*"; }
 ok()   { printf '  \033[1;32m✓ %s\033[0m\n' "$*"; }

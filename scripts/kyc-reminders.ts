@@ -42,11 +42,12 @@ const hasEvent = async (mid: string, ev: string) => {
   return (data ?? []).length > 0;
 };
 
-// Marchands flaggés email_unreachable (event posé par l'export injoignables)
+// Marchands flaggés email_unreachable (colonne merchants.email_unreachable ;
+// les events 'email_unreachable' dans merchant_kyc_events restent la trace).
 const unreachableSet = async () => {
-  const { data } = await sb.from('merchant_kyc_events').select('merchant_id')
-    .eq('event', 'email_unreachable');
-  return new Set((data ?? []).map((e) => e.merchant_id as string));
+  const { data } = await sb.from('merchants').select('id')
+    .eq('email_unreachable', true).is('deleted_at', null);
+  return new Set((data ?? []).map((e) => e.id as string));
 };
 
 // Blocklist SMTP Brevo (hard bounces, plaintes, désinscrits)
