@@ -522,7 +522,7 @@ export async function sendSupportEscalationEmail(
 
   try {
     await api.transactionalEmails.sendTransacEmail({
-      subject: `Escalade support — ${merchantName}`,
+      subject: `Escalade support : ${merchantName}`,
       htmlContent: layout(body),
       sender: { name: env.BREVO_SENDER_NAME, email: env.BREVO_SENDER_EMAIL },
       to: [{ email: escalationEmail }],
@@ -787,9 +787,9 @@ export async function sendPasswordResetEmail(
 }
 
 /* ── sendKycIncompleteEmail — dossier incomplet → suspension ── */
-export async function sendKycIncompleteEmail(to: string, name: string): Promise<void> {
+export async function sendKycIncompleteEmail(to: string, name: string): Promise<string | null> {
   const api = getClient();
-  if (!api) return;
+  if (!api) return null;
 
   const body = `
     <p style="margin:0 0 12px">Bonjour${name ? ` <strong>${name}</strong>` : ''},</p>
@@ -827,18 +827,19 @@ export async function sendKycIncompleteEmail(to: string, name: string): Promise<
     </a>
     <p style="margin:20px 0 0">L'équipe UniPay</p>`;
 
-  await api.transactionalEmails.sendTransacEmail({
+  const res = await api.transactionalEmails.sendTransacEmail({
     subject: 'UniPay : mise à jour de votre dossier de vérification',
     htmlContent: layout(body),
     sender: { name: env.BREVO_SENDER_NAME, email: env.BREVO_SENDER_EMAIL },
     to: [{ email: to, name }],
   });
+  return res.messageId ?? null;
 }
 
 /* ── sendKycReceivedEmail — dossier reçu, en cours de vérification ── */
-export async function sendKycReceivedEmail(to: string, name: string): Promise<void> {
+export async function sendKycReceivedEmail(to: string, name: string): Promise<string | null> {
   const api = getClient();
-  if (!api) return;
+  if (!api) return null;
 
   const body = `
     <h2 style="color:#1D9E75;margin:0 0 16px">Dossier reçu ✓</h2>
@@ -854,18 +855,19 @@ export async function sendKycReceivedEmail(to: string, name: string): Promise<vo
     </p>
     <p style="margin:0">L'équipe UniPay</p>`;
 
-  await api.transactionalEmails.sendTransacEmail({
+  const res = await api.transactionalEmails.sendTransacEmail({
     subject: 'UniPay : votre dossier est en cours de vérification',
     htmlContent: layout(body),
     sender: { name: env.BREVO_SENDER_NAME, email: env.BREVO_SENDER_EMAIL },
     to: [{ email: to, name }],
   });
+  return res.messageId ?? null;
 }
 
 /* ── sendKycNoticeEmail — préavis 7 jours (cas c) ───────────── */
-export async function sendKycNoticeEmail(to: string, name: string, deadline: string): Promise<void> {
+export async function sendKycNoticeEmail(to: string, name: string, deadline: string): Promise<string | null> {
   const api = getClient();
-  if (!api) return;
+  if (!api) return null;
 
   const body = `
     <p style="margin:0 0 12px">Bonjour${name ? ` <strong>${name}</strong>` : ''},</p>
@@ -899,14 +901,15 @@ export async function sendKycNoticeEmail(to: string, name: string, deadline: str
     <a href="https://unipaycongo.com/fr/dashboard/kyc"
        style="display:inline-block;background:#1D9E75;color:#fff;text-decoration:none;
               padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px;">
-      Compléter mon dossier →
+      Compléter mon dossier
     </a>
     <p style="margin:20px 0 0">L'équipe UniPay</p>`;
 
-  await api.transactionalEmails.sendTransacEmail({
+  const res = await api.transactionalEmails.sendTransacEmail({
     subject: `UniPay : votre dossier de vérification à compléter avant le ${deadline}`,
     htmlContent: layout(body),
     sender: { name: env.BREVO_SENDER_NAME, email: env.BREVO_SENDER_EMAIL },
     to: [{ email: to, name }],
   });
+  return res.messageId ?? null;
 }

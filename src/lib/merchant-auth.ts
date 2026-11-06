@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import bcrypt from 'bcryptjs';
 import { verifyToken, type JwtPayload } from '../utils/jwt.js';
 import { env } from '../config/env.js';
 
@@ -70,6 +71,61 @@ export async function requireMerchantSession(
   }
 
   return { ok: true, payload };
+}
+
+/**
+ * Identité marchand double canal : JWT de session dashboard OU X-API-Key.
+ * Utilisée par les routes lisibles des deux façons (ex. programme partenaire).
+ * - JWT  : requireMerchantAuth + token_version à jour, pas de gate de statut
+ * - clé  : prefix lookup + bcrypt, merchants.status = 'active' requis
+ */
+export async function requireMerchantIdentity(
+  request: { headers: Record<string, string | string[] | undefined> },
+  supabase: SupabaseClient,
+): Promise<
+  | { ok: true; merchantId: string }
+  | { ok: false; status: 401 | 403 | 404 | 500; error: { error: string; statusCode: number } }
+> {
+  const unauthorized = { ok: false as const, status: 401 as const, error: { error: 'Unauthorized', statusCode: 401 } };
+
+  // ── Canal 1 : JWT de session ────────────────────────────────
+  const payload = requireMerchantAuth(request);
+  if (payload) {
+    const { data, error } = await supabase
+      .from('merchants')
+      .select('token_version')
+      .eq('id', payload.merchant_id)
+      .maybeSingle();
+    if (error) return { ok: false, status: 500, error: { error: 'Internal Server Error', statusCode: 500 } };
+    if (data && (data.token_version ?? 0) === payload.token_version) {
+      return { ok: true, merchantId: payload.merchant_id };
+    }
+    // JWT présent mais révoqué → refusé, pas de repli sur la clé
+    return unauthorized;
+  }
+
+  // ── Canal 2 : X-API-Key ────────────────────────────────────
+  const apiKey = request.headers['x-api-key'];
+  if (!apiKey || typeof apiKey !== 'string') return unauthorized;
+
+  const prefix = apiKey.substring(0, 12);
+  const { data: keys, error } = await supabase
+    .from('api_keys')
+    .select('id, key_hash, merchant_id, merchants!inner(status)')
+    .eq('key_prefix', prefix)
+    .eq('is_active', true);
+  if (error) return { ok: false, status: 500, error: { error: 'Internal Server Error', statusCode: 500 } };
+
+  for (const k of (keys ?? []) as unknown as { key_hash: string; merchant_id: string; merchants: { status: string }[] }[]) {
+    if (await bcrypt.compare(apiKey, k.key_hash)) {
+      const status = k.merchants[0]?.status;
+      if (status !== 'active') {
+        return { ok: false, status: 403, error: { error: 'Compte suspendu', statusCode: 403 } };
+      }
+      return { ok: true, merchantId: k.merchant_id };
+    }
+  }
+  return unauthorized;
 }
 
 export async function requireActiveMerchant(

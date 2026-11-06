@@ -26,6 +26,8 @@ import merchantModeRoute from './routes/merchant/mode';
 import merchantSupportRoute from './routes/merchant/support';
 import merchantSettlementRoute from './routes/merchant/settlement';
 import merchantProfileRoute from './routes/merchant/profile';
+import merchantPartnerRoute from './routes/merchant/partner';
+import adminPartnerRoute from './routes/admin/partner';
 import merchantPasswordResetRoute from './routes/merchant/password-reset';
 import adminKycRoute from './routes/admin/kyc';
 import adminSettlementRoute from './routes/admin/settlements';
@@ -180,6 +182,8 @@ export async function buildServer() {
       v1.register(merchantSupportRoute);
       v1.register(merchantSettlementRoute);
       v1.register(merchantProfileRoute);
+      v1.register(merchantPartnerRoute);
+      v1.register(adminPartnerRoute);
       v1.register(merchantPasswordResetRoute);
       v1.register(adminKycRoute);
       v1.register(adminSettlementRoute);

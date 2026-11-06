@@ -8,17 +8,25 @@
  *     - 3 pièces  → kyc_required (attente validation) + alerte admin + event
  *  3. Bloqués classiques : relances J+7 / J+21 (kyc_reminder_j7 / j21).
  *
- * Idempotent via merchant_kyc_events. Exclusions respectées.
- * Usage : npx tsx scripts/kyc-reminders.ts [--dry-run]
+ * Idempotent via merchant_kyc_events. Exclusions respectées :
+ *   - EXCLUDE (liste manuelle ci-dessous),
+ *   - marchands flaggés email_unreachable (hard bounce, blacklist…),
+ *   - adresses présentes dans la blocklist SMTP Brevo — le changement de
+ *     statut reste appliqué pour les échéances (flux 2), seul le mail est sauté.
+ *
+ * Usage : npx tsx scripts/kyc-reminders.ts [--dry-run] [--at YYYY-MM-DD]
  */
+import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 import {
   sendKycIncompleteEmail, sendKycReceivedEmail, sendKycNoticeEmail,
 } from '../src/services/email.js';
 
 const DRY_RUN = process.argv.includes('--dry-run');
+const atIdx = process.argv.indexOf('--at');
+const AT = atIdx > -1 ? process.argv[atIdx + 1] : null;
 const sb = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_KEY!);
-const now = Date.now();
+const now = AT ? Date.parse(`${AT}T08:00:00Z`) : Date.now();
 const nowIso = new Date(now).toISOString();
 
 const EXCLUDE = new Set([
@@ -34,16 +42,59 @@ const hasEvent = async (mid: string, ev: string) => {
   return (data ?? []).length > 0;
 };
 
+// Marchands flaggés email_unreachable (event posé par l'export injoignables)
+const unreachableSet = async () => {
+  const { data } = await sb.from('merchant_kyc_events').select('merchant_id')
+    .eq('event', 'email_unreachable');
+  return new Set((data ?? []).map((e) => e.merchant_id as string));
+};
+
+// Blocklist SMTP Brevo (hard bounces, plaintes, désinscrits)
+async function fetchBrevoBlocked(): Promise<Set<string>> {
+  const blocked = new Set<string>();
+  const key = process.env.BREVO_API_KEY;
+  if (!key) return blocked;
+  for (let offset = 0; ; offset += 100) {
+    const r = await fetch(`https://api.brevo.com/v3/smtp/blockedContacts?limit=100&offset=${offset}`, {
+      headers: { 'api-key': key },
+    });
+    if (!r.ok) { console.error(`blockedContacts HTTP ${r.status}`); break; }
+    const j = await r.json() as { contacts?: { email?: string }[] };
+    const contacts = j.contacts ?? [];
+    for (const c of contacts) {
+      const e = (c.email ?? '').trim().toLowerCase();
+      if (e) blocked.add(e);
+    }
+    if (contacts.length < 100) break;
+  }
+  return blocked;
+}
+
 const log = (m: string) => console.log(`${DRY_RUN ? '[dry] ' : ''}${m}`);
 
 async function main() {
+  const unreachable = await unreachableSet();
+  const blocked = await fetchBrevoBlocked();
+  // Peut-on envoyer un mail à ce marchand ?
+  const canMail = (m: { id: unknown; email: unknown }) =>
+    !unreachable.has(m.id as string) && !blocked.has((m.email as string).trim().toLowerCase());
+  const skipReason = (m: { id: unknown; email: unknown }) =>
+    unreachable.has(m.id as string) ? 'email_unreachable' : 'blacklist Brevo';
+
+  if (AT) log(`simulation --at ${AT} (now=${nowIso})`);
+
   // ── 1+2. Marchands sous préavis / échéance dépassée ──────────
   for (const m of (await sb.from('merchants')
       .select('id, name, email, access_status, kyc_deadline, rccm_file_url, idnat_file_url, rep_id_file_url')
-      .not('kyc_deadline', 'is', null).is('deleted_at', null)).data ?? []) {
+      .eq('status', 'active').not('kyc_deadline', 'is', null).is('deleted_at', null)).data ?? []) {
     if (EXCLUDE.has(m.id as string)) continue;
     const dl = new Date(m.kyc_deadline as string).getTime();
-    const daysLeft = (dl - now) / 86400e3;
+    // Comparaison au jour (UTC) : l'échéance n'est dépassée que lorsque la
+    // date du jour est strictement postérieure à la date de kyc_deadline
+    // (deadline 13 nov. → suspension au run du 14 nov., pas le 13).
+    const todayUtc = new Date(now); todayUtc.setUTCHours(0, 0, 0, 0);
+    const dlDayUtc = new Date(dl); dlDayUtc.setUTCHours(0, 0, 0, 0);
+    const daysLeft = (dlDayUtc.getTime() - todayUtc.getTime()) / 86400e3;
     const dlFr = new Date(dl).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
     const docs = [m.rccm_file_url, m.idnat_file_url, m.rep_id_file_url].filter(Boolean).length;
 
@@ -51,25 +102,28 @@ async function main() {
       // Relances J+3 (≈ J-4) et J-1
       const since = NOTICE_FROM(now, dl);
       if (since >= 3 * 86400e3 && !(await hasEvent(m.id as string, 'notice_reminder_j3'))) {
-        log(`notice J+3 → ${m.name}`); if (!DRY_RUN) { await sendKycNoticeEmail(m.email as string, m.name as string, dlFr); await ev(m.id as string, 'notice_reminder_j3', { daysLeft }); }
+        if (!canMail(m)) { log(`notice J+3 SAUTÉ (${skipReason(m)}) → ${m.name}`); if (!DRY_RUN) await ev(m.id as string, 'notice_reminder_j3', { daysLeft, skipped: skipReason(m) }); }
+        else { log(`notice J+3 → ${m.name}`); if (!DRY_RUN) { await sendKycNoticeEmail(m.email as string, m.name as string, dlFr); await ev(m.id as string, 'notice_reminder_j3', { daysLeft }); } }
       }
       if (daysLeft <= 1 && !(await hasEvent(m.id as string, 'notice_reminder_jm1'))) {
-        log(`notice J-1 → ${m.name}`); if (!DRY_RUN) { await sendKycNoticeEmail(m.email as string, m.name as string, dlFr); await ev(m.id as string, 'notice_reminder_jm1', { daysLeft }); }
+        if (!canMail(m)) { log(`notice J-1 SAUTÉ (${skipReason(m)}) → ${m.name}`); if (!DRY_RUN) await ev(m.id as string, 'notice_reminder_jm1', { daysLeft, skipped: skipReason(m) }); }
+        else { log(`notice J-1 → ${m.name}`); if (!DRY_RUN) { await sendKycNoticeEmail(m.email as string, m.name as string, dlFr); await ev(m.id as string, 'notice_reminder_jm1', { daysLeft }); } }
       }
       continue;
     }
 
-    if (daysLeft <= 0 && m.access_status === 'active') {
-      // Échéance dépassée
+    if (daysLeft < 0 && m.access_status === 'active') {
+      // Échéance dépassée — le statut bascule même si le mail est sauté (injoignable)
+      const mailOk = canMail(m);
       if (docs < 3) {
-        log(`deadline PASSÉ, incomplet → suspended_kyc ${m.name}`);
+        log(`deadline PASSÉ, incomplet → suspended_kyc ${m.name}${mailOk ? '' : ` (mail sauté : ${skipReason(m)})`}`);
         if (!DRY_RUN) {
           await sb.from('merchants').update({
             access_status: 'suspended_kyc', access_status_changed_at: nowIso,
             access_status_reason: 'Préavis expiré sans dossier complet', kyc_deadline: null,
           }).eq('id', m.id);
-          await ev(m.id as string, 'deadline_passed', { outcome: 'suspended' });
-          await sendKycIncompleteEmail(m.email as string, m.name as string);
+          await ev(m.id as string, 'deadline_passed', { outcome: 'suspended', ...(mailOk ? {} : { mail_skipped: skipReason(m) }) });
+          if (mailOk) await sendKycIncompleteEmail(m.email as string, m.name as string);
         }
       } else {
         log(`deadline PASSÉ, 3 pièces → kyc_required (attente validation) ${m.name} — ALERTE ADMIN`);
@@ -99,9 +153,14 @@ async function main() {
     const cutoff = new Date(now - days * 86400e3).toISOString();
     const { data: merchants } = await sb.from('merchants')
       .select('id, name, email, access_status')
-      .neq('access_status', 'active').lte('access_status_changed_at', cutoff).is('deleted_at', null);
+      .eq('status', 'active').neq('access_status', 'active').lte('access_status_changed_at', cutoff).is('deleted_at', null);
     for (const m of merchants ?? []) {
       if (EXCLUDE.has(m.id as string) || (await hasEvent(m.id as string, event))) continue;
+      if (!canMail(m)) {
+        log(`${event} SAUTÉ (${skipReason(m)}) → ${m.name} (${m.access_status})`);
+        if (!DRY_RUN) await ev(m.id as string, event, { days, skipped: skipReason(m) });
+        continue;
+      }
       log(`${event} → ${m.name} (${m.access_status})`);
       if (!DRY_RUN) {
         if (m.access_status === 'suspended_kyc') await sendKycIncompleteEmail(m.email as string, m.name as string);
