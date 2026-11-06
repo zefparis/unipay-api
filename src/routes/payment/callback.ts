@@ -3,6 +3,7 @@ import { verifyCallbackSignature, normalizeCallback } from '../../services/avada
 import type { AvadaCallbackPayload } from '../../services/avada';
 import { sendWalletDepositEmail } from '../../services/email';
 import { validateProviderCallbackProof } from '../../lib/provider-callback-proof';
+import { PROVIDER_FEE_RATE, logPartnerCommissionResult } from '../../lib/partner-commission';
 import { notifyMerchantWebhook } from '../../lib/merchant-webhook';
 
 const callbackRoute: FastifyPluginAsync = async (fastify) => {
@@ -131,6 +132,7 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
           p_new_status: dbStatus,
           p_provider_transaction_id: avada_transaction_id,
           p_payload: normalized.raw,
+          p_provider_fee_rate: PROVIDER_FEE_RATE,
         },
       );
 
@@ -139,7 +141,8 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
         return reply.status(500).send({ error: 'Callback processing failed', statusCode: 500 });
       }
 
-      const result = callbackResult as { processed?: boolean; duplicate?: boolean; already_terminal?: boolean; credited?: number } | null;
+      const result = callbackResult as { processed?: boolean; duplicate?: boolean; already_terminal?: boolean; credited?: number; partner_commission?: { status?: string } } | null;
+      logPartnerCommissionResult(fastify.log, result?.partner_commission, { txId: tx.id });
       if (!result?.processed) {
         return reply.send({ ok: true, idempotent: true });
       }

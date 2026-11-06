@@ -34,7 +34,7 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
             company_name:  { type: 'string', maxLength: 256 },
             company_rccm:  { type: 'string', maxLength: 128 },
             company_idnat: { type: 'string', maxLength: 128 },
-            ref:           { type: 'string', maxLength: 32 },
+            ref:           { type: 'string', maxLength: 64 },
           },
         },
         response: {
@@ -56,18 +56,22 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
 
       // Partner referral (?ref=PRT-xxx) : résout le code → partenaire
       // actif. Un ref inconnu ou inactif est ignoré, jamais bloquant.
-      let referredBy: string | null = null;
+      let referredByPartnerId: string | null = null;
       if (ref) {
         const { data: partner } = await fastify.supabase
           .from('merchants')
           .select('id')
-          .eq('partner_code', ref.trim().toUpperCase())
+          .eq('partner_code', ref)
           .eq('is_partner', true)
           .eq('status', 'active')
           .is('deleted_at', null)
           .maybeSingle();
-        referredBy = (partner?.id as string) ?? null;
-        if (referredBy) fastify.log.info({ email, ref, referredBy }, 'Partner referral attached at register');
+        referredByPartnerId = (partner?.id as string) ?? null;
+        if (referredByPartnerId) {
+          fastify.log.info({ email, ref, referredByPartnerId }, 'Partner referral attached at register');
+        } else {
+          fastify.log.warn({ email, ref }, 'Invalid or inactive partner ref code');
+        }
       }
 
       // 1. Check email uniqueness in merchants table
@@ -99,7 +103,7 @@ const registerRoute: FastifyPluginAsync = async (fastify) => {
           company_name:   company_name  ?? null,
           company_rccm:   company_rccm  ?? null,
           company_idnat:  company_idnat ?? null,
-          referred_by_partner_id: referredBy,
+          referred_by_partner_id: referredByPartnerId,
         })
         .select('id')
         .single();

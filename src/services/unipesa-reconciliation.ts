@@ -34,6 +34,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { getTransactionStatusWithRaw, type AvadaStatus } from './avada';
 import { notifyMerchantWebhook } from '../lib/merchant-webhook';
 import { env } from '../config/env';
+import { PROVIDER_FEE_RATE, logPartnerCommissionResult } from '../lib/partner-commission';
 
 const WORKER_NAME = 'unipay_unipesa_reconciliation';
 const LOCK_TTL_SECONDS = 120;
@@ -341,6 +342,7 @@ export async function reconcileOneSettlement(
       p_new_status: dbStatus,
       p_provider_transaction_id: statusKey,
       p_payload: reconciledPayload,
+      p_provider_fee_rate: PROVIDER_FEE_RATE,
     },
   );
 
@@ -359,7 +361,8 @@ export async function reconcileOneSettlement(
     return;
   }
 
-  const result = callbackResult as { processed?: boolean; duplicate?: boolean; already_terminal?: boolean; settlement_updated?: boolean } | null;
+  const result = callbackResult as { processed?: boolean; duplicate?: boolean; already_terminal?: boolean; settlement_updated?: boolean; partner_commission?: { status?: string } } | null;
+  logPartnerCommissionResult(log, result?.partner_commission, { txId: (linkedTx as { id: string }).id });
 
   // The linked transaction is already terminal but the settlement is still
   // 'processing' — this happens when the tx was resolved while the
@@ -582,6 +585,7 @@ async function reconcileOne(
       p_new_status: dbStatus,
       p_provider_transaction_id: tx.avada_transaction_id ?? tx.reference ?? tx.id,
       p_payload: reconciledPayload,
+      p_provider_fee_rate: PROVIDER_FEE_RATE,
     },
   );
 
@@ -601,7 +605,8 @@ async function reconcileOne(
     return;
   }
 
-  const result = callbackResult as { processed?: boolean; duplicate?: boolean; already_terminal?: boolean; credited?: number; refunded?: number } | null;
+  const result = callbackResult as { processed?: boolean; duplicate?: boolean; already_terminal?: boolean; credited?: number; refunded?: number; partner_commission?: { status?: string } } | null;
+  logPartnerCommissionResult(log, result?.partner_commission, { txId: tx.id });
 
   if (!result?.processed) {
     log.info(

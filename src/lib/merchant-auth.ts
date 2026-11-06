@@ -76,7 +76,7 @@ export async function requireMerchantSession(
 /**
  * Identité marchand double canal : JWT de session dashboard OU X-API-Key.
  * Utilisée par les routes lisibles des deux façons (ex. programme partenaire).
- * - JWT  : requireMerchantAuth + token_version à jour, pas de gate de statut
+ * - JWT  : requireActiveMerchant (session + statut 'active' requis)
  * - clé  : prefix lookup + bcrypt, merchants.status = 'active' requis
  */
 export async function requireMerchantIdentity(
@@ -88,20 +88,12 @@ export async function requireMerchantIdentity(
 > {
   const unauthorized = { ok: false as const, status: 401 as const, error: { error: 'Unauthorized', statusCode: 401 } };
 
-  // ── Canal 1 : JWT de session ────────────────────────────────
-  const payload = requireMerchantAuth(request);
-  if (payload) {
-    const { data, error } = await supabase
-      .from('merchants')
-      .select('token_version')
-      .eq('id', payload.merchant_id)
-      .maybeSingle();
-    if (error) return { ok: false, status: 500, error: { error: 'Internal Server Error', statusCode: 500 } };
-    if (data && (data.token_version ?? 0) === payload.token_version) {
-      return { ok: true, merchantId: payload.merchant_id };
-    }
-    // JWT présent mais révoqué → refusé, pas de repli sur la clé
-    return unauthorized;
+  // ── Canal 1 : JWT de session (gate statut 'active' comme le reste de l'API)
+  const hasJwt = typeof request.headers.authorization === 'string'
+    && request.headers.authorization.startsWith('Bearer ');
+  if (hasJwt) {
+    const auth = await requireActiveMerchant(request, supabase);
+    return auth.ok ? { ok: true, merchantId: auth.payload.merchant_id } : auth;
   }
 
   // ── Canal 2 : X-API-Key ────────────────────────────────────

@@ -160,6 +160,16 @@ export async function buildServer() {
   );
 
   // Public operator status — no auth (public status page)
+  // Enveloppe d'erreur uniforme : toute payload d'erreur (>=400) reçoit
+  // statusCode si absent — cohérent avec errorResponses des routes.
+  server.addHook('preSerialization', async (request, reply, payload) => {
+    const p = payload as { error?: unknown; statusCode?: number } | null;
+    if (reply.statusCode >= 400 && p && typeof p.error === 'string' && p.statusCode === undefined) {
+      p.statusCode = reply.statusCode;
+    }
+    return payload;
+  });
+
   server.register(statusOperatorsRoute);
 
   // Versioned routes
