@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
-import { verifyCallbackSignature, normalizeCallback } from '../../services/avada';
+import { verifyCallbackSignature, normalizeCallback, getTransactionStatusWithRaw } from '../../services/avada';
+import { recheckProviderStatus } from '../../lib/provider-recheck';
 import type { AvadaCallbackPayload } from '../../services/avada';
 import { sendWalletDepositEmail } from '../../services/email';
 import { validateProviderCallbackProof } from '../../lib/provider-callback-proof';
@@ -121,6 +122,24 @@ const callbackRoute: FastifyPluginAsync = async (fastify) => {
       if (!proof.valid) {
         fastify.log.warn({ txId: tx.id, reason: proof.reason }, 'Provider callback does not match stored transaction');
         return reply.status(400).send({ error: 'Provider callback proof mismatch', statusCode: 400 });
+      }
+
+      // Revérification auprès d'Unipesa avant tout crédit (callback success
+      // uniquement). credit → suite normale ; reject → 400 sans crédit ;
+      // defer (pending/inconnu/erreur/timeout) → 503, tx laissée pending,
+      // reprise par unipesa-reconciliation (tick 60 s, âge min 90 s).
+      if (dbStatus === 'success') {
+        const decision = await recheckProviderStatus(
+          () => getTransactionStatusWithRaw(tx!.reference ?? avada_transaction_id),
+        );
+        if (decision.action === 'reject') {
+          fastify.log.warn({ txId: tx.id, providerStatus: decision.providerStatus }, 'Provider re-check: not success — no credit');
+          return reply.status(400).send({ error: 'Provider status not success', statusCode: 400 });
+        }
+        if (decision.action === 'defer') {
+          fastify.log.warn({ txId: tx.id, reason: decision.reason }, 'Provider re-check inconclusive — leaving pending (503)');
+          return reply.status(503).send({ error: 'Provider status check unavailable, retry later', statusCode: 503 });
+        }
       }
 
       const { data: callbackResult, error: callbackError } = await fastify.supabase.rpc(

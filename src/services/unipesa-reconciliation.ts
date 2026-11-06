@@ -61,7 +61,7 @@ function rawStatusLog(raw: unknown): { raw_status: unknown; raw_status_type: str
   return { raw_status: raw, raw_status_type: raw === null ? 'null' : typeof raw };
 }
 
-type PendingTx = {
+export type PendingTx = {
   id: string;
   reference: string | null;
   merchant_id: string | null;
@@ -421,10 +421,11 @@ export async function reconcileOneSettlement(
   );
 }
 
-async function reconcileOne(
+export async function reconcileOne(
   supabase: SupabaseClient,
   tx: PendingTx,
   log: ReconciliationLogger,
+  getStatus: typeof getTransactionStatusWithRaw = getTransactionStatusWithRaw,
 ): Promise<void> {
   const start = Date.now();
   // Use the reference (our order_id) to query Unipesa /status. Fall back
@@ -434,7 +435,7 @@ async function reconcileOne(
   let remoteStatusRaw: AvadaStatus;
   let rawResponse: Record<string, unknown> = {};
   try {
-    const statusResult = await getTransactionStatusWithRaw(statusKey);
+    const statusResult = await getStatus(statusKey);
     remoteStatusRaw = statusResult.status;
     rawResponse = statusResult.raw;
   } catch (err) {
