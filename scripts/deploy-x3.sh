@@ -8,6 +8,9 @@
 # → healthcheck :3100/health → rollback auto sur dist.prev si KO.
 set -euo pipefail
 
+FORCE=0
+for arg in "$@"; do [ "$arg" = "--force" ] && FORCE=1; done
+
 X3="unipaycongo@192.168.1.166"
 APP=/opt/unipay-api
 BACKUP_DIR=/opt/unipay-api-backups
@@ -36,8 +39,24 @@ REMOTE_HASH="$(ssh "$X3" "sha256sum $APP/package-lock.json 2>/dev/null | cut -d'
 NEED_NPM_CI=0
 [ "$LOCAL_HASH" != "$REMOTE_HASH" ] && NEED_NPM_CI=1
 
-# ── 3. rsync des sources ──────────────────────────────────────────
-step "2/6 rsync sources → x3:$APP"
+# ── 3. Pré-vol : fichiers qui seraient SUPPRIMÉS sur x3 ───────────
+# rsync --delete efface tout fichier x3 absent du dépôt. Un code écrit
+# directement en prod (non commité) serait perdu — on bloque par défaut.
+step "2/6 pré-vol rsync -n --delete (détection suppressions)"
+TO_DELETE="$(rsync -azn --delete --itemize-changes \
+  --exclude node_modules --exclude .git --exclude '.env*' \
+  --exclude 'dist*' --exclude '.npm' --exclude '*.bak*' \
+  "$LOCAL_DIR/" "$X3:$APP/" | grep '^\*deleting' | grep -vE '^\*deleting *(scripts|src|supabase)/? *$' | grep -E '^\*deleting *(src/|scripts/|supabase/)' || true)"
+if [ -n "$TO_DELETE" ]; then
+  warn "des fichiers x3 seraient SUPPRIMÉS (absents du dépôt) :"
+  echo "$TO_DELETE"
+  [ "$FORCE" -eq 1 ] || die "déploiement annulé — rapatriez ces fichiers dans le dépôt, ou relancez avec --force"
+  warn "--force : suppression acceptée"
+else
+  ok "aucune suppression dans src/ scripts/ supabase/"
+fi
+
+step "3/6 rsync sources → x3:$APP"
 rsync -az --delete --itemize-changes \
   --exclude node_modules --exclude .git --exclude '.env*' \
   --exclude 'dist*' --exclude '.npm' --exclude '*.bak*' \
@@ -46,20 +65,20 @@ ok "sources synchronisées"
 
 # ── 4. npm ci (seulement si package-lock a changé) ────────────────
 if [ "$NEED_NPM_CI" -eq 1 ]; then
-  step "3/6 npm ci (package-lock.json modifié)"
+  step "4/6 npm ci (package-lock.json modifié)"
   ssh "$X3" "cd $APP && npm ci --no-audit --no-fund"
   ok "dépendances installées"
 else
-  step "3/6 npm ci — ignoré (package-lock.json inchangé)"
+  step "4/6 npm ci — ignoré (package-lock.json inchangé)"
 fi
 
 # ── 5. Build atomique ─────────────────────────────────────────────
-step "4/6 build (dist.new → bascule dist/)"
+step "5/6 build (dist.new → bascule dist/)"
 ssh "$X3" "cd $APP && bash scripts/build-safe.sh"
 ok "dist/ régénéré, dist.prev conservé"
 
 # ── 6. Restart + healthcheck ──────────────────────────────────────
-step "5/6 restart unipay-api + healthcheck"
+step "6/6 restart unipay-api + healthcheck"
 ssh "$X3" "sudo systemctl restart unipay-api"
 HEALTHY=0
 # boot du service ~25 s observés → fenêtre ~90 s
