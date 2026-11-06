@@ -8,3 +8,5 @@ node_modules/
 coverage/
 .DS_Store
 dist/
+dist.prev/
+dist.new/

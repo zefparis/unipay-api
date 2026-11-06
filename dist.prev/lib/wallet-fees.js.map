@@ -1,1 +1,0 @@
-{"version":3,"file":"wallet-fees.js","sourceRoot":"","sources":["../../src/lib/wallet-fees.ts"],"names":[],"mappings":";;;AAUA,8BAEC;AAZD,uCAAoC;AAEpC;;;;;GAKG;AACU,QAAA,eAAe,GAAG,MAAM,CAAC,SAAG,CAAC,eAAe,CAAC,CAAC;AAE3D,SAAgB,SAAS,CAAC,MAAc;IACtC,OAAO,IAAI,CAAC,KAAK,CAAC,MAAM,GAAG,uBAAe,GAAG,GAAG,CAAC,GAAG,GAAG,CAAC;AAC1D,CAAC"}
